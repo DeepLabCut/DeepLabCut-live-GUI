@@ -70,36 +70,36 @@ class Camera(object):
     def open(self):
         raise NotImplementedError
 
-    # def display_on_thread(self):
-    #     while self.display:
-    #         if self.new_frame:
-    #             this_frame = np.copy(self.frame)
-    #             # if self.estimate_pose:
-    #             #     if self.pose is not None:
-    #             #         try:
-    #             #             for i in range(self.pose.shape[0]):
-    #             #                 #if self.pose[i,2] > self.dlc_live.cfg["pcutoff"]:
-    #             #                 rr, cc = circle(self.pose[i,1], self.pose[i,0], self.dlc_live.cfg["dotsize"], shape=self.im_size)
-    #             #                 rr[rr > self.im_size[0]] = self.im_size[0]
-    #             #                 cc[cc > self.im_size[1]] = self.im_size[1]
-    #             #                 this_frame[rr, cc, :] = self.colors[i]
-    #             #         except Exception as e:
-    #             #             pass
-    #             cv2.imshow('DLC Live Video', this_frame)
-    #             cv2.waitKey(1)
-    #             self.new_frame = False
-    #
-    # def start_display(self):
-    #     self.display = True
-    #     # cv2.namedWindow('DLC Live Video', cv2.WINDOW_NORMAL)
-    #     # cv2.resizeWindow('DLC Live Video', self.im_size[0], self.im_size[1])
-    #     # thr = threading.Thread(target=self.display_on_thread)
-    #     # thr.daemon = True
-    #     # thr.start()
-    #
-    # def stop_display(self):
-    #     self.display = False
-    #     cv2.destroyWindow('DLC Live Video')
+    def display_on_thread(self):
+        while self.display:
+            if self.new_frame:
+                this_frame = np.copy(self.frame)
+                if self.estimate_pose:
+                    if self.pose is not None:
+                        try:
+                            for i in range(self.pose.shape[0]):
+                                if self.pose[i,2] > self.dlc_live.cfg["pcutoff"]:
+                                    rr, cc = circle(self.pose[i,1], self.pose[i,0], self.dlc_live.cfg["dotsize"], shape=self.im_size)
+                                    rr[rr > self.im_size[0]] = self.im_size[0]
+                                    cc[cc > self.im_size[1]] = self.im_size[1]
+                                    this_frame[rr, cc, :] = self.colors[i]
+                        except Exception as e:
+                            pass
+                cv2.imshow('DLC Live Video', this_frame)
+                cv2.waitKey(1)
+                self.new_frame = False
+
+    def start_display(self):
+        self.display = True
+        cv2.namedWindow('DLC Live Video', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('DLC Live Video', self.im_size[0], self.im_size[1])
+        thr = threading.Thread(target=self.display_on_thread)
+        thr.daemon = True
+        thr.start()
+
+    def stop_display(self):
+        self.display = False
+        cv2.destroyWindow('DLC Live Video')
 
     def capture_on_thread(self):
         next_frame = time.time()
@@ -149,9 +149,10 @@ class Camera(object):
     def pose_on_thread(self):
         last_pose = time.time()
         while self.estimate_pose:
-            print(time.time()-last_pose)
-            last_pose = time.time()
-            if self.frame_time > self.pose_frame_time:
+            if self.new_frame:
+                print(time.time()-last_pose)
+                last_pose = time.time()
+                self.new_frame = False
                 self.pose_frame_time = self.frame_time
                 self.pose = self.dlc_live.get_pose(self.frame)
                 if self.record:

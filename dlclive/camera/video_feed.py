@@ -9,7 +9,7 @@ from tkinter import filedialog
 
 class VideoFeed(Camera):
 
-    def __init__(self, file='', display=True):
+    def __init__(self, file='', display=False):
 
         file = file if file else filedialog.askopenfilename(title="Select Video File for DLC Live")
         self.cap = cv2.VideoCapture(file)

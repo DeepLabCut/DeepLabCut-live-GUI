@@ -314,6 +314,7 @@ class DLCLiveGUI(object):
             setup_window.destroy()
 
         self.cam.start_capture()
+        self.cam.start_display()
 
     def start_proc(self, gui):
 
@@ -630,7 +631,7 @@ class DLCLiveGUI(object):
         self.dlc_options = StringVar()
         self.dlc_options_entry = Combobox(self.window, textvariable=self.dlc_options)
         self.dlc_options_entry['values'] = ("Base", "TFGPUinference", "Frozen")
-        self.dlc_options_entry.current(2)
+        self.dlc_options_entry.current(0)
         self.dlc_options_entry.grid(sticky="nsew", row=cur_row, column=1)
         cur_row += 1
 
