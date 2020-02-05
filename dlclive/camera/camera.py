@@ -12,14 +12,14 @@ Template with additional methods to be implemented by child camera objects.
 import time
 import threading
 import cv2
-from skimage.draw import circle
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from queue import Queue
 
-class Camera(object):
 
+class Camera:
     def __init__(self, exposure=None, rotate=None, crop=None, fps=100):
 
         self.capture = False
@@ -72,27 +72,31 @@ class Camera(object):
 
     def display_on_thread(self):
         while self.display:
-            if self.new_frame:
-                this_frame = np.copy(self.frame)
-                if self.estimate_pose:
-                    if self.pose is not None:
-                        try:
-                            for i in range(self.pose.shape[0]):
-                                if self.pose[i,2] > self.dlc_live.cfg["pcutoff"]:
-                                    rr, cc = circle(self.pose[i,1], self.pose[i,0], self.dlc_live.cfg["dotsize"], shape=self.im_size)
-                                    rr[rr > self.im_size[0]] = self.im_size[0]
-                                    cc[cc > self.im_size[1]] = self.im_size[1]
-                                    this_frame[rr, cc, :] = self.colors[i]
-                        except Exception as e:
-                            pass
-                cv2.imshow('DLC Live Video', this_frame)
-                cv2.waitKey(1)
+            if self.new_frame and self.estimate_pose and self.pose is not None:
+                self.canvas.restore_region(self.background)
+                self.im.set_data(self.frame)
+                pose = self.pose.copy()
+                mask = pose[:, 2] > self.dlc_live.cfg["pcutoff"]
+                pose[~mask] = np.nan
+                self.scat.set_offsets(pose[:, :2])
+                self.canvas.blit(self.ax.bbox)
                 self.new_frame = False
 
     def start_display(self):
         self.display = True
-        cv2.namedWindow('DLC Live Video', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('DLC Live Video', self.im_size[0], self.im_size[1])
+        dpi = 100
+        w = self.im_size[0] / dpi
+        h = self.im_size[1] / dpi
+        self.fig = plt.Figure(frameon=False, figsize=(w, h), dpi=dpi)
+        self.ax = self.fig.add_subplot(111)
+        img = np.empty((self.im_size[0], self.im_size[1], 3))
+        self.im = self.ax.imshow(img)
+        self.scat = self.ax.scatter([], [], s=self.dlc_live.cfg["dotsize"] ** 2, alpha=0.7)
+        self.scat.set_color(self.colors)
+        self.canvas = FigureCanvasTkAgg(self.fig)
+        self.canvas.draw()
+        self.background = self.canvas.copy_from_bbox(self.ax.bbox)
+        self.canvas.get_tk_widget().grid(row=0, column=0)
         thr = threading.Thread(target=self.display_on_thread)
         thr.daemon = True
         thr.start()
