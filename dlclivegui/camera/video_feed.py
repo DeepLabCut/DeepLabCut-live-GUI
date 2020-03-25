@@ -1,6 +1,12 @@
 """
-reads video frame by frame to test live DLC
+DeepLabCut Toolbox (deeplabcut.org)
+© A. & M. Mathis Labs
 
+Licensed under GNU Lesser General Public License v3.0
+"""
+
+"""
+reads video frame by frame to test live DLC
 """
 
 from . import Camera
@@ -16,17 +22,17 @@ class VideoFeed(Camera):
         super().__init__(fps=self.cap.get(cv2.CAP_PROP_FPS))
         self.im_size = (int(self.cap.get(3)), int(self.cap.get(4)))
         self.display = display
-        if self.display:
-            cv2.namedWindow('Video Feed', cv2.WINDOW_NORMAL)
-            cv2.resizeWindow('Video Feed', self.im_size[0], self.im_size[1])
+        #if self.display:
+        #    cv2.namedWindow('Video Feed', cv2.WINDOW_NORMAL)
+        #    cv2.resizeWindow('Video Feed', self.im_size[0], self.im_size[1])
 
     def get_image(self):
         ret, frame = self.cap.read()
 
         if ret:
-            if self.display:
-                cv2.imshow('Video Feed', frame)
-                cv2.waitKey(1)
+            #if self.display:
+            #    cv2.imshow('Video Feed', frame)
+            #    cv2.waitKey(1)
             return frame
         else:
             raise Exception('no more frames to read!')

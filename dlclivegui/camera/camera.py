@@ -1,10 +1,11 @@
 """
-Camera Control
-Copyright M. Mathis Lab
-Written by  Gary Kane - https://github.com/gkane26
-post-doctoral fellow @ the Adaptive Motor Control Lab
-https://github.com/AdaptiveMotorControlLab
+DeepLabCut Toolbox (deeplabcut.org)
+© A. & M. Mathis Labs
 
+Licensed under GNU Lesser General Public License v3.0
+"""
+
+"""
 Base camera class. Performs recording, pose estimation, and display.
 Template with additional methods to be implemented by child camera objects.
 """
@@ -13,15 +14,29 @@ import time
 import threading
 import cv2
 from skimage.draw import circle
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from queue import Queue
 
+
+class DLCLiveCameraError(Exception):
+    ''' Exception for incorrect use of DLC-live-GUI Cameras '''
+    pass
+
+
 class Camera(object):
 
-    def __init__(self, exposure=None, rotate=None, crop=None, fps=100):
 
+    @staticmethod
+    def arg_restrictions():
+
+        return {}
+
+
+    def __init__(self, id, exposure=0, rotate=0, crop=[], fps=100):
+
+        self.id = id
         self.capture = False
         self.record = False
         self.estimate_pose = False
@@ -34,7 +49,7 @@ class Camera(object):
         if rotate:
             self.set_rotation(rotate)
         if crop:
-            self.set_crop(crop['top'], crop['left'], crop['height'], crop['width'])
+            self.set_crop(crop)
 
     def reset(self):
         self.video_writer = None
@@ -70,32 +85,33 @@ class Camera(object):
     def open(self):
         raise NotImplementedError
 
-    def display_on_thread(self):
-        while self.display:
-            if self.new_frame:
-                this_frame = np.copy(self.frame)
-                if self.estimate_pose:
-                    if self.pose is not None:
-                        try:
-                            for i in range(self.pose.shape[0]):
-                                if self.pose[i,2] > self.dlc_live.cfg["pcutoff"]:
-                                    rr, cc = circle(self.pose[i,1], self.pose[i,0], self.dlc_live.cfg["dotsize"], shape=self.im_size)
-                                    rr[rr > self.im_size[0]] = self.im_size[0]
-                                    cc[cc > self.im_size[1]] = self.im_size[1]
-                                    this_frame[rr, cc, :] = self.colors[i]
-                        except Exception as e:
-                            pass
-                cv2.imshow('DLC Live Video', this_frame)
-                cv2.waitKey(1)
-                self.new_frame = False
+    # def display_on_thread(self):
+    #     while self.display:
+    #         if self.new_frame:
+    #             this_frame = np.copy(self.frame)
+    #             if self.estimate_pose:
+    #                 if self.pose is not None:
+    #                     try:
+    #                         for i in range(self.pose.shape[0]):
+    #                             if self.pose[i,2] > self.dlc_live.cfg["pcutoff"]:
+    #                                 rr, cc = circle(self.pose[i,1], self.pose[i,0], self.dlc_live.cfg["dotsize"], shape=self.im_size)
+    #                                 rr[rr > self.im_size[0]] = self.im_size[0]
+    #                                 cc[cc > self.im_size[1]] = self.im_size[1]
+    #                                 this_frame[rr, cc, :] = self.colors[i]
+    #                     except Exception as e:
+    #                         pass
+    #             cv2.imshow('DLC Live Video', this_frame)
+    #             cv2.waitKey(1)
+    #             self.new_frame = False
 
     def start_display(self):
-        self.display = True
-        cv2.namedWindow('DLC Live Video', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('DLC Live Video', self.im_size[0], self.im_size[1])
-        thr = threading.Thread(target=self.display_on_thread)
-        thr.daemon = True
-        thr.start()
+        pass
+        # self.display = True
+        # cv2.namedWindow('DLC Live Video', cv2.WINDOW_NORMAL)
+        # cv2.resizeWindow('DLC Live Video', self.im_size[0], self.im_size[1])
+        # thr = threading.Thread(target=self.display_on_thread)
+        # thr.daemon = True
+        # thr.start()
 
     def stop_display(self):
         self.display = False
@@ -166,10 +182,10 @@ class Camera(object):
         # initialize pose array
         self.poses = np.zeros((0, len(self.dlc_live.cfg['bodyparts']), 3))
 
-        # init colors for display
-        colorclass = plt.cm.ScalarMappable(cmap=self.dlc_live.cfg["colormap"])
-        C = colorclass.to_rgba(np.linspace(0,1,len(self.dlc_live.cfg['bodyparts'])))
-        self.colors = (C[:,:3]*255).astype(np.uint8)
+        # # init colors for display
+        # colorclass = plt.cm.ScalarMappable(cmap=self.dlc_live.cfg["colormap"])
+        # C = colorclass.to_rgba(np.linspace(0,1,len(self.dlc_live.cfg['bodyparts'])))
+        # self.colors = (C[:,:3]*255).astype(np.uint8)
 
         # start pose estimation
         self.estimate_pose = True

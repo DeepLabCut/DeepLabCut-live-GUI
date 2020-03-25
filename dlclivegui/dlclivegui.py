@@ -1,28 +1,27 @@
 """
-GUI to run DLC live
-Copyright M. Mathis Lab
-Written by  Gary Kane - https://github.com/gkane26
-post-doctoral fellow @ the Adaptive Motor Control Lab
-https://github.com/AdaptiveMotorControlLab
+DeepLabCut Toolbox (deeplabcut.org)
+© A. & M. Mathis Labs
+
+Licensed under GNU Lesser General Public License v3.0
 """
 
-from tkinter import Tk, Label, Entry, Button, Radiobutton, StringVar, IntVar, filedialog, messagebox
+from tkinter import Tk, Toplevel, Label, Entry, Button, Radiobutton, StringVar, IntVar, filedialog, messagebox, simpledialog
 from tkinter.ttk import Combobox
-import tkfilebrowser
 import os
+import glob
 import json
-import numpy as np
 import time
 import datetime
 import cv2
-import pandas as pd
 import pickle
 import importlib
 import inspect
+import numpy as np
+import pandas as pd
 
-import camera
-import processor
-from deeplabcut.pose_estimation_tensorflow import DLCLive
+from dlclivegui import camera
+from dlclivegui import processor
+from dlclive import DLCLive
 
 # from tkinter import Entry, Label, Button, StringVar, IntVar, Tk, END, Radiobutton, filedialog, ttk
 # import numpy as np
@@ -36,16 +35,19 @@ class DLCLiveGUI(object):
 
     def __init__(self):
 
+        ### check if documents path exists
+
+        if not os.path.isdir(self.get_docs_path()):
+            os.mkdir(self.get_docs_path())
+        if not os.path.isdir(os.path.dirname(self.get_config_path(''))):
+            os.mkdir(os.path.dirname(self.get_config_path('')))
+
         ### get configuration ###
 
-        self.cfg = self.get_config()
+        self.cfg_list = [os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.dirname(self.get_config_path('')) + '/*.json')]
 
-        ### get all camera names ###
+        ### initialize variables
 
-        # self.all_camera_names = ()
-        # for i in self.cfg['camera_list']:
-        #     self.all_camera_names = self.all_camera_names + (i['name'],)
-        self.get_camera_names()
         self.cam = None
         self.vid_out = None
         self.dlc_live = None
@@ -55,17 +57,22 @@ class DLCLiveGUI(object):
 
         self.createGUI()
 
-    def get_camera_names(self):
-        self.all_camera_names = ()
-        for i in self.cfg['camera_list']:
-            self.all_camera_names = self.all_camera_names + (i['name'],)
 
-    def get_config(self):
+    def get_docs_path(self):
+
+        return os.path.normpath(os.path.expanduser("~/Documents/DeepLabCut-live-GUI"))
+
+
+    def get_config_path(self, cfg_name):
+
+        return os.path.normpath(self.get_docs_path() + '/config/' + cfg_name + '.json')
+
+
+    def get_config(self, cfg_name):
 
         ### read configuration file ###
 
-        path = os.path.dirname(os.path.realpath(__file__))
-        self.cfg_file = os.path.normpath(path + '/config.json')
+        self.cfg_file = self.get_config_path(cfg_name)
         if os.path.isfile(self.cfg_file):
             cfg = json.load(open(self.cfg_file))
         else:
@@ -79,19 +86,285 @@ class DLCLiveGUI(object):
         cfg['subjects'] = [] if 'subjects' not in cfg else cfg['subjects']
         cfg['directories'] = [] if 'directories' not in cfg else cfg['directories']
 
-        return cfg
+        self.cfg = cfg
+        self.get_camera_names()
+
+
+    def change_config(self, event=None):
+
+        if self.cfg_name.get() == 'Create New Config':
+            new_name = simpledialog.askstring("", "Please enter a name (no special characters).", parent=self.window)
+            self.cfg_name.set(new_name)
+        self.get_config(self.cfg_name.get())
+
+
+    def remove_config(self, cfg_name=None):
+
+        cfg_name = cfg_name if cfg_name is not None else self.cfg_name.get()
+        delete_setup = messagebox.askyesnocancel("Delete Config Permanently?", "Would you like to delete the configuration {} permanently (yes),\nremove the setup from the list for this session (no),\nor neither (cancel).".format(cfg_name), parent=self.window)
+        if delete_setup is not None:
+            if delete_setup:
+                os.remove(self.get_config_path(cfg_name))
+            self.cfg_list.remove(cfg_name)
+            self.cfg_entry['values'] = tuple(self.cfg_list) + ('Create New Setup',)
+            self.cfg_name.set('')
+
+
+    def get_camera_names(self):
+        self.all_camera_names = ()
+        for i in self.cfg['camera_list']:
+            self.all_camera_names = self.all_camera_names + (i['name'],)
+
+
+    def init_cam(self):
+
+        if self.cam:
+            self.cam.close()
+
+        this_cam = self.get_current_camera()
+
+        if not this_cam:
+
+            messagebox.showerror("No Camera", "No camera selected. Please select a camera before initializing.")
+
+        else:
+
+            if this_cam['type'] == "Add Camera":
+
+                self.add_camera_window()
+                return
+
+            else:
+
+                setup_window = Tk()
+                setup_window.title("Setting up camera...")
+                Label(setup_window, text="Setting up camera, please wait...").pack()
+                setup_window.update()
+
+                cam_obj = getattr(camera, this_cam['type'])
+                cam_args = this_cam
+                del cam_args['name']
+                del cam_args['type']
+                self.cam = cam_obj(**cam_args)
+
+                # if this_cam['type'] == 'TISCam':
+                #     self.cam = camera.TISCam(this_cam['serial'], exposure=this_cam['exposure'], crop=this_cam['crop'], rotate=this_cam['rotate'])
+                # elif this_cam['type'] == 'VideoFeed':
+                #     self.cam = camera.VideoFeed(this_cam['file'], display=this_cam['display'])
+
+                # if 'exposure' in this_cam:
+                #     self.exposure.set(this_cam['exposure'])
+                # if 'crop' in this_cam:
+                #     self.crop.set("%d, %d, %d, %d" % (this_cam['crop']['top'], this_cam['crop']['left'], this_cam['crop']['height'], this_cam['crop']['width']))
+                # if 'rotate' in this_cam:
+                #     self.rotate.set(this_cam['rotate'])
+                # if 'fps' in this_cam:
+                #     self.fps.set(this_cam['fps'])
+                # else:
+                #     self.fps.set(self.cam.fps)
+
+                self.cam.open()
+
+                setup_window.destroy()
+
+            self.cam.start_capture()
+            # self.cam.start_display()
 
 
     def get_current_camera(self):
-        if self.camera_name.get() == "Add Camera":
-            return{'type' : "Add Camera"}
-        else:
-            cam_index = self.all_camera_names.index(self.camera_name.get())
-            return self.cfg['camera_list'][cam_index]
+
+        if self.camera_name.get():
+            if self.camera_name.get() == "Add Camera":
+                return{'type' : "Add Camera"}
+            else:
+                cam_index = self.all_camera_names.index(self.camera_name.get())
+                return self.cfg['camera_list'][cam_index]
+
 
     def set_current_camera(self, key, value):
+
         cam_index = self.all_camera_names.index(self.camera_name.get())
         self.cfg['camera_list'][cam_index][key] = value
+
+
+    def add_camera_window(self):
+
+        add_cam = Tk()
+        cur_row = 0
+
+        Label(add_cam, text="Type: ").grid(sticky="w", row=cur_row, column=0)
+        self.cam_type = StringVar(add_cam)
+
+        cam_types = [c[0] for c in inspect.getmembers(camera, inspect.isclass)]
+        cam_types = [c for c in cam_types if (c != 'Camera') & ('Error' not in c)]
+
+        type_entry = Combobox(add_cam, textvariable=self.cam_type, state="readonly")
+        type_entry['values'] = tuple(cam_types)
+        type_entry.current(0)
+        type_entry.grid(sticky="nsew", row=cur_row, column=1)
+        cur_row += 1
+
+        Label(add_cam, text="Name: ").grid(sticky="w", row=cur_row, column=0)
+        self.new_cam_name = StringVar(add_cam)
+        Entry(add_cam, textvariable=self.new_cam_name).grid(sticky="nsew", row=cur_row, column=1)
+        cur_row += 1
+
+        Button(add_cam, text="Add Camera", command=lambda: self.add_cam_to_list(add_cam)).grid(sticky="nsew", row=cur_row, column=1)
+        cur_row += 1
+
+        Button(add_cam, text="Cancel", command=add_cam.destroy).grid(sticky="nsew", row=cur_row, column=1)
+
+        # Button(add_cam, text="Select", command=lambda: self.update_camera_gui(add_cam, type_entry.get(), cur_row+1)).grid(sticky="nsew", row=cur_row, column=2)
+        # cur_row += 1
+
+        add_cam.mainloop()
+
+
+    def add_cam_to_list(self, gui):
+
+        #new_cam = self.default_cam_specs(self.cam_type.get())
+        basic_config = {'name' : self.new_cam_name.get(),
+                        'type' : self.cam_type.get()}
+        self.cfg['camera_list'].append(basic_config)
+        self.get_camera_names()
+        self.camera_name.set(self.new_cam_name.get())
+        self.camera_entry['values'] = self.all_camera_names + ('Add Camera',)
+        self.save_config()
+        messagebox.showinfo("Camera Added", "Camera has been added to the dropdown menu. Please edit camera settings before initializing the new camera.", parent=gui)
+        gui.destroy()
+
+
+    # def default_cam_specs(self, type="TISCam"):
+    #
+    #     cam = {'name' : self.cam_name.get(),
+    #            'type' : self.cam_type.get()}
+    #
+    #     if type == "TISCam":
+    #         cam['type'] = 'TISCam'
+    #         cam['serial'] = self.cam_serial.get()
+    #         cam['crop'] = {'top' : 0, 'left' : 0, 'height' : 540, 'width' : 720}
+    #         cam['rotate'] = 0
+    #         cam['exposure'] = .005
+    #         cam['fps'] = 100
+    #     elif type == "VideoFeed":
+    #         cam['type'] = 'VideoFeed'
+    #         cam['file'] = self.cam_file.get()
+    #         cam['display'] = True if self.cam_display.get() == "True" else False
+    #         cam['rotate'] = 0
+    #         cam['exposure'] = 0
+    #         cam['fps'] = 100
+    #     return cam
+
+
+    def edit_cam_settings(self):
+
+        arg_names, arg_vals, arg_dtypes, arg_restrict = self.get_cam_args()
+
+        settings_window = Toplevel(self.window)
+        settings_window.title("Camera Settings")
+        cur_row = 0
+        combobox_width = 15
+
+        entry_vars = []
+        for n, v in zip(arg_names, arg_vals):
+
+            Label(settings_window, text=n+": ").grid(row=cur_row, column=0)
+
+            v = v if v is not None else ''
+            entry_vars.append(StringVar(settings_window, value=v))
+
+            if n in arg_restrict.keys():
+                Combobox(settings_window, textvariable=entry_vars[-1], values=arg_restrict[n], state="readonly").grid(sticky='nsew', row=cur_row, column=1)
+            else:
+                Entry(settings_window, textvariable=entry_vars[-1]).grid(sticky='nsew', row=cur_row, column=1)
+
+            cur_row += 1
+
+        cur_row += 1
+        Button(settings_window, text="Update", command=lambda: self.update_camera_settings(arg_names, entry_vars, arg_dtypes, settings_window)).grid(sticky='nsew', row=cur_row, column=1)
+        cur_row += 1
+        Button(settings_window, text="Cancel", command=settings_window.destroy).grid(sticky='nsew', row=cur_row, column=1)
+
+        col_count, row_count = settings_window.grid_size()
+        for r in range(row_count):
+            settings_window.grid_rowconfigure(r, minsize=20)
+
+        settings_window.mainloop()
+
+
+    def get_cam_args(self):
+
+        this_cam = self.get_current_camera()
+        cam_obj = getattr(camera, this_cam['type'])
+        arg_restrict = cam_obj.arg_restrictions()
+
+        cam_args = inspect.getfullargspec(cam_obj)
+        n_args = len(cam_args[0][1:])
+        n_vals = len(cam_args[3])
+        arg_names = []
+        arg_vals = []
+        arg_dtype = []
+        for i in range(n_args):
+            arg_names.append(cam_args[0][i+1])
+            if arg_names[i] in this_cam.keys():
+                val = this_cam[arg_names[i]]
+            else:
+                val = None if i < n_args-n_vals else cam_args[3][n_vals-n_args+i]
+            arg_vals.append(val)
+            arg_dtype.append(type(val))
+
+        return arg_names, arg_vals, arg_dtype, arg_restrict
+
+
+    def update_camera_settings(self, names, entries, dtypes, gui):
+
+        gui.destroy()
+        cam_args = {}
+
+        for name, entry, dt in zip(names, entries, dtypes):
+            val = entry.get()
+            try:
+                val = dt(val)
+            except TypeError:
+                pass
+            self.set_current_camera(name, val)
+        self.save_config()
+
+
+    def update_camera_gui(self, gui, type, cur_row):
+
+        if type == "TISCam":
+
+            Label(gui, text="Serial: ").grid(sticky="w", row=cur_row, column=0)
+            self.cam_serial = StringVar(gui)
+            serial_entry = Combobox(gui, textvariable=self.cam_serial)
+            serial_entry['values'] = tuple([s.decode() for s in camera.tisgrabber.TIS_CAM().GetDevices()])
+            serial_entry.current(0)
+            serial_entry.grid(sticky="nsew", row=cur_row, column=1)
+            cur_row += 1
+
+        elif type == "VideoFeed":
+
+            Label(gui, text="File: ").grid(sticky="w", row=cur_row, column=0)
+            self.cam_file = StringVar(gui, value="")
+            Entry(gui, textvariable=self.cam_file).grid(sticky="nsew", row=cur_row, column=1)
+            cur_row += 1
+
+            Label(gui, text="Display: ").grid(sticky="w", row=cur_row, column=0)
+            self.cam_display = StringVar(gui, value="True")
+            Combobox(gui, textvariable=self.cam_display, values=("True", "False")).grid(sticky="nsew", row=cur_row, column=1)
+            cur_row += 1
+
+        Label(gui, text="Name: ").grid(sticky="w", row=cur_row, column=0)
+        self.cam_name = StringVar(gui)
+        Entry(gui, textvariable=self.cam_name).grid(sticky="nsew", row=cur_row, column=1)
+        cur_row += 1
+
+        Button(gui, text="Add Camera", command=lambda: self.add_cam_to_list(type, gui)).grid(sticky="nsew", row=cur_row, column=1)
+        cur_row += 1
+
+        Button(gui, text="Cancel", command=gui.destroy).grid(sticky="nsew", row=cur_row, column=1)
+
 
     def set_exposure(self):
         # expos = float(self.exposure.get())
@@ -103,7 +376,7 @@ class DLCLiveGUI(object):
         crop_dict = {'top' : crop_vals[0], 'left' : crop_vals[1], 'height' : crop_vals[2], 'width' : crop_vals[3]}
         self.cam.set_crop(crop_vals[0], crop_vals[1], crop_vals[2], crop_vals[3])
         self.cam.close()
-        self.cam = camera.ICCam(self.cam.serial_number, exposure=self.cam.get_exposure(), crop=crop_dict, rotate=int(self.rotate.get()))
+        self.cam = camera.TISCam(self.cam.serial_number, exposure=self.cam.get_exposure(), crop=crop_dict, rotate=int(self.rotate.get()))
         self.cam.open()
 
     def set_rotation(self):
@@ -111,7 +384,7 @@ class DLCLiveGUI(object):
         self.cam.close()
         crop_vals = [int(v) for v in self.crop.get().strip().split(',')]
         crop_dict = {'top' : crop_vals[0], 'left' : crop_vals[1], 'height' : crop_vals[2], 'width' : crop_vals[3]}
-        self.cam = camera.ICCam(self.cam.serial_number, exposure=self.cam.get_exposure(), crop=crop_dict, rotate=int(self.rotate.get()))
+        self.cam = camera.TISCam(self.cam.serial_number, exposure=self.cam.get_exposure(), crop=crop_dict, rotate=int(self.rotate.get()))
         self.cam.open()
 
     def set_fps(self):
@@ -166,7 +439,8 @@ class DLCLiveGUI(object):
         self.subject.set('')
 
     def browse_directory(self):
-        new_dir = tkfilebrowser.askopendirname()
+        new_dir = filedialog.askdirectory()
+        #tkfilebrowser.askopendirname()
         if new_dir:
             self.directory.set(new_dir)
             ask_add_dir = Tk()
@@ -197,124 +471,6 @@ class DLCLiveGUI(object):
                 self.camera_entry.current(0)
                 self.save_config(notify=True)
 
-    def default_cam_specs(self, type="ICCam"):
-        cam = {'name' : self.cam_name.get()}
-        if type == "ICCam":
-            cam['type'] = 'ICCam'
-            cam['serial'] = self.cam_serial.get()
-            cam['crop'] = {'top' : 0, 'left' : 0, 'height' : 540, 'width' : 720}
-            cam['rotate'] = 0
-            cam['exposure'] = .005
-            cam['fps'] = 100
-        elif type == "VideoFeed":
-            cam['type'] = 'VideoFeed'
-            cam['file'] = self.cam_file.get()
-            cam['display'] = True if self.cam_display.get() == "True" else False
-            cam['rotate'] = 0
-            cam['exposure'] = 0
-            cam['fps'] = 100
-        return cam
-
-    def add_cam_to_list(self, type, gui):
-        new_cam = self.default_cam_specs(type)
-        self.cfg['camera_list'].append(new_cam)
-        self.get_camera_names()
-        self.camera_entry['values'] = self.all_camera_names + ('Add Camera',)
-        messagebox.showinfo("Camera Added", "Camera has been added to the dropdown menu.\nPlease update camera settings in the main window,\nand click 'Save Camera Settings' to save for future sessions.")
-        gui.destroy()
-
-    def update_camera_gui(self, gui, type, cur_row):
-
-        if type == "ICCam":
-
-            Label(gui, text="Serial: ").grid(sticky="w", row=cur_row, column=0)
-            self.cam_serial = StringVar(gui)
-            serial_entry = Combobox(gui, textvariable=self.cam_serial)
-            serial_entry['values'] = tuple([s.decode() for s in camera.tisgrabber.TIS_CAM().GetDevices()])
-            serial_entry.current(0)
-            serial_entry.grid(sticky="nsew", row=cur_row, column=1)
-            cur_row += 1
-
-        elif type == "VideoFeed":
-
-            Label(gui, text="File: ").grid(sticky="w", row=cur_row, column=0)
-            self.cam_file = StringVar(gui, value="")
-            Entry(gui, textvariable=self.cam_file).grid(sticky="nsew", row=cur_row, column=1)
-            cur_row += 1
-
-            Label(gui, text="Display: ").grid(sticky="w", row=cur_row, column=0)
-            self.cam_display = StringVar(gui, value="True")
-            Combobox(gui, textvariable=self.cam_display, values=("True", "False")).grid(sticky="nsew", row=cur_row, column=1)
-            cur_row += 1
-
-        Label(gui, text="Name: ").grid(sticky="w", row=cur_row, column=0)
-        self.cam_name = StringVar(gui)
-        Entry(gui, textvariable=self.cam_name).grid(sticky="nsew", row=cur_row, column=1)
-        cur_row += 1
-
-        Button(gui, text="Add Camera", command=lambda: self.add_cam_to_list(type, gui)).grid(sticky="nsew", row=cur_row, column=1)
-        cur_row += 1
-
-        Button(gui, text="Cancel", command=gui.destroy).grid(sticky="nsew", row=cur_row, column=1)
-
-    def add_camera_gui(self):
-
-        add_cam = Tk()
-        cur_row = 0
-
-        Label(add_cam, text="Type: ").grid(sticky="w", row=cur_row, column=0)
-        self.cam_type = StringVar(add_cam)
-
-        type_entry = Combobox(add_cam, textvariable=self.cam_type)
-        type_entry['values'] = tuple([c[0] for c in inspect.getmembers(camera, inspect.isclass)])[1:]
-        type_entry.current(0)
-        type_entry.grid(sticky="nsew", row=cur_row, column=1)
-        Button(add_cam, text="Select", command=lambda: self.update_camera_gui(add_cam, type_entry.get(), cur_row+1)).grid(sticky="nsew", row=cur_row, column=2)
-        cur_row += 1
-
-        add_cam.mainloop()
-
-    def init_cam(self):
-
-        if self.cam:
-            self.cam.close()
-
-        this_cam = self.get_current_camera()
-
-        if this_cam['type'] == "Add Camera":
-
-            self.add_camera_gui()
-            return
-
-        else:
-
-            setup_window = Tk()
-            setup_window.title("Setting up camera...")
-            Label(setup_window, text="Setting up camera, please wait...").pack()
-            setup_window.update()
-
-            if this_cam['type'] == 'ICCam':
-                self.cam = camera.ICCam(this_cam['serial'], exposure=this_cam['exposure'], crop=this_cam['crop'], rotate=this_cam['rotate'])
-            elif this_cam['type'] == 'VideoFeed':
-                self.cam = camera.VideoFeed(this_cam['file'], display=this_cam['display'])
-
-            if 'exposure' in this_cam:
-                self.exposure.set(this_cam['exposure'])
-            if 'crop' in this_cam:
-                self.crop.set("%d, %d, %d, %d" % (this_cam['crop']['top'], this_cam['crop']['left'], this_cam['crop']['height'], this_cam['crop']['width']))
-            if 'rotate' in this_cam:
-                self.rotate.set(this_cam['rotate'])
-            if 'fps' in this_cam:
-                self.fps.set(this_cam['fps'])
-            else:
-                self.fps.set(self.cam.fps)
-
-            self.cam.open()
-
-            setup_window.destroy()
-
-        self.cam.start_capture()
-        self.cam.start_display()
 
     def start_proc(self, gui):
 
@@ -514,11 +670,11 @@ class DLCLiveGUI(object):
         self.session_label['text'] = ""
 
 
-
     def closeGUI(self):
         if self.cam:
             self.cam.close()
         self.window.destroy()
+
 
     def createGUI(self):
 
@@ -527,7 +683,26 @@ class DLCLiveGUI(object):
         self.window = Tk()
         self.window.title("DeepLabCut Live")
         cur_row = 0
+        combobox_width = 15
 
+        ### select cfg file
+        if len(self.cfg_list) > 0:
+            initial_cfg = self.cfg_list[0]
+        else:
+            initial_cfg = ''
+
+        Label(self.window, text="Config: ").grid(row=cur_row, column=0)
+        self.cfg_name = StringVar(self.window, value=initial_cfg)
+        self.cfg_entry = Combobox(self.window, textvariable=self.cfg_name, width=combobox_width)
+        self.cfg_entry['values'] = tuple(self.cfg_list) + ('Create New Config',)
+        self.cfg_entry.bind("<<ComboboxSelected>>", self.change_config)
+        self.cfg_entry.grid(sticky="nsew", row=cur_row, column=1)
+        Button(self.window, text="Remove Config", command=self.remove_config).grid(sticky="nsew", row=cur_row, column=2)
+
+        #if os.path.isfile(self.get_config_path(initial_cfg)):
+        self.get_config(initial_cfg)
+
+        cur_row += 2
 
         ### select camera ###
 
@@ -536,9 +711,21 @@ class DLCLiveGUI(object):
         self.camera_name = StringVar(self.window)
         self.camera_entry = Combobox(self.window, textvariable=self.camera_name)
         self.camera_entry['values'] = self.all_camera_names + ('Add Camera',)
-        self.camera_entry.current(0)
+        if self.all_camera_names:
+            self.camera_entry.current(0)
         self.camera_entry.grid(sticky="nsew", row=cur_row, column=1)
         Button(self.window, text="Init Cam", command=self.init_cam).grid(sticky="nsew", row=cur_row, column=2)
+        cur_row += 1
+
+        Button(self.window, text="Edit Camera Settings", command=self.edit_cam_settings).grid(sticky="nsew", row=cur_row, column=1)
+        Button(self.window, text="Remove Camera", command=self.remove_cam_cfg).grid(sticky="nsew", row=cur_row, column=2)
+
+        cur_row += 1
+
+        ############################
+        ### MOVE TO SETTINGS WINDOW
+        ############################
+
         cur_row += 1
 
         # exposure
@@ -577,6 +764,10 @@ class DLCLiveGUI(object):
         Button(self.window, text="Save Camera Settings", command=self.save_cam_settings).grid(sticky="nsew", row=cur_row, column=1, columnspan=1)
         Button(self.window, text="Remove Camera", command=self.remove_cam_cfg).grid(sticky="nsew", row=cur_row, column=2)
         cur_row += 1
+
+        ############################
+        ### MOVE TO SETTINGS WINDOW
+        ############################
 
         # empty row
         Label(self.window, text="").grid(row=cur_row, column=0)
@@ -705,11 +896,18 @@ class DLCLiveGUI(object):
 
         Button(self.window, text="Close", command=self.closeGUI).grid(sticky="nsew", row=cur_row, column=0, columnspan=2)
 
-    def runGUI(self):
+        ### configure size of empty rows
+
+        col_count, row_count = self.window.grid_size()
+        for r in range(row_count):
+            self.window.grid_rowconfigure(r, minsize=20)
+
+
+    def run(self):
 
         self.window.mainloop()
 
 
-if __name__ == "__main__":
+def main():
     dlc_live_gui = DLCLiveGUI()
-    dlc_live_gui.runGUI()
+    dlc_live_gui.run()
