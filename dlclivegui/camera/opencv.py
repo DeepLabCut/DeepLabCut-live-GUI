@@ -5,14 +5,11 @@ DeepLabCut Toolbox (deeplabcut.org)
 Licensed under GNU Lesser General Public License v3.0
 """
 
-"""
-To use an Open CV webcam or video file
-"""
-
 
 import cv2
 from tkinter import filedialog
 from imutils import rotate_bound
+import time
 
 from dlclivegui.camera import Camera, DLCLiveCameraError
 
@@ -22,66 +19,83 @@ class OpenCVCam(Camera):
 
     @staticmethod
     def arg_restrictions():
+        """ Returns a dictionary of arguments restrictions for DLCLiveGUI
+        """
 
-        return {'device' : [0, 1]}
+        cap = cv2.VideoCapture()
+        devs = [-1]
+        avail = True
+        while avail:
+            cur_index = devs[-1] + 1
+            avail = cap.open(cur_index)
+            if avail:
+                devs.append(cur_index)
+                cap.release()
+
+        return {'device' : devs}
 
 
-    def __init__(self, device=-1, file='', exposure=0, rotate=0, crop=[], fps=100, display=True):
+    def __init__(self, device=-1, file='', resolution=[640, 480], exposure=0, rotate=0, crop=None, fps=30, display=True, display_resize=1.0):
 
         if device != -1:
             if file:
                 raise DLCLiveCameraError("A device and file were provided to OpenCVCam. Must initialize an OpenCVCam with either a device id or a video file.")
 
-            self.cap = cv2.VideoCapture(int(device))
+            self.video = False
             id = int(device)
 
         else:
             if not file:
-                raise DLCLiveCameraError("Neither a device nor file were provided to OpenCVCam. Must initialize an OpenCVCam with either a device id or a video file.")
+                file = filedialog.askopenfilename(title="Select video file for DLC-live-GUI")
+                if not file:
+                    raise DLCLiveCameraError("Neither a device nor file were provided to OpenCVCam. Must initialize an OpenCVCam with either a device id or a video file.")
 
-            self.cap = cv2.VideoCapture(file)
+            self.video = True
             id = file
 
-        self.im_size = (self.cap.get(cv2.CAP_PROP_FRAME_WIDTH), self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.crop = None
-        self.rotate = None
-        self.display = display
-
-        fps = fps if fps is not None else self.cap.get(cv2.CAP_PROP_FPS)
-        super().__init__(int(device), exposure=exposure, rotate=rotate, crop=crop, fps=fps)
+        super().__init__(id, resolution=resolution, exposure=exposure, rotate=rotate, crop=crop, fps=fps, use_tk_display=display, display_resize=display_resize)
 
 
-    def set_exposure(self, val):
+    def set_capture_device(self):
 
-        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-        self.cap.set(cv2.CAP_PROP_EXPOSURE, val)
+        self.cap = cv2.VideoCapture(self.id)
 
-
-    def get_exposure(self):
-
-        return self.cap.get(cv2.CAP_PROP_EXPOSURE)
-
-
-    def set_crop(self, crop):
-
-        if crop:
-            self.crop = crop
-            self.im_size = (crop[3]-crop[2], crop[1]-crop[0])
-
-    def set_rotation(self, rotate):
-
-        if rotate:
-            self.rotate = rotate
-
-
-    def set_fps(self, fps):
-
-        if fps:
-            self.cap.set(cv2.CAP_PROP_FPS, fps)
+        if not self.video:
+            if self.im_size:
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.im_size[0])
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.im_size[1])
+            if self.exposure:
+                self.cap.set(cv2.CAP_PROP_EXPOSURE, self.exposure)
+            if self.gain:
+                self.cap.set(cv2.CAP_PROP_GAIN, self.gain)
+            if self.fps:
+                self.cap.set(cv2.CAP_PROP_FPS, self.fps)
+        else:
+            self.im_size = (self.cap.get(cv2.CAP_PROP_FRAME_WIDTH), self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.exposure = self.cap.get(cv2.CAP_PROP_EXPOSURE)
+            self.gain = self.cap.get(cv2.CAP_PROP_GAIN)
+            self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+            self.last_cap_read = 0
 
 
-    def get_image(self):
+    def get_image_on_time(self):
 
+        if self.video:
+            while time.time()-self.last_cap_read < (1.0 / self.fps):
+                pass
+
+        # start_grab = time.time()
+        # ret = self.cap.grab()
+        # start_retrieve = time.time()
+        # ret, frame = self.cap.retrieve()
+        # end_retrieve = time.time()
+        # total_time = end_retrieve - start_grab
+        # if total_time > .005:
+        #     print("\n")
+        # print("grab time = %0.3f // retrieve time = %0.3f // total_time = %0.3f" % (start_retrieve-start_grab, end_retrieve-start_retrieve, total_time))
+        # if total_time > .005:
+        #     print("\n")
+        
         ret, frame = self.cap.read()
 
         if ret:
@@ -90,31 +104,13 @@ class OpenCVCam(Camera):
             if self.crop:
                 frame = frame[self.crop[2]:self.crop[3], self.crop[0]:self.crop[1]]
 
-        if self.display:
-            self.display_frame(frame)
-
-        return frame
-
-
-    def display_frame(self, frame):
-
-        cv2.imshow('OpenCVCam', frame)
-        cv2.waitKey(1)
+            self.last_cap_read = time.time()
+            
+            return frame, self.last_cap_read
+        else:
+            raise DLCLiveCameraError("Opencv VideoCapture.read did not return an image!")
 
 
-    def destroy_display(self):
+    def close_capture_device(self):
 
-        cv2.destroyWindow('OpenCVCam')
-
-
-    def open(self):
-
-        if not self.cap.isOpened():
-            self.cap.open()
-
-
-    def close(self):
-
-        super().close()
-        if self.cap.isOpened():
-            self.cap.release()
+        self.cap.release()

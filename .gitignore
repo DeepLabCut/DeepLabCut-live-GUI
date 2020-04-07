@@ -3,6 +3,7 @@
 #####################
 
 *config*
+**test*
 
 ###################
 ### python standard
@@ -112,3 +113,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# ide files
+.vscode
