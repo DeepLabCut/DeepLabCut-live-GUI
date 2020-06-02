@@ -37,16 +37,21 @@ class TISCam(Camera):
                 'rotate' : TISCam.ROTATE_OPTIONS}
 
 
-    def __init__(self, serial_number='', exposure=.005, gain=0, rotate='identity', crop=[], fps=120, display=True):
+    def __init__(self, serial_number='', resolution=[720, 540], exposure=.005, gain=0, rotate='identity', crop=None, fps=120, display=True):
 
-        self.im_size = (720, 540)
+        super().__init__(serial_number, resolution=resolution, exposure=exposure, gain=gain, rotate=rotate, crop=crop, fps=fps)
         self.display = display
         self.sample_locked = False
         self.new_sample = False
 
-        self.setup_gst(serial_number, fps)
 
-        super().__init__(serial_number, exposure=exposure, gain=gain, rotate=rotate, crop=crop, fps=fps)
+
+    def set_capture_device(self):
+
+        self.setup_gst(self.id, self.fps)
+
+        if self.display:
+            self.gst_pipeline.set_state(Gst.State.PLAYING)
 
 
     def no_auto(self):
@@ -80,15 +85,11 @@ class TISCam(Camera):
 
         self.cam = self.gst_pipeline.get_by_name("cam")
         self.cam.set_property("serial", serial_number)
-
-        self.gst_crop = self.gst_pipeline.get_by_name("crop")
-        self.gst_rotate = self.gst_pipeline.get_by_name("rotate")
-
-        self.gst_sink = self.gst_pipeline.get_by_name("sink")
-        self.gst_sink.set_property("max-buffers", 1)
-        self.gst_sink.set_property("drop", 1)
-        self.gst_sink.set_property("emit-signals", 1)
-        self.gst_sink.connect('new-sample', self.get_image)
+        
+        self.set_exposure(self.exposure)
+        self.set_crop(self.crop)
+        self.set_rotation(self.rotate)
+        self.set_sink()
 
 
     def set_exposure(self, val):
@@ -98,14 +99,10 @@ class TISCam(Camera):
         self.cam.set_tcam_property("Exposure", val*1e6)
 
 
-    def get_exposure(self, val):
-
-        return self.cam.get_tcam_property("Exposure")[1]
-
-
     def set_crop(self, crop):
 
         if crop:
+            self.gst_crop = self.gst_pipeline.get_by_name("crop")
             self.gst_crop.set_property("left", crop[0])
             self.gst_crop.set_property("right", TISCam.IM_FORMAT[0] - crop[1])
             self.gst_crop.set_property("top", crop[2])
@@ -116,13 +113,17 @@ class TISCam(Camera):
     def set_rotation(self, val):
 
         if val:
+            self.gst_rotate = self.gst_pipeline.get_by_name("rotate")
             self.gst_rotate.set_property("video-direction", val)
 
+    
+    def set_sink(self):
 
-    def set_fps(self, val):
-
-        if val:
-            self.fps = val
+        self.gst_sink = self.gst_pipeline.get_by_name("sink")
+        self.gst_sink.set_property("max-buffers", 1)
+        self.gst_sink.set_property("drop", 1)
+        self.gst_sink.set_property("emit-signals", 1)
+        self.gst_sink.connect('new-sample', self.get_image)
 
 
     def get_image(self, sink):
@@ -171,15 +172,6 @@ class TISCam(Camera):
         return self.frame, time.time()
 
 
-    def open(self):
-
-        super().open()
-
-        if self.display:
-            self.gst_pipeline.set_state(Gst.State.PLAYING)
-
-
-    def close(self):
-
-        super().close()
+    def close_capture_device(self):
+        
         self.gst_pipeline.set_state(Gst.State.NULL)

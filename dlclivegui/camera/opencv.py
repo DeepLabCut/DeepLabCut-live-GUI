@@ -32,10 +32,11 @@ class OpenCVCam(Camera):
                 devs.append(cur_index)
                 cap.release()
 
-        return {'device' : devs}
+        return {'device' : devs,
+                'display' : [True, False]}
 
 
-    def __init__(self, device=-1, file='', resolution=[640, 480], exposure=0, rotate=0, crop=None, fps=30, display=True, display_resize=1.0):
+    def __init__(self, device=-1, file='', resolution=[640, 480], exposure=0, rotate=0, crop=None, fps=30, convert2rgb=False, display=True, display_resize=1.0):
 
         if device != -1:
             if file:
@@ -53,6 +54,7 @@ class OpenCVCam(Camera):
             self.video = True
             id = file
 
+        self.convert_color = convert2rgb
         super().__init__(id, resolution=resolution, exposure=exposure, rotate=rotate, crop=crop, fps=fps, use_tk_display=display, display_resize=display_resize)
 
 
@@ -103,6 +105,10 @@ class OpenCVCam(Camera):
                 frame = rotate_bound(frame, self.rotate)
             if self.crop:
                 frame = frame[self.crop[2]:self.crop[3], self.crop[0]:self.crop[1]]
+
+            if frame.ndim == 3:
+                if self.convert_color:  
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             self.last_cap_read = time.time()
             

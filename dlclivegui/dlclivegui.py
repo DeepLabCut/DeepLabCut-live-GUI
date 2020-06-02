@@ -11,26 +11,35 @@ from tkinter import Tk, Toplevel, \
                     StringVar, IntVar, BooleanVar, \
                     filedialog, messagebox, simpledialog
 from tkinter.ttk import Combobox
-from PIL import Image, ImageTk
-import cv2
 import os
 import glob
 import json
 import datetime
 import inspect
 import pickle
-import pandas as pd
 import time
+
+from PIL import Image, ImageTk, ImageDraw
+import colorcet as cc
+import cv2
+import pandas as pd
 
 from dlclivegui import camera
 from dlclivegui import processor
+from dlclivegui.tkutil import SettingsWindow
+
 from dlclive import DLCLive
 from dlclive.display import Display
 
 
 class DLCLiveGUI(object):
+    """ GUI to run DLC Live experiment
+    """
+
 
     def __init__(self):
+        """ Constructor method
+        """
 
         ### check if documents path exists
 
@@ -52,7 +61,12 @@ class DLCLiveGUI(object):
         self.vid_out = None
         self.dlc_live = None
         self.proc = None
+
         self.display_window = None
+        self.display_cmap = None
+        self.display_colors = None
+        self.display_radius = None
+        self.display_lik_thresh = None
 
         ### create GUI window ###
 
@@ -60,16 +74,42 @@ class DLCLiveGUI(object):
 
 
     def get_docs_path(self):
+        """ Get path to documents folder
+        
+        Returns
+        -------
+        str
+            path to documents folder
+        """
 
         return os.path.normpath(os.path.expanduser("~/Documents/DeepLabCut-live-GUI"))
 
 
     def get_config_path(self, cfg_name):
+        """ Get path to configuration foler
+        
+        Parameters
+        ----------
+        cfg_name : str
+            name of config file
+        
+        Returns
+        -------
+        str
+            path to configuration file
+        """
 
         return os.path.normpath(self.get_docs_path() + '/config/' + cfg_name + '.json')
 
 
     def get_config(self, cfg_name):
+        """ Read configuration
+        
+        Parameters
+        ----------
+        cfg_name : str
+            name of configuration
+        """
 
         ### read configuration file ###
 
@@ -84,6 +124,7 @@ class DLCLiveGUI(object):
         cfg['cameras'] = {} if 'cameras' not in cfg else cfg['cameras']
         cfg['processor'] = () if 'processor' not in cfg else cfg['processor']
         cfg['dlc_options'] = {} if 'dlc_options' not in cfg else cfg['dlc_options']
+        cfg['dlc_display_options'] = {} if 'dlc_display_options' not in cfg else cfg['dlc_display_options']
         cfg['subjects'] = [] if 'subjects' not in cfg else cfg['subjects']
         cfg['directories'] = [] if 'directories' not in cfg else cfg['directories']
 
@@ -91,14 +132,32 @@ class DLCLiveGUI(object):
 
 
     def change_config(self, event=None):
+        """ Change configuration, update GUI menus
+        
+        Parameters
+        ----------
+        event : tkinter event, optional
+            event , by default None
+        """
 
         if self.cfg_name.get() == 'Create New Config':
             new_name = simpledialog.askstring("", "Please enter a name (no special characters).", parent=self.window)
             self.cfg_name.set(new_name)
         self.get_config(self.cfg_name.get())
 
+        self.camera_entry['values'] = tuple(self.cfg['cameras'].keys()) + ('Add Camera',)
+        self.camera_name.set("")
+        self.dlc_options_entry['values'] = tuple(self.cfg['dlc_options'].keys()) + ('Add DLC',)
+        self.dlc_option.set("")
+        self.subject_entry['values'] = tuple(self.cfg['subjects'])
+        self.subject.set("")
+        self.directory_entry['values'] = tuple(self.cfg['directories'])
+        self.directory.set("")
+
 
     def remove_config(self):
+        """ Remove configuration
+        """
 
         cfg_name = self.cfg_name.get()
         delete_setup = messagebox.askyesnocancel("Delete Config Permanently?", "Would you like to delete the configuration {} permanently (yes),\nremove the setup from the list for this session (no),\nor neither (cancel).".format(cfg_name), parent=self.window)
@@ -111,11 +170,15 @@ class DLCLiveGUI(object):
 
 
     def get_camera_names(self):
+        """ Get camera names from configuration as a tuple
+        """
 
         return tuple(self.cfg['cameras'].keys())
 
 
     def init_cam(self):
+        """ Initialize camera
+        """
 
         if self.cam:
             self.close_camera()
@@ -139,6 +202,7 @@ class DLCLiveGUI(object):
                 self.cam_setup_window.title("Setting up camera...")
                 Label(self.cam_setup_window, text="Setting up camera, please wait...").pack()
                 self.cam_setup_window.update()
+                self.check_cam_open()
 
                 cam_obj = getattr(camera, this_cam['type'])
                 self.cam = cam_obj(**this_cam['params'])
@@ -147,25 +211,27 @@ class DLCLiveGUI(object):
                 
                 self.cam.open_capture()
 
-                self.cam_setup_window.destroy()
+                # self.cam_setup_window.destroy()
 
-                if self.cam.use_tk_display:
-                    self.set_display_window()
-
-                # self.check_cam_open()
+                # if self.cam.use_tk_display:
+                #     self.set_display_window()
 
 
-    # def check_cam_open(self):
+    def check_cam_open(self):
+        """ Check if camera is open
+        """
 
-    #     if not self.cam_is_open:
-    #         self.cam_setup_window.after(10, self.check_cam_open)
-    #     else:
-    #         self.cam_setup_window.destroy()
-    #         if self.cam.use_tk_display:
-    #             self.set_display_window()
+        if not self.cam_is_open:
+            self.cam_setup_window.after(10, self.check_cam_open)
+        else:
+            self.cam_setup_window.destroy()
+            if self.cam.use_tk_display:
+                self.set_display_window()
 
 
     def get_current_camera(self):
+        """ Get dictionary of the current camera
+        """
 
         if self.camera_name.get():
             if self.camera_name.get() == "Add Camera":
@@ -175,11 +241,15 @@ class DLCLiveGUI(object):
 
 
     def set_camera_param(self, key, value):
+        """ Set a camera parameter
+        """
 
         self.cfg['cameras'][self.camera_name.get()]['params'][key] = value
 
 
     def add_camera_window(self):
+        """ Create gui to add a camera
+        """
 
         add_cam = Tk()
         cur_row = 0
@@ -210,17 +280,21 @@ class DLCLiveGUI(object):
 
 
     def add_cam_to_list(self, gui):
+        """ Add new camera to the camera list
+        """
 
         self.cfg['cameras'][self.new_cam_name.get()] = {'type' : self.cam_type.get(),
                                                         'params' : {}}
         self.camera_name.set(self.new_cam_name.get())
         self.camera_entry['values'] = self.get_camera_names() + ('Add Camera',)
         self.save_config()
-        messagebox.showinfo("Camera Added", "Camera has been added to the dropdown menu. Please edit camera settings before initializing the new camera.", parent=gui)
+        # messagebox.showinfo("Camera Added", "Camera has been added to the dropdown menu. Please edit camera settings before initializing the new camera.", parent=gui)
         gui.destroy()
 
 
     def edit_cam_settings(self):
+        """ GUI window to edit camera settings
+        """
 
         arg_names, arg_vals, arg_dtypes, arg_restrict = self.get_cam_args()
 
@@ -239,10 +313,13 @@ class DLCLiveGUI(object):
                 v = ", ".join(v)
             else:
                 v = v if v is not None else ''
-            entry_vars.append(StringVar(settings_window, value=v))
+            entry_vars.append(StringVar(settings_window, value=str(v)))
 
             if n in arg_restrict.keys():
-                Combobox(settings_window, textvariable=entry_vars[-1], values=arg_restrict[n], state="readonly", width=combobox_width).grid(sticky='nsew', row=cur_row, column=1)
+                restrict_vals = arg_restrict[n]
+                if type(restrict_vals[0]) is list:
+                    restrict_vals = [", ".join([str(i) for i in rv]) for rv in restrict_vals]
+                Combobox(settings_window, textvariable=entry_vars[-1], values=restrict_vals, state="readonly", width=combobox_width).grid(sticky='nsew', row=cur_row, column=1)
             else:
                 Entry(settings_window, textvariable=entry_vars[-1]).grid(sticky='nsew', row=cur_row, column=1)
 
@@ -261,6 +338,8 @@ class DLCLiveGUI(object):
 
 
     def get_cam_args(self):
+        """ Get arguments for the new camera
+        """
 
         this_cam = self.get_current_camera()
         cam_obj = getattr(camera, this_cam['type'])
@@ -289,6 +368,8 @@ class DLCLiveGUI(object):
 
 
     def update_camera_settings(self, names, entries, dtypes, gui):
+        """ Update camera settings from values input in settings GUI
+        """
 
         gui.destroy()
 
@@ -297,7 +378,10 @@ class DLCLiveGUI(object):
             val = val.split(",")
             val = [v.strip() for v in val]
             try:
-                val = [dt(v) if v else None for v in val]
+                if dt is bool:
+                    val = [True if v == "True" else False for v in val]
+                else:
+                    val = [dt(v) if v else None for v in val]
             except TypeError:
                 pass
             val = val if len(val) > 1 else val[0]
@@ -307,40 +391,109 @@ class DLCLiveGUI(object):
 
 
     def set_display_window(self):
+        """ Create a video display window
+        """
 
         self.display_window = Toplevel(self.window)
         self.display_frame_label = Label(self.display_window)
         self.display_frame_label.pack()
         self.display_frame()
 
+    
+    def set_display_colors(self, bodyparts):
+        """ Set colors for keypoints
+        
+        Parameters
+        ----------
+        bodyparts : int
+            the number of keypoints
+        """
+
+        all_colors = getattr(cc, self.display_cmap)
+        self.display_colors = all_colors[::int(len(all_colors)/bodyparts)]
+
 
     def display_frame(self):
+        """ Display a frame in display window
+        """
 
         if self.cam and self.display_window:
-            if self.cam.use_tk_display:
-                frame = self.cam.get_display_frame()
-                if frame is not None:
-                    if frame.ndim == 2:
-                        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-                    elif frame.shape[2] == 3:
-                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    img = Image.fromarray(frame)
-                    imgtk = ImageTk.PhotoImage(image=img)
-                    self.display_frame_label.imgtk = imgtk
-                    self.display_frame_label.configure(image=imgtk)
-                self.display_frame_label.after(10, self.display_frame)
+
+            frame = self.cam.get_display_frame()
+
+            if frame is not None:
+
+                img = Image.fromarray(frame)
+
+                pose = self.cam.get_display_pose() if self.display_keypoints.get() else None
+                if pose is not None:
+
+                    im_size = (frame.shape[1], frame.shape[0])
+
+                    if not self.display_colors:
+                        self.set_display_colors(pose.shape[0])
+
+                    img_draw = ImageDraw.Draw(img)
+
+                    for i in range(pose.shape[0]):
+                        if pose[i,2] > self.display_lik_thresh:
+                            try:
+                                x0 = pose[i,0] - self.display_radius if pose[i,0] - self.display_radius > 0 else 0
+                                x1 = pose[i,0] + self.display_radius if pose[i,0] + self.display_radius < im_size[1] else im_size[1]
+                                y0 = pose[i,1] - self.display_radius if pose[i,1] - self.display_radius > 0 else 0
+                                y1 = pose[i,1] + self.display_radius if pose[i,1] + self.display_radius < im_size[0] else im_size[0]
+                                coords = [x0, y0, x1, y1]
+                                img_draw.ellipse(coords, fill=self.display_colors[i], outline=self.display_colors[i])
+                            except Exception as e:
+                                print(e)
+
+                imgtk = ImageTk.PhotoImage(image=img)
+                self.display_frame_label.imgtk = imgtk
+                self.display_frame_label.configure(image=imgtk)
+
+            self.display_frame_label.after(10, self.display_frame)
 
 
     def change_display_keypoints(self):
+        """ Toggle display keypoints. If turning on, set display options. If turning off, destroy display window
+        """
 
-        if self.cam:
-            self.cam.change_display_keypoints(self.display_keypoints.get())
+        if self.display_keypoints.get():
 
-            if self.cam.use_tk_display:
-                if not self.display_window:
-                    self.set_display_window()
-            elif self.display_window:
+            display_options = self.cfg['dlc_display_options'][self.dlc_option.get()]
+            self.display_cmap = display_options['cmap']
+            self.display_radius = display_options['radius']
+            self.display_lik_thresh = display_options['lik_thresh']
+
+            if not self.display_window:
+                self.set_display_window()
+
+        else:
+
+            if self.display_window:
                 self.display_window.destroy()
+                self.display_window = None
+                self.display_colors = None
+
+
+    def edit_dlc_display(self):
+
+        display_options = self.cfg['dlc_display_options'][self.dlc_option.get()]
+        dlc_display_settings = {'color map' : {'value' : display_options['cmap'], 'dtype' : str, 'restrictions' : ['bgy', 'kbc', 'bmw', 'bmy', 'kgy', 'fire']},
+                                'radius' : {'value' : display_options['radius'], 'dtype' : int},
+                                'likelihood threshold' : {'value' : display_options['lik_thresh'], 'dtype' : float}}
+
+        dlc_display_gui = SettingsWindow(title="Edit DLC Display Settings", settings=dlc_display_settings, parent=self.window)
+                
+        dlc_display_gui.mainloop()
+        display_settings = dlc_display_gui.get_values()
+
+        display_options['cmap'] = display_settings['color map']
+        display_options['radius'] = display_settings['radius']
+        display_options['lik_thresh'] = display_settings['likelihood threshold']
+
+        self.cfg['dlc_display_options'][self.dlc_option.get()] = display_options
+        self.save_config()
 
 
     def monitor_cam_processes(self):
@@ -365,12 +518,14 @@ class DLCLiveGUI(object):
             self.cam.close()
             if self.cam.use_tk_display:
                 self.display_window.destroy()
+                self.display_window = None
         self.cam = None
+        self.cam_is_open = False
 
 
     def change_dlc_option(self, event=None):
 
-        if self.dlc_option.get() == 'Add new DLC':
+        if self.dlc_option.get() == 'Add DLC':
             self.edit_dlc_settings(True)
 
     
@@ -381,7 +536,7 @@ class DLCLiveGUI(object):
         else:
             cur_set = self.cfg['dlc_options'][self.dlc_option.get()]
             cur_set['name'] = self.dlc_option.get()
-            cur_set['cropping'] = ", ".join(cur_set['cropping']) if cur_set['cropping'] else ''
+            cur_set['cropping'] = ", ".join([str(c) for c in cur_set['cropping']]) if cur_set['cropping'] else ''
             cur_set['dynamic'] = ", ".join([str(d) for d in cur_set['dynamic']])
 
         self.dlc_settings_window = Toplevel(self.window)
@@ -494,9 +649,15 @@ class DLCLiveGUI(object):
                                                            'precision' : precision,
                                                            'cropping' : dlc_crop,
                                                            'dynamic' : dlc_dynamic,
-                                                           'resize' : dlc_resize } 
+                                                           'resize' : dlc_resize}
+        
+        if self.dlc_settings_name.get() not in self.cfg['dlc_display_options']:
+            self.cfg['dlc_display_options'][self.dlc_settings_name.get()] = {'cmap' : 'bgy',
+                                                                             'radius' : 3,
+                                                                             'lik_thresh' : 0.5}
+
         self.save_config()
-        self.dlc_options_entry['values'] = tuple(self.cfg['dlc_options'].keys()) + ("Add new DLC",)
+        self.dlc_options_entry['values'] = tuple(self.cfg['dlc_options'].keys()) + ("Add DLC",)
         self.dlc_option.set(self.dlc_settings_name.get())
         self.dlc_settings_window.destroy()
 
@@ -505,8 +666,8 @@ class DLCLiveGUI(object):
         """ Delete DLC Option from config
         """
 
-        self.cfg['dlc_options'].remove(self.dlc_option.get())
-        self.dlc_options_entry['values'] = self.cfg['dlc_options'].keys() + ("Add new DLC",)
+        del self.cfg['dlc_options'][self.dlc_option.get()]
+        self.dlc_options_entry['values'] = tuple(self.cfg['dlc_options'].keys()) + ("Add DLC",)
         self.dlc_option.set('')
         self.save_config()
 
@@ -515,16 +676,13 @@ class DLCLiveGUI(object):
         """ Initialize DLC Live object
         """
 
+        self.stop_pose()
+
         self.dlc_setup_window = Toplevel(self.window)
         self.dlc_setup_window.title("Setting up DLC...")
         Label(self.dlc_setup_window, text="Setting up DLC, please wait...").pack()
-        self.dlc_setup_window.after(10, self.set_dlc)
-        self.dlc_setup_window.update()
-
-
-    def set_dlc(self):
-
-        self.stop_pose()
+        
+        self.check_dlc_open()
 
         dlc_params = self.cfg['dlc_options'][self.dlc_option.get()]
         dlc_params['processor'] = self.proc
@@ -532,17 +690,13 @@ class DLCLiveGUI(object):
 
         self.cam.open_pose()
 
-        self.dlc_setup_window.destroy()
 
-        # self.check_dlc_open()
+    def check_dlc_open(self):
 
-
-    # def check_dlc_open(self):
-
-    #     if not self.pose_is_open:
-    #         self.dlc_setup_window.after(10, self.check_dlc_open)
-    #     else:
-    #         self.dlc_setup_window.destroy()
+        if not self.pose_is_open:
+            self.dlc_setup_window.after(10, self.check_dlc_open)
+        else:
+            self.dlc_setup_window.destroy()
 
 
     def stop_pose(self):
@@ -660,13 +814,7 @@ class DLCLiveGUI(object):
         self.session_setup_window = Toplevel(self.window)
         self.session_setup_window.title("Setting up session...")
         Label(self.session_setup_window, text="Setting up session, please wait...").pack()
-        self.session_setup_window.after(10, self.set_session)
-        self.session_setup_window.update()
-
-    
-    def set_session(self):
-
-        # self.check_writer_open()
+        self.check_writer_open()
 
         ### set up file name (get date and create directory)
 
@@ -704,15 +852,13 @@ class DLCLiveGUI(object):
 
         self.record_on.set(0)
 
-        self.session_setup_window.destroy()
 
+    def check_writer_open(self):
 
-    # def check_writer_open(self):
-
-    #     if not self.writer_is_open:
-    #         self.session_setup_window.after(10, self.check_writer_open)
-    #     else:
-    #         self.session_setup_window.destroy()
+        if not self.writer_is_open:
+            self.session_setup_window.after(10, self.check_writer_open)
+        else:
+            self.session_setup_window.destroy()
 
 
     def start_record(self):
@@ -882,7 +1028,7 @@ class DLCLiveGUI(object):
         Label(self.window, text="DeepLabCut: ").grid(sticky='w', row=cur_row, column=0)
         self.dlc_option = StringVar(self.window)
         self.dlc_options_entry = Combobox(self.window, textvariable=self.dlc_option)
-        self.dlc_options_entry['values'] = tuple(self.cfg['dlc_options'].keys()) + ('Add new DLC',)  
+        self.dlc_options_entry['values'] = tuple(self.cfg['dlc_options'].keys()) + ('Add DLC',) 
         self.dlc_options_entry.bind("<<ComboboxSelected>>", self.change_dlc_option)
         self.dlc_options_entry.grid(sticky='nsew', row=cur_row, column=1)
         Button(self.window, text='Init DLC', command=self.init_dlc).grid(sticky='nsew', row=cur_row, column=2)
@@ -895,6 +1041,9 @@ class DLCLiveGUI(object):
         self.display_keypoints = BooleanVar(self.window, value=False)
         Checkbutton(self.window, text="Display DLC Keypoints", variable=self.display_keypoints, indicatoron=0, command=self.change_display_keypoints).grid(sticky="nsew", row=cur_row, column=1)
         Button(self.window, text='Remove DLC', command=self.remove_dlc_option).grid(sticky='nsew', row=cur_row, column=2)
+        cur_row += 1
+        
+        Button(self.window, text="Edit DLC Display Settings", command=self.edit_dlc_display).grid(sticky='nsew', row=cur_row, column=1)
         
         cur_row += 2
 
@@ -958,24 +1107,6 @@ class DLCLiveGUI(object):
 
 
     def run(self):
-
-        # self.run_gui = True
-
-        # loop_time = time.time()
-
-        # while self.run_gui:
-
-        #     if self.cam:
-        #         self.cam.monitor_processes()
-        #         self.cam.check_cv_display(self.display_keypoints.get())
-
-        #     #self.window.update_idletasks()
-        #     self.window.update()
-
-        #     print("loop rate = %d" % (int(1 / (time.time()-loop_time))))
-        #     loop_time = time.time()
-
-        # self.closeGUI()
 
         self.window.mainloop()
 

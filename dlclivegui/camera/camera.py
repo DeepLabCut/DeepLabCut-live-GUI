@@ -7,11 +7,12 @@ Licensed under GNU Lesser General Public License v3.0
 
 
 import time
-import threading
-from queue import Queue
 import multiprocess as mp
-from _queue import Empty
 from queue import Full
+try:
+    from _queue import Empty
+except ModuleNotFoundError:
+    from queue import Empty
 
 import cv2
 import numpy as np
@@ -274,7 +275,11 @@ class Camera(object):
 
         while continue_capture:
 
+            start_capture = time.time()
+
             frame, frame_time = self.get_image_on_time()
+
+            write_capture = time.time()
 
             # write frame to display and pose estimation queue
             qwrite(self.display_frame_queue, self.display_frame_lock, (frame, frame_time), clear=True)
@@ -284,6 +289,8 @@ class Camera(object):
             # if recording, write frames to write queue
             if write_frames:
                 qwrite(self.write_frame_queue, self.write_frame_lock, (frame, frame_time))
+
+            commands_capture = time.time()
 
             cmd = qread(self.instruct_queue, self.instruct_lock)
             if cmd is not None:
@@ -295,7 +302,11 @@ class Camera(object):
                 else:
                     qwrite(self.instruct_queue, self.instruct_lock, cmd)
 
-            # print("capture rate = %d" % (int(1 / (time.time()-last_frame_time))))
+            end_capture = time.time()            
+
+            #print("read frame = %0.3f // write to queues = %0.3f // read commands = %0.3f" % (write_capture-start_capture, commands_capture-write_capture, end_capture-commands_capture))
+            #print("capture rate = %d" % (int(1 / (time.time()-last_frame_time))))
+
             last_frame_time = time.time()
                     
     
@@ -380,17 +391,17 @@ class Camera(object):
         self.pose_process.daemon = True
         self.pose_process.start()
 
-        ### wait for signal that dlc live is initialialized to return
-        pose_init = False
-        while not pose_init:
-            msg = qread(self.instruct_queue, self.instruct_lock)
-            if msg is not None:
-                if msg == ("Main", "Pose", True):
-                    pose_init = True
-                else:
-                    qwrite(self.instruct_queue, self.instruct_lock, msg)
+        # ### wait for signal that dlc live is initialialized to return
+        # pose_init = False
+        # while not pose_init:
+        #     msg = qread(self.instruct_queue, self.instruct_lock)
+        #     if msg is not None:
+        #         if msg == ("Main", "Pose", True):
+        #             pose_init = True
+        #         else:
+        #             qwrite(self.instruct_queue, self.instruct_lock, msg)
 
-        qwrite(self.instruct_queue, self.instruct_lock, ("MESSAGE", "Pose", True))
+        # qwrite(self.instruct_queue, self.instruct_lock, ("MESSAGE", "Pose", True))
 
         return True
 
@@ -415,7 +426,7 @@ class Camera(object):
                         if pose is not None:
                             dlc_init = True
 
-            qwrite(self.instruct_queue, self.instruct_lock, ("Main", "Pose", True))
+            qwrite(self.instruct_queue, self.instruct_lock, ("MESSAGE", "Pose", True))
 
             # start pose estimation
             self.pose_on_thread()
@@ -451,8 +462,12 @@ class Camera(object):
 
                 frame, frame_ts = frame_read
 
+                frame_read_time = time.time()
+
                 pose = self.dlc_live.get_pose(frame)
                 pose_time = time.time()
+
+                get_pose_time = time.time()
 
                 # write pose for display_queue
                 qwrite(self.pose_display_queue, self.pose_display_lock, (pose), clear=True)
@@ -461,9 +476,12 @@ class Camera(object):
                 if write_pose:
                     qwrite(self.pose_write_queue, self.pose_write_lock, (pose, frame_ts, pose_time))
 
-                cur_time = time.time()
-                # print("POSE RATE = %d" % (int(1 / (cur_time-last_pose_time))))
-                last_pose_time = cur_time
+                queue_write_time = time.time()
+
+                # print("frame read = %0.6f // get pose = %0.6f // write queue = %0.6f // total = %0.6f" % (frame_read_time-last_pose_time, get_pose_time-frame_read_time, queue_write_time-get_pose_time, queue_write_time-last_pose_time))
+                # print("POSE RATE = %d" % int(1/(get_pose_time-frame_read_time)))
+
+                last_pose_time = time.time()
                              
             cmd = qread(self.instruct_queue, self.instruct_lock)
             if cmd is not None:
@@ -510,17 +528,17 @@ class Camera(object):
         self.writer_process.daemon = True
         self.writer_process.start()
 
-        ### wait for signal that dlc live is initialialized to return
-        writer_init = False
-        while not writer_init:
-            msg = qread(self.instruct_queue, self.instruct_lock)
-            if msg is not None:
-                if msg == ("Main", "Writer", True):
-                    writer_init = True
-                else:
-                    qwrite(self.instruct_queue, self.instruct_lock, msg)
+        # ### wait for signal that dlc live is initialialized to return
+        # writer_init = False
+        # while not writer_init:
+        #     msg = qread(self.instruct_queue, self.instruct_lock)
+        #     if msg is not None:
+        #         if msg == ("Main", "Writer", True):
+        #             writer_init = True
+        #         else:
+        #             qwrite(self.instruct_queue, self.instruct_lock, msg)
 
-        qwrite(self.instruct_queue, self.instruct_lock, ("MESSAGE", "Writer", True))
+        # qwrite(self.instruct_queue, self.instruct_lock, ("MESSAGE", "Writer", True))
 
         return True
 
@@ -550,7 +568,7 @@ class Camera(object):
                                                 self.im_size)
 
             ### send signal that writer is initialized
-            qwrite(self.instruct_queue, self.instruct_lock, ("Main", "Writer", True))
+            qwrite(self.instruct_queue, self.instruct_lock, ("MESSAGE", "Writer", True))
 
             ### run writer loop until video is closed
             self.write_on_thread()
@@ -640,8 +658,6 @@ class Camera(object):
                         writer_done = True
                     else:
                         qwrite(self.instruct_queue, self.instruct_lock, msg)
-
-            print("done")
             
             ### send message and terminate process
             qwrite(self.instruct_queue, self.instruct_lock, ("MESSAGE", "Writer", False))
@@ -651,6 +667,26 @@ class Camera(object):
 
 
     def get_display_frame(self):
+        """ Get latest frame for display
+        
+        Returns
+        -------
+        :class:`numpy.ndarray`
+            the lastest frame
+        """
+
+        frame_read = qread(self.display_frame_queue, self.display_frame_lock)
+        if frame_read is not None:
+            frame, _ = frame_read
+            if self.display_resize != 1:
+                frame = cv2.resize(frame, (int(frame.shape[1]*self.display_resize), int(frame.shape[0]*self.display_resize)))
+        else:
+            frame = None
+
+        return frame
+
+
+    def get_display_frame2(self):
         """ Return frame to be displayed
         
         Returns
@@ -696,6 +732,26 @@ class Camera(object):
             frame = None
             
         return frame
+
+
+    def get_display_pose(self):
+        """ Get latest pose for display
+        
+        Returns
+        -------
+        :class:`numpy.ndarray`
+            the latest pose as a numpy array
+        """
+
+        # if self.display_keypoints:
+        new_pose = qread(self.pose_display_queue, self.pose_display_lock)
+        if new_pose is not None:
+            if self.display_resize != 1:
+                new_pose[:, :2] *= self.display_resize
+            self.display_pose = new_pose
+
+        return self.display_pose
+        
 
 
     def set_display_colors(self, n_colors):
