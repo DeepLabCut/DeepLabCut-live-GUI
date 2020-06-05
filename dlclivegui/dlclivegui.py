@@ -16,20 +16,20 @@ import glob
 import json
 import datetime
 import inspect
-import pickle
-import time
 
 from PIL import Image, ImageTk, ImageDraw
 import colorcet as cc
 import cv2
-import pandas as pd
 
-from dlclivegui import camera
+from dlclivegui import CameraPoseProcess
 from dlclivegui import processor
-from dlclivegui.tkutil import SettingsWindow
-
+from cameracontrol import camera
+from cameracontrol.queue import ClearableMPQueue
+from cameracontrol.tkutil import SettingsWindow
 from dlclive import DLCLive
-from dlclive.display import Display
+
+
+
 
 
 class DLCLiveGUI(object):
@@ -54,13 +54,8 @@ class DLCLiveGUI(object):
 
         ### initialize variables
 
-        self.cam = None
-        self.cam_is_open = False
-        self.pose_is_open = False
-        self.writer_is_open = False
-        self.vid_out = None
-        self.dlc_live = None
-        self.proc = None
+        self.cam_pose_proc = None
+        self.dlc_proc = None
 
         self.display_window = None
         self.display_cmap = None
@@ -180,8 +175,9 @@ class DLCLiveGUI(object):
         """ Initialize camera
         """
 
-        if self.cam:
-            self.close_camera()
+        if self.cam_pose_proc is not None:
+            if self.cam_pose_proc.proc_is_alive():
+                self.cam_pose_proc.stop_proc()
 
         this_cam = self.get_current_camera()
 
@@ -202,31 +198,21 @@ class DLCLiveGUI(object):
                 self.cam_setup_window.title("Setting up camera...")
                 Label(self.cam_setup_window, text="Setting up camera, please wait...").pack()
                 self.cam_setup_window.update()
-                self.check_cam_open()
 
                 cam_obj = getattr(camera, this_cam['type'])
-                self.cam = cam_obj(**this_cam['params'])
+                cam = cam_obj(**this_cam['params'])
+                self.q_to_process = ClearableMPQueue()
+                self.q_from_process = ClearableMPQueue()
+                self.cam_pose_proc = CameraPoseProcess(cam, self.q_to_process, self.q_from_process)
+                self.cam_pose_proc.start_proc()
 
-                self.monitor_cam_processes()
-                
-                self.cam.open_capture()
+                ret = self.cam_pose_proc.execute_command(("capture", "open"))
+                ret = self.cam_pose_proc.execute_command(("capture", "start"))
 
-                # self.cam_setup_window.destroy()
+                if cam.use_tk_display:
+                    self.set_display_window()
 
-                # if self.cam.use_tk_display:
-                #     self.set_display_window()
-
-
-    def check_cam_open(self):
-        """ Check if camera is open
-        """
-
-        if not self.cam_is_open:
-            self.cam_setup_window.after(10, self.check_cam_open)
-        else:
-            self.cam_setup_window.destroy()
-            if self.cam.use_tk_display:
-                self.set_display_window()
+                self.cam_setup_window.destroy()
 
 
     def get_current_camera(self):
@@ -417,15 +403,19 @@ class DLCLiveGUI(object):
         """ Display a frame in display window
         """
 
-        if self.cam and self.display_window:
+        if self.cam_pose_proc and self.display_window:
 
-            frame = self.cam.get_display_frame()
+            frame = self.cam_pose_proc.get_display_frame()
 
             if frame is not None:
 
+                if frame.ndim == 3:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
                 img = Image.fromarray(frame)
 
-                pose = self.cam.get_display_pose() if self.display_keypoints.get() else None
+                pose = self.cam_pose_proc.get_display_pose() if self.display_keypoints.get() else None
+
                 if pose is not None:
 
                     im_size = (frame.shape[1], frame.shape[0])
@@ -479,7 +469,8 @@ class DLCLiveGUI(object):
     def edit_dlc_display(self):
 
         display_options = self.cfg['dlc_display_options'][self.dlc_option.get()]
-        dlc_display_settings = {'color map' : {'value' : display_options['cmap'], 'dtype' : str, 'restrictions' : ['bgy', 'kbc', 'bmw', 'bmy', 'kgy', 'fire']},
+
+        dlc_display_settings = {'color map' : {'value' : display_options['cmap'], 'dtype' : str, 'restriction' : ['bgy', 'kbc', 'bmw', 'bmy', 'kgy', 'fire']},
                                 'radius' : {'value' : display_options['radius'], 'dtype' : int},
                                 'likelihood threshold' : {'value' : display_options['lik_thresh'], 'dtype' : float}}
 
@@ -492,35 +483,25 @@ class DLCLiveGUI(object):
         display_options['radius'] = display_settings['radius']
         display_options['lik_thresh'] = display_settings['likelihood threshold']
 
+        self.display_cmap = display_options['cmap']
+        self.display_radius = display_options['radius']
+        self.display_lik_thresh = display_options['lik_thresh']
+
         self.cfg['dlc_display_options'][self.dlc_option.get()] = display_options
         self.save_config()
-
-
-    def monitor_cam_processes(self):
-
-        if self.cam:
-            msg = self.cam.monitor_processes()
-            if msg is not None:
-                if msg[0] == "Capture":
-                    self.cam_is_open = msg[1]
-                elif msg[0] == "Pose":
-                    self.pose_is_open = msg[1]
-                elif msg[0] == "Writer":
-                    self.writer_is_open = msg[1]
-            self.window.after(10, self.monitor_cam_processes)
 
 
     def close_camera(self):
         """ Close capture process and display
         """
 
-        if self.cam:
-            self.cam.close()
-            if self.cam.use_tk_display:
+        if self.cam_pose_proc:
+            if self.cam_pose_proc.device.use_tk_display:
                 self.display_window.destroy()
                 self.display_window = None
-        self.cam = None
-        self.cam_is_open = False
+            self.cam_pose_proc.stop_proc()
+
+        self.cam_pose_proc = None
 
 
     def change_dlc_option(self, event=None):
@@ -667,6 +648,7 @@ class DLCLiveGUI(object):
         """
 
         del self.cfg['dlc_options'][self.dlc_option.get()]
+        del self.cfg['dlc_display_options'][self.dlc_option.get()]
         self.dlc_options_entry['values'] = tuple(self.cfg['dlc_options'].keys()) + ("Add DLC",)
         self.dlc_option.set('')
         self.save_config()
@@ -682,29 +664,22 @@ class DLCLiveGUI(object):
         self.dlc_setup_window.title("Setting up DLC...")
         Label(self.dlc_setup_window, text="Setting up DLC, please wait...").pack()
         
-        self.check_dlc_open()
 
         dlc_params = self.cfg['dlc_options'][self.dlc_option.get()]
-        dlc_params['processor'] = self.proc
-        self.cam.set_dlc_params(dlc_params)
+        dlc_params['processor'] = self.dlc_proc
 
-        self.cam.open_pose()
+        ret = self.cam_pose_proc.execute_command(("pose", "open", dlc_params))
+        ret = self.cam_pose_proc.execute_command(("pose", "start"))
 
-
-    def check_dlc_open(self):
-
-        if not self.pose_is_open:
-            self.dlc_setup_window.after(10, self.check_dlc_open)
-        else:
-            self.dlc_setup_window.destroy()
+        self.dlc_setup_window.destroy()
 
 
     def stop_pose(self):
         """ Stop pose process
         """
 
-        if self.cam:
-            self.cam.close_pose()
+        if self.cam_pose_proc:
+            self.cam_pose_proc.execute_command(("pose", "stop"))
 
 
     def add_subject(self):
@@ -768,7 +743,7 @@ class DLCLiveGUI(object):
         for i in range(1, len(self.proc_param_names)):
             proc_param_dict[self.proc_param_names[i]] = self.proc_param_default_types[i](self.proc_param_values[i-1].get())
 
-        self.proc = self.proc_object(**proc_param_dict)
+        self.dlc_proc = self.proc_object(**proc_param_dict)
         gui.destroy()
         self.proc_button['text'] = 'Reset'
 
@@ -800,12 +775,12 @@ class DLCLiveGUI(object):
         ### check if video is currently open ###
 
         if self.record_on.get() > -1:
-            messagebox.showerror("Video Open", "Video is currently open! Please release the current video (click 'Save Video' of 'Delete Video', even if no frames have been recorded) before setting up a new one.", parent=self.window)
+            messagebox.showerror("Session Open", "Session is currently open! Please release the current video (click 'Save Video' of 'Delete Video', even if no frames have been recorded) before setting up a new one.", parent=self.window)
             return 
 
         ### check if camera is already set up ###
 
-        if not self.cam:
+        if not self.cam_pose_proc:
             messagebox.showerror("No Camera", "No camera is found! Please initialize a camera before setting up the video.", parent=self.window)
             return 
 
@@ -814,61 +789,50 @@ class DLCLiveGUI(object):
         self.session_setup_window = Toplevel(self.window)
         self.session_setup_window.title("Setting up session...")
         Label(self.session_setup_window, text="Setting up session, please wait...").pack()
-        self.check_writer_open()
+        #self.session_setup_window.update()
 
         ### set up file name (get date and create directory)
 
-        month = datetime.datetime.now().month
-        month = str(month) if month >= 10 else '0'+str(month)
-        day = datetime.datetime.now().day
-        day = str(day) if day >= 10 else '0'+str(day)
-        year = str(datetime.datetime.now().year)
-        date = year+'-'+month+'-'+day
+        dt = datetime.datetime.now()
+        date = f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d}"
         self.out_dir = self.directory.get()
         if not os.path.isdir(os.path.normpath(self.out_dir)):
             os.makedirs(os.path.normpath(self.out_dir))
 
         ### create output file names
 
-        self.base_name = self.camera_name.get().replace(" ", "") + '_' + self.subject.get() + '_' + date + '_' + self.attempt.get()
-        self.vid_file = os.path.normpath(self.out_dir + '/VIDEO_' + self.base_name + '.avi')
-        self.ts_file = os.path.normpath(self.out_dir + '/TIMESTAMPS_' + self.base_name + '.pickle')
-        self.dlc_file = os.path.normpath(self.out_dir + '/DLC_' + self.base_name + '.h5')
-        self.proc_file = os.path.normpath(self.out_dir + '/PROC_' + self.base_name + '.pickle')
+        self.base_name = os.path.normpath(f"{self.out_dir}/{self.camera_name.get().replace(' ', '')}_{self.subject.get()}_{date}_{self.attempt.get()}")
+        #self.vid_file = os.path.normpath(self.out_dir + '/VIDEO_' + self.base_name + '.avi')
+        #self.ts_file = os.path.normpath(self.out_dir + '/TIMESTAMPS_' + self.base_name + '.pickle')
+        #self.dlc_file = os.path.normpath(self.out_dir + '/DLC_' + self.base_name + '.h5')
+        #self.proc_file = os.path.normpath(self.out_dir + '/PROC_' + self.base_name + '.pickle')
 
         ### check if files already exist
 
-        if os.path.isfile(self.vid_file) or os.path.isfile(self.ts_file) or os.path.isfile(self.dlc_file) or os.path.isfile(self.proc_file):
+        fs = glob.glob(f"{self.base_name}*")
+        if len(fs) > 0:
             overwrite = messagebox.askyesno("Files Exist", "Files already exist with attempt number = {}. Would you like to overwrite the file?".format(self.attempt.get()), parent=self.session_setup_window)
             if not overwrite:
                 return
 
-        ### open writer process
+        ### start writer
 
-        self.cam.set_video_file(self.vid_file)
-        self.cam.open_writer()
+        ret = self.cam_pose_proc.execute_command(("write", "open", self.base_name))
+
+        self.session_setup_window.destroy()
 
         ### set GUI to Ready
 
         self.record_on.set(0)
 
 
-    def check_writer_open(self):
-
-        if not self.writer_is_open:
-            self.session_setup_window.after(10, self.check_writer_open)
-        else:
-            self.session_setup_window.destroy()
-
-
     def start_record(self):
         """ Issues command to start recording frames and poses
         """
 
-        if self.writer_is_open:
-            ret = self.cam.start_write()
-        else:
-            ret = False
+        ret = False
+        if self.cam_pose_proc is not None:
+            ret = self.cam_pose_proc.execute_command(("write", "start"))
 
         if not ret:
             messagebox.showerror("Recording Not Ready", "Recording has not been set up. Please make sure a camera and session have been initialized.", parent=self.window)
@@ -879,8 +843,8 @@ class DLCLiveGUI(object):
         """ Issues command to stop recording frames and poses
         """
 
-        if self.cam:
-            self.cam.stop_write()
+        if self.cam_pose_proc is not None:
+            ret = self.cam_pose_proc.execute_command(("write", "stop"))
             self.record_on.set(0)
 
 
@@ -892,18 +856,14 @@ class DLCLiveGUI(object):
         delete : bool, optional
             flag to delete created files, by default False
         """
-
-        ### wait for writer process to complete
         
-        self.cam.close_writer()
-
         ### perform checks ###
 
-        if not self.cam:
+        if self.cam_pose_proc is None:
             messagebox.showwarning("No Camera", "Camera has not yet been initialized, no video recorded.", parent=self.window)
             return
 
-        elif not self.vid_file:
+        elif self.record_on.get() == -1:
             messagebox.showwarning("No Video File", "Video was not set up, no video recorded.", parent=self.window)
             return
 
@@ -914,50 +874,25 @@ class DLCLiveGUI(object):
         elif delete:
             delete = messagebox.askokcancel("Delete Video?", "Do you wish to delete the video?", parent=self.window)
 
-        else:
-
-            ### get frame times. if no frames recorded, delete files
-
-            frame_times = self.cam.get_frame_times()
-            if not frame_times:
-                messagebox.showwarning("No Frames Recorded", "No frames were recorded, video will be deleted", parent=self.window)
-                delete = True
-
         ### save or delete video ###
 
         if delete:
-            os.remove(self.vid_file)
-            if os.path.isfile(self.ts_file):
-                os.remove(self.ts_file)
-            if os.path.isfile(self.dlc_file):
-                os.remove(self.dlc_file)
-            if os.path.isfile(self.proc_file):
-                os.remove(self.proc_file)
-            messagebox.showinfo("Video Deleted", "Video, timestamp, DLC, and processor files have been deleted.", parent=self.window)
-
+            ret = self.cam_pose_proc.execute_command(("write", "delete"))
+            messagebox.showinfo("Video Deleted", "Video and timestamp files have been deleted.", parent=self.window)
         else:
-
-            # save timestamps as pickle file. Includes frame_times, ttl_in_times, and ttl_out_times
-            pickle.dump({'frame' : frame_times}, open(self.ts_file, 'wb'))
-
-            # save deeplabcut data as pandas data frame (same format as deeplabcut.analyze_videos)
-            pose_df = self.cam.get_pose_df()
-            if pose_df is not None:
-                pose_df.to_hdf(self.dlc_file, key='df_with_missing', mode='w')
-
-            # save pickle file with data from processor
-            if self.proc:
-                self.proc.save(self.proc_file)
-
-            messagebox.showinfo("Files Saved", "Files have been saved.")
+            ret = self.cam_pose_proc.execute_command(("write", "save"))
+            if ret:
+                messagebox.showinfo("Files Saved", "Files have been saved.")
+            else:
+                messagebox.showwarning("No Frames Recorded", "No frames were recorded, video was deleted", parent=self.window)
 
         self.record_on.set(-1)
 
 
     def closeGUI(self):
 
-        if self.cam:
-            self.cam.close()
+        if self.cam_pose_proc:
+            self.cam_pose_proc.stop_proc()
 
         self.window.destroy()
 
@@ -1087,7 +1022,7 @@ class DLCLiveGUI(object):
 
         Label(self.window, text="Record: ").grid(sticky="w",row=cur_row, column=0)
         self.record_on = IntVar(value=-1)
-        Radiobutton(self.window, text="Ready", selectcolor="blue", indicatoron=0, variable=self.record_on, value=0).grid(stick="nsew", row=cur_row, column=1)
+        Radiobutton(self.window, text="Ready", selectcolor="blue", indicatoron=0, variable=self.record_on, value=0, state="disabled").grid(stick="nsew", row=cur_row, column=1)
         Radiobutton(self.window, text="On", selectcolor='green', indicatoron=0, variable=self.record_on, value=1, command=self.start_record).grid(sticky="nsew", row=cur_row+1, column=1)
         Radiobutton(self.window, text="Off", selectcolor='red', indicatoron=0, variable=self.record_on, value=-1, command=self.stop_record).grid(sticky="nsew", row=cur_row+2, column=1)
         Button(self.window, text="Save Video", command=lambda: self.save_vid()).grid(sticky="nsew", row=cur_row+1, column=2)
@@ -1113,8 +1048,8 @@ class DLCLiveGUI(object):
 
 def main():
 
-    import multiprocess as mp
-    mp.set_start_method("spawn")
+    # import multiprocess as mp
+    # mp.set_start_method("spawn")
 
     dlc_live_gui = DLCLiveGUI()
     dlc_live_gui.run()
