@@ -24,12 +24,8 @@ import cv2
 from dlclivegui import CameraPoseProcess
 from dlclivegui import processor
 from cameracontrol import camera
-from cameracontrol.queue import ClearableMPQueue
 from cameracontrol.tkutil import SettingsWindow
 from dlclive import DLCLive
-
-
-
 
 
 class DLCLiveGUI(object):
@@ -176,8 +172,7 @@ class DLCLiveGUI(object):
         """
 
         if self.cam_pose_proc is not None:
-            if self.cam_pose_proc.proc_is_alive():
-                self.cam_pose_proc.stop_proc()
+            self.stop_procs()
 
         this_cam = self.get_current_camera()
 
@@ -201,10 +196,8 @@ class DLCLiveGUI(object):
 
                 cam_obj = getattr(camera, this_cam['type'])
                 cam = cam_obj(**this_cam['params'])
-                self.q_to_process = ClearableMPQueue()
-                self.q_from_process = ClearableMPQueue()
-                self.cam_pose_proc = CameraPoseProcess(cam, self.q_to_process, self.q_from_process)
-                self.cam_pose_proc.start_proc()
+                self.cam_pose_proc = CameraPoseProcess(cam)
+                self.cam_pose_proc.start_procs()
 
                 ret = self.cam_pose_proc.execute_command(("capture", "open"))
                 ret = self.cam_pose_proc.execute_command(("capture", "start"))
@@ -499,7 +492,7 @@ class DLCLiveGUI(object):
             if self.cam_pose_proc.device.use_tk_display:
                 self.display_window.destroy()
                 self.display_window = None
-            self.cam_pose_proc.stop_proc()
+            self.cam_pose_proc.stop_procs()
 
         self.cam_pose_proc = None
 
@@ -679,7 +672,7 @@ class DLCLiveGUI(object):
         """
 
         if self.cam_pose_proc:
-            self.cam_pose_proc.execute_command(("pose", "stop"))
+            ret = self.cam_pose_proc.execute_command(("pose", "end"))
 
 
     def add_subject(self):
@@ -817,7 +810,9 @@ class DLCLiveGUI(object):
 
         ### start writer
 
-        ret = self.cam_pose_proc.execute_command(("write", "open", self.base_name))
+        ret = self.cam_pose_proc.execute_command(("writer", "open", self.base_name))
+        ret = self.cam_pose_proc.execute_command(("writer", "start", self.base_name))
+
 
         self.session_setup_window.destroy()
 
@@ -832,7 +827,8 @@ class DLCLiveGUI(object):
 
         ret = False
         if self.cam_pose_proc is not None:
-            ret = self.cam_pose_proc.execute_command(("write", "start"))
+            ret = self.cam_pose_proc.execute_command(("capture", "write"))
+            ret = self.cam_pose_proc.execute_command(("pose", "write"))
 
         if not ret:
             messagebox.showerror("Recording Not Ready", "Recording has not been set up. Please make sure a camera and session have been initialized.", parent=self.window)
@@ -844,7 +840,8 @@ class DLCLiveGUI(object):
         """
 
         if self.cam_pose_proc is not None:
-            ret = self.cam_pose_proc.execute_command(("write", "stop"))
+            ret = self.cam_pose_proc.execute_command(("capture", "stop"))
+            ret = self.cam_pose_proc.execute_command(("pose", "stop"))
             self.record_on.set(0)
 
 
@@ -876,11 +873,14 @@ class DLCLiveGUI(object):
 
         ### save or delete video ###
 
+        ret = self.cam_pose_proc.execute_command(("writer", "stop"))
+
         if delete:
-            ret = self.cam_pose_proc.execute_command(("write", "delete"))
+            ret = self.cam_pose_proc.execute_command(("writer", "delete"))
             messagebox.showinfo("Video Deleted", "Video and timestamp files have been deleted.", parent=self.window)
         else:
-            ret = self.cam_pose_proc.execute_command(("write", "save"))
+            ret = self.cam_pose_proc.execute_command(("writer", "save"))
+            ret = self.cam_pose_proc.execute_command(("pose", "save"))
             if ret:
                 messagebox.showinfo("Files Saved", "Files have been saved.")
             else:
@@ -892,7 +892,7 @@ class DLCLiveGUI(object):
     def closeGUI(self):
 
         if self.cam_pose_proc:
-            self.cam_pose_proc.stop_proc()
+            self.cam_pose_proc.stop_procs()
 
         self.window.destroy()
 
