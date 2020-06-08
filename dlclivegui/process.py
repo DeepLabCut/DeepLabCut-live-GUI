@@ -44,126 +44,211 @@ class CameraPoseProcess(CameraProcess):
 
         super().__init__(device, ctx)
 
-        self.display_pose_queue = ClearableMPQueue(2, ctx=ctx)
+        self.write_pose_queue = ClearableMPQueue(ctx=self.ctx)
+        self.display_pose_queue = ClearableMPQueue(2, ctx=self.ctx)
+        self.pose_process = None
 
-        self.pose_process = ctx.Process(target=self._run_pose,
-                                        args=(self.frame_shared, self.frame_time),
-                                        daemon=True)
 
-                                    
-    def start_procs(self):
+    def start_pose_process(self, dlc_params, timeout=300):
 
-        super().start_procs()
+        self.pose_process = self.ctx.Process(target=self._run_pose,
+                                             args=(self.frame_shared, self.frame_time, dlc_params),
+                                             daemon=True)
         self.pose_process.start()
 
+        stime = time.time()
+        while time.time()-stime < timeout:
+            cmd = self.q_from_process.read()
+            if cmd is not None:
+                if (cmd[0] == "pose") and (cmd[1] == "start"):
+                    return cmd[2]
+                else:
+                    self.q_to_process.write(cmd)
 
-    def stop_procs(self, force=False, timeout=5):
 
-        cap, write = super().stop_procs(force, timeout)
+    def _run_pose(self, frame_shared, frame_time, dlc_params):
 
-        if not force:
-            pose_ret = self.execute_command(("pose", "close"))
+        res = self.device.im_size
+        self.frame = np.frombuffer(frame_shared.get_obj(), dtype='uint8').reshape(res[1], res[0], 3)
+        self.frame_time = frame_time
 
-            if pose_ret:
-                self.pose_process.join(timeout)
-        
-        else:
+        ret = self._open_dlc_live(dlc_params)
+        self.q_from_process.write(("pose", "start", ret))
 
-            self.pose_process.terminate()
-
-        return cap, write, self.pose_process.exitcode
+        self._pose_loop()
+        self.q_from_process.write(("pose", "end"))
 
 
     def _open_dlc_live(self, dlc_params):
 
         ret = False
+        self.dlc = DLCLive(**dlc_params)
+        if self.frame is not None:
+            self.dlc.init_inference(self.frame)
+            ret = True
 
-        if not self.pose_open:
-            self.dlc = DLCLive(**dlc_params)
-            if self.frame is not None:
-                self.dlc.init_inference(self.frame)
-                self.pose_open = True
-
-        return self.pose_open
+        return ret
 
 
     def _pose_loop(self):
         """ Conduct pose estimation using deeplabcut-live in loop
         """
 
+        run = True
+        write = False
+        pose_frame_time = 0
         ltime = time.time()
 
-        while self.pose_on:
+        while run:
 
-            if self.frame_time.value > self.pose_frame_time:
+            if self.frame_time.value > pose_frame_time:
 
                 stime = time.time()
 
-                self.pose = self.dlc.get_pose(self.frame)
-                self.pose_time = time.time()
-                self.pose_frame_time = self.frame_time.value
+                pose = self.dlc.get_pose(self.frame)
+                pose_time = time.time()
+                pose_frame_time = self.frame_time.value
 
                 ptime = time.time()
 
                 if self.device.use_tk_display:
-                    self.display_pose_queue.write(self.pose)
+                    self.display_pose_queue.write(pose)
 
-                if self.pose_write:
-                    self.write_poses.append(self.pose)
-                    self.write_pose_times.append(self.pose_time)
-                    self.write_pose_frame_times.append(self.pose_frame_time)
+                if write:
+                    self.write_pose_queue((pose, pose_time, pose_frame_time))
 
                 wtime = time.time()
 
-                print(f"POSE RATE = {int(1/(wtime-ltime))}")
+                print(f"POSE RATE = {int(1/(wtime-ltime))} / GET POSE = {ptime-stime:0.6f} / WRITE TIME = {wtime-ptime:0.6f}")
 
                 ltime = wtime
 
-
-    def _start_pose_estimation(self):
-        """ opens pose estimation thread on background process
-        """
-
-        if self.pose_open and (not self.pose_on):
-
-            self.pose_on = True
-            self.pose_frame_time = 0
-
-            self.write_poses = []
-            self.write_pose_times = []
-            self.write_pose_frame_times = []
-
-            self.pose_thread = threading.Thread(target=self._pose_loop)
-            self.pose_thread.daemon = True
-            self.pose_thread.start()
-
-        return self.pose_on
+                cmd = self.q_to_process.read()
+                if cmd is not None:
+                    if cmd[0] == "pose":
+                        if cmd[1] == "write":
+                            write = cmd[2]
+                        elif cmd[1] == "end":
+                            run = False
+                    else:
+                        self.q_to_process.write(cmd)
 
     
-    def _start_pose_write(self):
+    def start_record(self):
 
-        if (self.pose_on) and (not self.pose_write):
-            self.pose_write = True
-        return self.pose_write
+        ret = super().start_record()
 
+        if self.pose_process.is_alive() and self.writer_process.is_alive():
+            self.q_to_process.write(("pose", "write", True))
+            
+            stime = time.time()
+            while time.time()-stime < timeout:
+                cmd = self.q_from_process.read()
+                if cmd is not None:
+                    if (cmd[0] == "pose") and (cmd[1] == "write"):
+                        ret = cmd[2]
+                        break
+                    else:
+                        self.q_from_process.write(cmd)
 
-    def _stop_pose_write(self):
-
-        if self.pose_write:
-            self.pose_write = False
-        return self.pose_write
-
-
-    def _stop_pose_estimation(self):
-
-        if self.pose_on:
-            self.pose_on = False
-            self.pose_thread.join(5)
-
-        return not self.pose_on
+        return ret
 
 
-    def _save_pose(self, filename):
+    def stop_record(self):
+
+        ret = super().start_record()
+
+        if self.pose_process.is_alive() and self.writer_process.is_alive():
+            self.q_to_process.write(("pose", "write", False)) 
+
+            stime = time.time()
+            while time.time()-stime < timeout:
+                cmd = self.q_from_process.read()
+                if cmd is not None:
+                    if (cmd[0] == "pose") and (cmd[1] == "write"):
+                        ret = not cmd[2]
+                        break
+                    else:
+                        self.q_from_process.write(cmd)
+                        
+        return ret
+
+
+    def stop_pose_process(self):
+
+        ret = True
+        if self.pose_process is not None:
+            if self.pose_process.is_alive():
+                self.q_to_process.write(("pose", "end"))
+
+                while True:
+                    cmd = self.q_from_process.read()
+                    if cmd is not None:
+                        if cmd[0] == "pose":
+                            if cmd[1] == "end":
+                                break
+                        else:
+                            self.q_from_process.write(cmd)
+                    
+                self.pose_process.join(5)
+                if self.pose_process.is_alive():
+                    self.pose_process.terminate()
+
+        return True
+
+
+    # def _start_pose_estimation(self):
+    #     """ opens pose estimation thread on background process
+    #     """
+
+    #     if self.pose_open and (not self.pose_on):
+
+    #         self.pose_on = True
+    #         self.pose_frame_time = 0
+
+    #         self.write_poses = []
+    #         self.write_pose_times = []
+    #         self.write_pose_frame_times = []
+
+    #         self.pose_thread = threading.Thread(target=self._pose_loop)
+    #         self.pose_thread.daemon = True
+    #         self.pose_thread.start()
+
+    #     return self.pose_on
+
+    
+    # def _start_pose_write(self):
+
+    #     if (self.pose_on) and (not self.pose_write):
+    #         self.pose_write = True
+    #     return self.pose_write
+
+
+    # def _stop_pose_write(self):
+
+    #     if self.pose_write:
+    #         self.pose_write = False
+    #     return self.pose_write
+
+
+    # def _stop_pose_estimation(self):
+
+    #     if self.pose_on:
+    #         self.pose_on = False
+    #         self.pose_thread.join(5)
+
+    #     return not self.pose_on
+
+    
+    def _save_video(self):
+
+        ret = super()._save_video()
+        if ret:
+            ret = self._save_pose()
+        return ret
+
+
+    def _save_pose(self):
         """ Saves a pandas data frame with pose data collected while recording video
         
         Returns
@@ -174,81 +259,36 @@ class CameraPoseProcess(CameraProcess):
         
         ret = False
 
-        if (self.pose_on) and (not self.pose_write):
+        poses = []
+        pose_times = []
+        pose_frame_times = []
+        pq = self.write_pose_queue.read(clear=True, position='all')
+        if pq is not None:
+            for i in pq:
+                poses.append(pq[0])
+                pose_times.append(pq[1])
+                pose_frame_times.append(pq[2])
+            
+        if len(pose_times) > 0:
 
-            if len(self.write_pose_times) > 0:
+            dlc_file = f"{self.filename}_DLC.hdf5"
+            proc_file = f"{self.filename}_PROC"
 
-                dlc_file = f"{filename}_DLC.hdf5"
-                proc_file = f"{filename}_PROC"
+            bodyparts = self.dlc.cfg['all_joints_names']
+            poses = np.array(poses)
+            poses = poses.reshape((poses.shape[0], poses.shape[1]*poses.shape[2]))
+            pdindex = pd.MultiIndex.from_product([bodyparts, ['x', 'y', 'likelihood']], names=['bodyparts', 'coords'])
+            pose_df = pd.DataFrame(poses, columns=pdindex)
+            pose_df['frame_time'] = pose_frame_times
+            pose_df['pose_time'] = pose_times
 
-                bodyparts = self.dlc.cfg['all_joints_names']
-                poses = np.array(self.write_poses)
-                poses = poses.reshape((poses.shape[0], poses.shape[1]*poses.shape[2]))
-                pdindex = pd.MultiIndex.from_product([bodyparts, ['x', 'y', 'likelihood']], names=['bodyparts', 'coords'])
-                pose_df = pd.DataFrame(poses, columns=pdindex)
-                pose_df['frame_time'] = self.write_pose_frame_times
-                pose_df['pose_time'] = self.write_pose_times
+            pose_df.to_hdf(dlc_file, key='df_with_missing', mode='w')
+            if self.dlc.processor is not None:
+                self.dlc.processor.save(proc_file)
 
-                pose_df.to_hdf(dlc_file, key='df_with_missing', mode='w')
-                if self.dlc.processor is not None:
-                    self.dlc.processor.save(proc_file)
-
-                ret = True
+            ret = True
 
         return ret
-
-
-    def _run_pose(self, frame_shared, frame_time):
-
-        res = self.device.im_size
-        self.frame = np.frombuffer(frame_shared.get_obj(), dtype='uint8').reshape(res[1], res[0], 3)
-        self.frame_time = frame_time
-
-        run = True
-        self.pose_open = False
-        self.pose_on = False
-        self.pose_write = False
-
-        while run:
-
-            cmd = self.q_to_process.read()
-
-            if cmd is not None:
-
-                if cmd[0] == "pose":
-
-                    if cmd[1] == "open":
-                        ret = self._open_dlc_live(cmd[2])
-                        self.q_from_process.write(cmd + (ret,))
-
-                    if cmd[1] == "start":
-                        ret = self._start_pose_estimation()
-                        self.q_from_process.write(cmd + (ret,))
-
-                    if cmd[1] == "write":
-                        ret = self._start_pose_write()
-                        self.q_from_process.write(cmd + (ret,))
-
-                    if cmd[1] == "stop":
-                        ret = self._stop_pose_write()
-                        self.q_from_process.write(cmd + (ret,))
-
-                    if cmd[1] == "end":
-                        ret = self._stop_pose_estimation()
-                        self.q_from_process.write(cmd + (ret,))
-
-                    if cmd[1] == "save":
-                        ret = self._save_pose(cmd[2])
-                        self.q_from_process.write(cmd + (ret,))
-
-                    if cmd[1] == "close":
-                        if not self.pose_on:
-                            run = False
-                        self.q_from_process.write(cmd + (not run,))
-                
-                else:
-
-                    self.q_to_process.write(cmd)
 
 
     def get_display_pose(self):

@@ -197,10 +197,7 @@ class DLCLiveGUI(object):
                 cam_obj = getattr(camera, this_cam['type'])
                 cam = cam_obj(**this_cam['params'])
                 self.cam_pose_proc = CameraPoseProcess(cam)
-                self.cam_pose_proc.start_procs()
-
-                ret = self.cam_pose_proc.execute_command(("capture", "open"))
-                ret = self.cam_pose_proc.execute_command(("capture", "start"))
+                ret = self.cam_pose_proc.start_capture_process()
 
                 if cam.use_tk_display:
                     self.set_display_window()
@@ -492,7 +489,7 @@ class DLCLiveGUI(object):
             if self.cam_pose_proc.device.use_tk_display:
                 self.display_window.destroy()
                 self.display_window = None
-            self.cam_pose_proc.stop_procs()
+            ret = self.cam_pose_proc.stop_capture_process()
 
         self.cam_pose_proc = None
 
@@ -656,13 +653,11 @@ class DLCLiveGUI(object):
         self.dlc_setup_window = Toplevel(self.window)
         self.dlc_setup_window.title("Setting up DLC...")
         Label(self.dlc_setup_window, text="Setting up DLC, please wait...").pack()
-        
 
         dlc_params = self.cfg['dlc_options'][self.dlc_option.get()]
         dlc_params['processor'] = self.dlc_proc
 
-        ret = self.cam_pose_proc.execute_command(("pose", "open", dlc_params))
-        ret = self.cam_pose_proc.execute_command(("pose", "start"))
+        ret = self.cam_pose_proc.start_pose_process(dlc_params)
 
         self.dlc_setup_window.destroy()
 
@@ -672,7 +667,7 @@ class DLCLiveGUI(object):
         """
 
         if self.cam_pose_proc:
-            ret = self.cam_pose_proc.execute_command(("pose", "end"))
+            ret = self.cam_pose_proc.stop_pose_process()
 
 
     def add_subject(self):
@@ -809,10 +804,8 @@ class DLCLiveGUI(object):
                 return
 
         ### start writer
-
-        ret = self.cam_pose_proc.execute_command(("writer", "open", self.base_name))
-        ret = self.cam_pose_proc.execute_command(("writer", "start", self.base_name))
-
+        
+        ret = self.cam_pose_proc.start_writer_process(self.base_name)
 
         self.session_setup_window.destroy()
 
@@ -827,8 +820,7 @@ class DLCLiveGUI(object):
 
         ret = False
         if self.cam_pose_proc is not None:
-            ret = self.cam_pose_proc.execute_command(("capture", "write"))
-            ret = self.cam_pose_proc.execute_command(("pose", "write"))
+            ret = self.cam_pose_proc.start_record()
 
         if not ret:
             messagebox.showerror("Recording Not Ready", "Recording has not been set up. Please make sure a camera and session have been initialized.", parent=self.window)
@@ -840,8 +832,7 @@ class DLCLiveGUI(object):
         """
 
         if self.cam_pose_proc is not None:
-            ret = self.cam_pose_proc.execute_command(("capture", "stop"))
-            ret = self.cam_pose_proc.execute_command(("pose", "stop"))
+            ret = self.cam_pose_proc.stop_record()
             self.record_on.set(0)
 
 
@@ -873,14 +864,11 @@ class DLCLiveGUI(object):
 
         ### save or delete video ###
 
-        ret = self.cam_pose_proc.execute_command(("writer", "stop"))
-
         if delete:
-            ret = self.cam_pose_proc.execute_command(("writer", "delete"))
+            ret = self.cam_pose_proc.stop_writer_process(save=False)
             messagebox.showinfo("Video Deleted", "Video and timestamp files have been deleted.", parent=self.window)
         else:
-            ret = self.cam_pose_proc.execute_command(("writer", "save"))
-            ret = self.cam_pose_proc.execute_command(("pose", "save"))
+            ret = self.cam_pose_proc.stop_writer_process(save=True)
             if ret:
                 messagebox.showinfo("Files Saved", "Files have been saved.")
             else:
@@ -892,7 +880,9 @@ class DLCLiveGUI(object):
     def closeGUI(self):
 
         if self.cam_pose_proc:
-            self.cam_pose_proc.stop_procs()
+            ret = self.cam_pose_proc.stop_writer_process()
+            ret = self.cam_pose_proc.stop_pose_process()
+            ret = self.cam_pose_proc.stop_capture_process()
 
         self.window.destroy()
 
