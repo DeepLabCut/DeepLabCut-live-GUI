@@ -25,7 +25,6 @@ from dlclivegui import CameraPoseProcess
 from dlclivegui import processor
 from cameracontrol import camera
 from cameracontrol.tkutil import SettingsWindow
-from dlclive import DLCLive
 
 
 class DLCLiveGUI(object):
@@ -172,7 +171,8 @@ class DLCLiveGUI(object):
         """
 
         if self.cam_pose_proc is not None:
-            self.stop_procs()
+            messagebox.showerror("Camera Exists", "Camera already exists! Please close current camera before initializing a new one.")
+            return 
 
         this_cam = self.get_current_camera()
 
@@ -450,10 +450,12 @@ class DLCLiveGUI(object):
 
         else:
 
-            if self.display_window:
-                self.display_window.destroy()
-                self.display_window = None
-                self.display_colors = None
+            if self.cam_pose_proc is not None:
+                if not self.cam_pose_proc.device.use_tk_display:
+                    if self.display_window:
+                        self.display_window.destroy()
+                        self.display_window = None
+                        self.display_colors = None
 
 
     def edit_dlc_display(self):
@@ -486,7 +488,7 @@ class DLCLiveGUI(object):
         """
 
         if self.cam_pose_proc:
-            if self.cam_pose_proc.device.use_tk_display:
+            if self.display_window is not None:
                 self.display_window.destroy()
                 self.display_window = None
             ret = self.cam_pose_proc.stop_capture_process()
@@ -653,12 +655,15 @@ class DLCLiveGUI(object):
         self.dlc_setup_window = Toplevel(self.window)
         self.dlc_setup_window.title("Setting up DLC...")
         Label(self.dlc_setup_window, text="Setting up DLC, please wait...").pack()
+        self.dlc_setup_window.after(10, self.start_pose)
+        self.dlc_setup_window.mainloop()
+
+
+    def start_pose(self):
 
         dlc_params = self.cfg['dlc_options'][self.dlc_option.get()]
         dlc_params['processor'] = self.dlc_proc
-
         ret = self.cam_pose_proc.start_pose_process(dlc_params)
-
         self.dlc_setup_window.destroy()
 
 
@@ -777,7 +782,11 @@ class DLCLiveGUI(object):
         self.session_setup_window = Toplevel(self.window)
         self.session_setup_window.title("Setting up session...")
         Label(self.session_setup_window, text="Setting up session, please wait...").pack()
-        #self.session_setup_window.update()
+        self.session_setup_window.after(10, self.start_writer)
+        self.session_setup_window.mainloop()
+
+
+    def start_writer(self):
 
         ### set up file name (get date and create directory)
 
@@ -869,6 +878,7 @@ class DLCLiveGUI(object):
             messagebox.showinfo("Video Deleted", "Video and timestamp files have been deleted.", parent=self.window)
         else:
             ret = self.cam_pose_proc.stop_writer_process(save=True)
+            ret = self.cam_pose_proc.save_pose(self.base_name)
             if ret:
                 messagebox.showinfo("Files Saved", "Files have been saved.")
             else:
