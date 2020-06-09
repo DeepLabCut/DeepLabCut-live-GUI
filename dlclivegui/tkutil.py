@@ -141,8 +141,6 @@ class SettingsWindow(tk.Toplevel):
     
     def update_vals(self):
 
-        print("updating values!")
-
         names = tuple(self.settings.keys())
 
         for i in range(len(self.entry_vars)):

@@ -878,9 +878,12 @@ class DLCLiveGUI(object):
             messagebox.showinfo("Video Deleted", "Video and timestamp files have been deleted.", parent=self.window)
         else:
             ret = self.cam_pose_proc.stop_writer_process(save=True)
-            ret = self.cam_pose_proc.save_pose(self.base_name)
+            ret_pose = self.cam_pose_proc.save_pose(self.base_name)
             if ret:
-                messagebox.showinfo("Files Saved", "Files have been saved.")
+                if ret_pose:
+                    messagebox.showinfo("Files Saved", "Video, timestamp, and DLC Files have been saved.")
+                else:
+                    messagebox.showinfo("Files Saved", "Video and timestamp files have been saved.")
             else:
                 messagebox.showwarning("No Frames Recorded", "No frames were recorded, video was deleted", parent=self.window)
 
