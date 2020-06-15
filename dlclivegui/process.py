@@ -82,6 +82,13 @@ class CameraPoseProcess(CameraProcess):
         from dlclive import DLCLive
 
         ret = False
+
+        proc_params = dlc_params.pop('processor')
+        if proc_params is not None:
+            proc_obj = proc_params.pop('object', None)
+            if proc_obj is not None:
+                dlc_params['processor'] = proc_obj(**proc_params)
+
         self.dlc = DLCLive(**dlc_params)
         if self.frame is not None:
             self.dlc.init_inference(self.frame)
@@ -109,7 +116,7 @@ class CameraPoseProcess(CameraProcess):
 
                 ftime = time.time()
 
-                pose = self.dlc.get_pose(self.frame)
+                pose = self.dlc.get_pose(self.frame, frame_time=self.frame_time[0], record=write)
                 pose_time = time.time()
                 pose_frame_time = self.frame_time[0]
 
@@ -140,7 +147,7 @@ class CameraPoseProcess(CameraProcess):
 
                 ctime = time.time()
 
-                #print(f"POSE RATE = {int(1/(ctime-ftime))} / FRAME TIME = {ftime-stime:0.6f} / GET POSE = {ptime-stime:0.6f} / WRITE TIME = {wtime-ptime:0.6f} / CMD TIME = {ctime-wtime:0.6f}")
+                # print(f"POSE RATE = {int(1/(ctime-ftime))} / FRAME TIME = {ftime-stime:0.6f} / GET POSE = {ptime-stime:0.6f} / WRITE TIME = {wtime-ptime:0.6f} / CMD TIME = {ctime-wtime:0.6f}")
 
     
     def start_record(self, timeout=5):
@@ -206,57 +213,6 @@ class CameraPoseProcess(CameraProcess):
                     self.pose_process.terminate()
 
         return True
-
-
-    # def _start_pose_estimation(self):
-    #     """ opens pose estimation thread on background process
-    #     """
-
-    #     if self.pose_open and (not self.pose_on):
-
-    #         self.pose_on = True
-    #         self.pose_frame_time = 0
-
-    #         self.write_poses = []
-    #         self.write_pose_times = []
-    #         self.write_pose_frame_times = []
-
-    #         self.pose_thread = threading.Thread(target=self._pose_loop)
-    #         self.pose_thread.daemon = True
-    #         self.pose_thread.start()
-
-    #     return self.pose_on
-
-    
-    # def _start_pose_write(self):
-
-    #     if (self.pose_on) and (not self.pose_write):
-    #         self.pose_write = True
-    #     return self.pose_write
-
-
-    # def _stop_pose_write(self):
-
-    #     if self.pose_write:
-    #         self.pose_write = False
-    #     return self.pose_write
-
-
-    # def _stop_pose_estimation(self):
-
-    #     if self.pose_on:
-    #         self.pose_on = False
-    #         self.pose_thread.join(5)
-
-    #     return not self.pose_on
-
-    
-    # def _save_video(self, delete=False):
-
-    #     ret = super()._save_video(delete)
-    #     if ret:
-    #         pose_ret = self._save_pose()
-    #     return ret
 
 
     def save_pose(self, filename, timeout=60):

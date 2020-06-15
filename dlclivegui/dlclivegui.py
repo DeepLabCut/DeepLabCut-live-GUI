@@ -12,10 +12,12 @@ from tkinter import Tk, Toplevel, \
                     filedialog, messagebox, simpledialog
 from tkinter.ttk import Combobox
 import os
+import sys
 import glob
 import json
 import datetime
 import inspect
+import importlib
 
 from PIL import Image, ImageTk, ImageDraw
 import colorcet as cc
@@ -50,7 +52,7 @@ class DLCLiveGUI(object):
         ### initialize variables
 
         self.cam_pose_proc = None
-        self.dlc_proc = None
+        self.dlc_proc_params = None
 
         self.display_window = None
         self.display_cmap = None
@@ -112,7 +114,8 @@ class DLCLiveGUI(object):
         ### check config ###
 
         cfg['cameras'] = {} if 'cameras' not in cfg else cfg['cameras']
-        cfg['processor'] = () if 'processor' not in cfg else cfg['processor']
+        cfg['processor_dir'] = [] if 'processor_dir' not in cfg else cfg['processor_dir']
+        cfg['processor_args'] = {} if 'processor_args' not in cfg else cfg['processor_args']
         cfg['dlc_options'] = {} if 'dlc_options' not in cfg else cfg['dlc_options']
         cfg['dlc_display_options'] = {} if 'dlc_display_options' not in cfg else cfg['dlc_display_options']
         cfg['subjects'] = [] if 'subjects' not in cfg else cfg['subjects']
@@ -137,6 +140,10 @@ class DLCLiveGUI(object):
 
         self.camera_entry['values'] = tuple(self.cfg['cameras'].keys()) + ('Add Camera',)
         self.camera_name.set("")
+        self.dlc_proc_dir_entry['values'] = tuple(self.cfg['processor_dir'])
+        self.dlc_proc_dir.set("")
+        self.dlc_proc_name_entry['values'] = tuple()
+        self.dlc_proc_name.set("")
         self.dlc_options_entry['values'] = tuple(self.cfg['dlc_options'].keys()) + ('Add DLC',)
         self.dlc_option.set("")
         self.subject_entry['values'] = tuple(self.cfg['subjects'])
@@ -662,7 +669,7 @@ class DLCLiveGUI(object):
     def start_pose(self):
 
         dlc_params = self.cfg['dlc_options'][self.dlc_option.get()]
-        dlc_params['processor'] = self.dlc_proc
+        dlc_params['processor'] = self.dlc_proc_params
         ret = self.cam_pose_proc.start_pose_process(dlc_params)
         self.dlc_setup_window.destroy()
 
@@ -729,38 +736,140 @@ class DLCLiveGUI(object):
                 self.camera_name.set("")
                 self.save_config()
 
+    
+    def browse_dlc_processor(self):
 
-    def start_proc(self, gui):
+        new_dir = filedialog.askdirectory(parent=self.window)
+        if new_dir:
+            self.dlc_proc_dir.set(new_dir)
+            self.update_dlc_proc_list()
 
-        proc_param_dict = {}
-        for i in range(1, len(self.proc_param_names)):
-            proc_param_dict[self.proc_param_names[i]] = self.proc_param_default_types[i](self.proc_param_values[i-1].get())
-
-        self.dlc_proc = self.proc_object(**proc_param_dict)
-        gui.destroy()
-        self.proc_button['text'] = 'Reset'
+            if new_dir not in self.cfg['processor_dir']:
+                if messagebox.askyesno("Add to dropdown", "Would you like to add this directory to dropdown list?"):
+                    self.cfg['processor_dir'].append(new_dir)
+                    self.dlc_proc_dir_entry['values'] = tuple(self.cfg['processor_dir'])
+                    self.save_config()
 
 
-    def init_proc(self):
+    def rem_dlc_proc_dir(self):
 
-        ### load module ###
-        self.proc_object = getattr(processor, self.proc_entry.get())
-        args = inspect.getargspec(self.proc_object)
-        self.proc_param_names = args[0]
-        self.proc_param_default_values = args[3]
-        self.proc_param_default_types = [type(v) for v in args[3]]
-        for i in range(len(args[0])-len(args[3])):
+        if self.dlc_proc_dir.get() in self.cfg['processor_dir']:
+            self.cfg['processor_dir'].remove(self.dlc_proc_dir.get())
+            self.save_config()
+        self.dlc_proc_dir_entry['values'] = tuple(self.cfg['processor_dir'])
+        self.dlc_proc_dir.set("")
+
+
+
+    def update_dlc_proc_list(self, event=None):
+
+        ### if dlc proc module already initialized, delete module and remove from path ###
+
+        self.processor_list = []
+
+        if self.dlc_proc_dir.get():
+
+            if hasattr(self, "dlc_proc_module"):
+                sys.path.remove(sys.path[0])
+
+            new_path = os.path.normpath(os.path.dirname(self.dlc_proc_dir.get()))
+            if new_path not in sys.path:
+                sys.path.insert(0, new_path)
+
+            new_mod = os.path.basename(self.dlc_proc_dir.get())
+            if new_mod in sys.modules:
+                del sys.modules[new_mod]
+
+            ### load new module ###
+
+            processor_spec = importlib.util.find_spec(os.path.basename(self.dlc_proc_dir.get()))
+            try:
+                self.dlc_proc_module = importlib.util.module_from_spec(processor_spec)
+                processor_spec.loader.exec_module(self.dlc_proc_module)
+                # self.processor_list = inspect.getmembers(self.dlc_proc_module, inspect.isclass)
+                self.processor_list = [proc for proc in dir(self.dlc_proc_module) if '__' not in proc]
+            except AttributeError:
+                if hasattr(self, "window"):
+                    messagebox.showerror("Failed to load processors!", "Failed to load processors from directory = " + self.dlc_proc_dir.get() + ".\nPlease select a different directory.", parent=self.window)
+
+            self.dlc_proc_name_entry['values'] = tuple(self.processor_list)
+
+
+    def set_proc(self):
+
+        # proc_param_dict = {}
+        # for i in range(1, len(self.proc_param_names)):
+        #     proc_param_dict[self.proc_param_names[i]] = self.proc_param_default_types[i](self.proc_param_values[i-1].get())
+
+        # if self.dlc_proc_dir.get() not in self.cfg['processor_args']:
+        #     self.cfg['processor_args'][self.dlc_proc_dir.get()] = {}
+        # self.cfg['processor_args'][self.dlc_proc_dir.get()][self.dlc_proc_name.get()] = proc_param_dict
+        # self.save_config()
+
+        #self.dlc_proc = self.proc_object(**proc_param_dict)
+        proc_object = getattr(self.dlc_proc_module, self.dlc_proc_name.get())
+        self.dlc_proc_params = {'object' : proc_object}
+        self.dlc_proc_params.update(self.cfg['processor_args'][self.dlc_proc_dir.get()][self.dlc_proc_name.get()])
+
+
+    def clear_proc(self):
+
+        self.dlc_proc_params = None
+
+
+    def edit_proc(self):
+
+        ### get default args: load module and read arguments ###
+
+        self.proc_object = getattr(self.dlc_proc_module, self.dlc_proc_name.get())
+        def_args = inspect.getargspec(self.proc_object)
+        self.proc_param_names = def_args[0]
+        self.proc_param_default_values = def_args[3]
+        self.proc_param_default_types = [type(v) for v in def_args[3]]
+        for i in range(len(def_args[0])-len(def_args[3])):
             self.proc_param_default_values = ('',) + self.proc_param_default_values
             self.proc_param_default_types = [str] + self.proc_param_default_types
 
-        proc_param_gui = Tk()
-        self.proc_param_values = []
-        for i in range(1,len(self.proc_param_names)):
-            Label(proc_param_gui, text=self.proc_param_names[i]+": ").grid(sticky="w", row=i, column=0)
-            self.proc_param_values.append(StringVar(proc_param_gui, value=str(self.proc_param_default_values[i])))
-            Entry(proc_param_gui, textvariable=self.proc_param_values[i-1]).grid(sticky="nsew", row=i, column=1)
+        ### check for existing settings in config ###
+        
+        old_args = {}
+        if self.dlc_proc_dir.get() in self.cfg['processor_args']:
+            if self.dlc_proc_name.get() in self.cfg['processor_args'][self.dlc_proc_dir.get()]:
+                old_args = self.cfg['processor_args'][self.dlc_proc_dir.get()][self.dlc_proc_name.get()]
+        else:
+            self.cfg['processor_args'][self.dlc_proc_dir.get()] = {}
 
-        Button(proc_param_gui, text="Init Proc", command=lambda: self.start_proc(proc_param_gui)).grid(sticky="nsew", row=i+1, column=1)
+
+        ### get dictionary of arguments ###
+
+        proc_args_dict = {}
+        for i in range(1, len(self.proc_param_names)):
+            
+            if self.proc_param_names[i] in old_args:
+                this_value = old_args[self.proc_param_names[i]]
+            else:
+                this_value = self.proc_param_default_values[i]
+
+            proc_args_dict[self.proc_param_names[i]] = {'value' : this_value, 
+                                                   'dtype' : self.proc_param_default_types[i]}
+
+        proc_args_gui = SettingsWindow(title="DLC Processor Settings", settings=proc_args_dict, parent=self.window)
+        proc_args_gui.mainloop()
+
+        self.cfg['processor_args'][self.dlc_proc_dir.get()][self.dlc_proc_name.get()] = proc_args_gui.get_values()
+        self.save_config()
+
+        # proc_param_gui = Tk()
+        # self.proc_param_values = []
+        # for i in range(1,len(self.proc_param_names)):
+        #     Label(proc_param_gui, text=self.proc_param_names[i]+": ").grid(sticky="w", row=i, column=0)
+            
+
+            
+        #     self.proc_param_values.append(StringVar(proc_param_gui, value=str(self.proc_param_default_values[i])))
+        #     Entry(proc_param_gui, textvariable=self.proc_param_values[i-1]).grid(sticky="nsew", row=i, column=1)
+
+        # Button(proc_param_gui, text="Update", command=lambda: self.start_proc(proc_param_gui)).grid(sticky="nsew", row=i+1, column=1)
 
 
     def init_session(self):
@@ -950,16 +1059,31 @@ class DLCLiveGUI(object):
 
         ### set up proc ###
 
-        Label(self.window, text="Processor: ").grid(sticky='w', row=cur_row, column=0)
-        self.proc_entry= StringVar(self.window)
-        self.proc_entry = Combobox(self.window, textvariable=self.proc_entry)
-        self.proc_entry['values'] = tuple([c[0] for c in inspect.getmembers(processor, inspect.isclass)])
-        self.proc_entry.current(0)
-        self.proc_entry.grid(sticky="nsew", row=cur_row, column=1)
-        self.proc_button = Button(self.window, text="Set", command=self.init_proc)
-        self.proc_button.grid(sticky="nsew", row=cur_row, column=2)
-
+        Label(self.window, text="Processor Dir: ").grid(sticky='w', row=cur_row, column=0)
+        self.dlc_proc_dir = StringVar(self.window)
+        self.dlc_proc_dir_entry = Combobox(self.window, textvariable=self.dlc_proc_dir)
+        self.dlc_proc_dir_entry['values'] = tuple(self.cfg['processor_dir'])
+        if len(self.cfg['processor_dir']) > 0:
+            self.dlc_proc_dir_entry.current(0)
+        self.dlc_proc_dir_entry.bind("<<ComboboxSelected>>", self.update_dlc_proc_list)
+        self.dlc_proc_dir_entry.grid(sticky="nsew", row=cur_row, column=1)
+        Button(self.window, text="Browse", command=self.browse_dlc_processor).grid(sticky='nsew', row=cur_row, column=2)
+        Button(self.window, text="Remove Proc Dir", command=self.rem_dlc_proc_dir).grid(sticky='nsew', row=cur_row+1, column=2)
         cur_row += 2
+
+        Label(self.window, text="Processor: ").grid(sticky='w', row=cur_row, column=0)
+        self.dlc_proc_name = StringVar(self.window)
+        self.dlc_proc_name_entry = Combobox(self.window, textvariable=self.dlc_proc_name)
+        self.update_dlc_proc_list()
+        #self.dlc_proc_name_entry['values'] = tuple(self.processor_list) # tuple([c[0] for c in inspect.getmembers(processor, inspect.isclass)])
+        if len(self.processor_list) > 0:
+            self.dlc_proc_name_entry.current(0)
+        self.dlc_proc_name_entry.grid(sticky="nsew", row=cur_row, column=1)
+        Button(self.window, text="Set Proc", command=self.set_proc).grid(sticky="nsew", row=cur_row, column=2)
+        Button(self.window, text="Edit Proc Settings", command=self.edit_proc).grid(sticky="nsew", row=cur_row+1, column=1)
+        Button(self.window, text="Clear Proc", command=self.clear_proc).grid(sticky="nsew", row=cur_row+1, column=2)
+
+        cur_row += 3
 
         ### set up dlc live ###
 
