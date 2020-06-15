@@ -21,7 +21,6 @@ import importlib
 
 from PIL import Image, ImageTk, ImageDraw
 import colorcet as cc
-import cv2
 
 from dlclivegui import CameraPoseProcess
 from dlclivegui import processor
@@ -406,10 +405,10 @@ class DLCLiveGUI(object):
 
             if frame is not None:
 
-                if frame.ndim == 3:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
                 img = Image.fromarray(frame)
+                if frame.ndim == 3:
+                    b, g, r = img.split()
+                    img = Image.merge("RGB", (r, g, b))
 
                 pose = self.cam_pose_proc.get_display_pose() if self.display_keypoints.get() else None
 
@@ -683,11 +682,11 @@ class DLCLiveGUI(object):
 
 
     def add_subject(self):
-
-        if self.subject.get():
-            if self.subject.get() not in self.cfg['subjects']:
-                self.cfg['subjects'].append(self.subject.get())
-                self.subject_entry['values'] = self.cfg['subjects']
+        new_sub = self.subject.get()
+        if new_sub:
+            if new_sub not in self.cfg['subjects']:
+                self.cfg['subjects'].append(new_sub)
+                self.subject_entry['values'] = tuple(self.cfg['subjects'])
                 self.save_config()
 
 
