@@ -20,13 +20,13 @@ class DLCLiveProcessError(Exception):
     """
     Exception for incorrect use of DLC-live-GUI Process Manager
     """
-    
+
     pass
 
 
 class CameraPoseProcess(CameraProcess):
-    """ Camera Process Manager class. Controls image capture, pose estimation and writing images to a video file in a background process. 
-    
+    """ Camera Process Manager class. Controls image capture, pose estimation and writing images to a video file in a background process.
+
     Parameters
     ----------
     device : :class:`cameracontrol.Camera`
@@ -91,7 +91,7 @@ class CameraPoseProcess(CameraProcess):
 
         self.dlc = DLCLive(**dlc_params)
         if self.frame is not None:
-            self.dlc.init_inference(self.frame)
+            self.dlc.init_inference(self.frame, frame_time=self.frame_time[0], record=False)
             self.poses = []
             self.pose_times = []
             self.pose_frame_times = []
@@ -116,9 +116,10 @@ class CameraPoseProcess(CameraProcess):
 
                 ftime = time.time()
 
-                pose = self.dlc.get_pose(self.frame, frame_time=self.frame_time[0], record=write)
+                frame = self.frame
+                frame_time = self.frame_time[0]
+                pose = self.dlc.get_pose(frame, frame_time=frame_time, record=write)
                 pose_time = time.time()
-                pose_frame_time = self.frame_time[0]
 
                 ptime = time.time()
 
@@ -127,7 +128,7 @@ class CameraPoseProcess(CameraProcess):
                 if write:
                     self.poses.append(pose)
                     self.pose_times.append(pose_time)
-                    self.pose_frame_times.append(pose_frame_time)
+                    self.pose_frame_times.append(frame_time)
 
                 wtime = time.time()
 
@@ -149,7 +150,7 @@ class CameraPoseProcess(CameraProcess):
 
                 # print(f"POSE RATE = {int(1/(ctime-ftime))} / FRAME TIME = {ftime-stime:0.6f} / GET POSE = {ptime-stime:0.6f} / WRITE TIME = {wtime-ptime:0.6f} / CMD TIME = {ctime-wtime:0.6f}")
 
-    
+
     def start_record(self, timeout=5):
 
         ret = super().start_record(timeout=timeout)
@@ -157,7 +158,7 @@ class CameraPoseProcess(CameraProcess):
         if (self.pose_process is not None) and (self.writer_process is not None):
             if (self.pose_process.is_alive()) and (self.writer_process.is_alive()):
                 self.q_to_process.write(("pose", "write", True))
-                
+
                 stime = time.time()
                 while time.time()-stime < timeout:
                     cmd = self.q_from_process.read()
@@ -177,7 +178,7 @@ class CameraPoseProcess(CameraProcess):
 
         if (self.pose_process is not None) and (self.writer_process is not None):
             if (self.pose_process.is_alive()) and (self.writer_process.is_alive()):
-                self.q_to_process.write(("pose", "write", False)) 
+                self.q_to_process.write(("pose", "write", False))
 
                 stime = time.time()
                 while time.time()-stime < timeout:
@@ -188,7 +189,7 @@ class CameraPoseProcess(CameraProcess):
                             break
                         else:
                             self.q_from_process.write(cmd)
-                        
+
         return ret
 
 
@@ -207,7 +208,7 @@ class CameraPoseProcess(CameraProcess):
                                 break
                         else:
                             self.q_from_process.write(cmd)
-                    
+
                 self.pose_process.join(5)
                 if self.pose_process.is_alive():
                     self.pose_process.terminate()
@@ -236,15 +237,15 @@ class CameraPoseProcess(CameraProcess):
 
     def _save_pose(self, filename):
         """ Saves a pandas data frame with pose data collected while recording video
-        
+
         Returns
         -------
         bool
             a logical flag indicating whether save was successful
         """
-        
+
         ret = False
-            
+
         if len(self.pose_times) > 0:
 
             dlc_file = f"{filename}_DLC.hdf5"

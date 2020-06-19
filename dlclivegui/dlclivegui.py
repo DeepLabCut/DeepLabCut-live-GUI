@@ -66,7 +66,7 @@ class DLCLiveGUI(object):
 
     def get_docs_path(self):
         """ Get path to documents folder
-        
+
         Returns
         -------
         str
@@ -78,12 +78,12 @@ class DLCLiveGUI(object):
 
     def get_config_path(self, cfg_name):
         """ Get path to configuration foler
-        
+
         Parameters
         ----------
         cfg_name : str
             name of config file
-        
+
         Returns
         -------
         str
@@ -95,7 +95,7 @@ class DLCLiveGUI(object):
 
     def get_config(self, cfg_name):
         """ Read configuration
-        
+
         Parameters
         ----------
         cfg_name : str
@@ -125,7 +125,7 @@ class DLCLiveGUI(object):
 
     def change_config(self, event=None):
         """ Change configuration, update GUI menus
-        
+
         Parameters
         ----------
         event : tkinter event, optional
@@ -178,7 +178,7 @@ class DLCLiveGUI(object):
 
         if self.cam_pose_proc is not None:
             messagebox.showerror("Camera Exists", "Camera already exists! Please close current camera before initializing a new one.")
-            return 
+            return
 
         this_cam = self.get_current_camera()
 
@@ -381,10 +381,10 @@ class DLCLiveGUI(object):
         self.display_frame_label.pack()
         self.display_frame()
 
-    
+
     def set_display_colors(self, bodyparts):
         """ Set colors for keypoints
-        
+
         Parameters
         ----------
         bodyparts : int
@@ -446,7 +446,7 @@ class DLCLiveGUI(object):
 
         if self.display_keypoints.get():
 
-            display_options = self.cfg['dlc_display_options'][self.dlc_option.get()]
+            display_options = self.cfg['dlc_display_options'][self.dlc_option.get()].copy()
             self.display_cmap = display_options['cmap']
             self.display_radius = display_options['radius']
             self.display_lik_thresh = display_options['lik_thresh']
@@ -473,7 +473,7 @@ class DLCLiveGUI(object):
                                 'likelihood threshold' : {'value' : display_options['lik_thresh'], 'dtype' : float}}
 
         dlc_display_gui = SettingsWindow(title="Edit DLC Display Settings", settings=dlc_display_settings, parent=self.window)
-                
+
         dlc_display_gui.mainloop()
         display_settings = dlc_display_gui.get_values()
 
@@ -507,13 +507,13 @@ class DLCLiveGUI(object):
         if self.dlc_option.get() == 'Add DLC':
             self.edit_dlc_settings(True)
 
-    
+
     def edit_dlc_settings(self, new=False):
 
         if new:
             cur_set = self.empty_dlc_settings()
         else:
-            cur_set = self.cfg['dlc_options'][self.dlc_option.get()]
+            cur_set = self.cfg['dlc_options'][self.dlc_option.get()].copy()
             cur_set['name'] = self.dlc_option.get()
             cur_set['cropping'] = ", ".join([str(c) for c in cur_set['cropping']]) if cur_set['cropping'] else ''
             cur_set['dynamic'] = ", ".join([str(d) for d in cur_set['dynamic']])
@@ -572,7 +572,7 @@ class DLCLiveGUI(object):
                'dynamic' : 'False, 0.5, 10',
                'resize' : '1.0'}
 
-        
+
     def browse_dlc_path(self):
         """ Open file browser to select DLC exported model directory
         """
@@ -624,12 +624,12 @@ class DLCLiveGUI(object):
             messagebox.showerror("DLC Settings Error", warn_msg, parent=self.dlc_settings_window)
 
         self.cfg['dlc_options'][self.dlc_settings_name.get()] = {'model_path' : self.dlc_settings_model_path.get(),
-                                                           'model_type' : self.dlc_settings_model_type.get(),
-                                                           'precision' : precision,
-                                                           'cropping' : dlc_crop,
-                                                           'dynamic' : dlc_dynamic,
-                                                           'resize' : dlc_resize}
-        
+                                                                 'model_type' : self.dlc_settings_model_type.get(),
+                                                                 'precision' : precision,
+                                                                 'cropping' : dlc_crop,
+                                                                 'dynamic' : dlc_dynamic,
+                                                                 'resize' : dlc_resize}
+
         if self.dlc_settings_name.get() not in self.cfg['dlc_display_options']:
             self.cfg['dlc_display_options'][self.dlc_settings_name.get()] = {'cmap' : 'bgy',
                                                                              'radius' : 3,
@@ -667,7 +667,7 @@ class DLCLiveGUI(object):
 
     def start_pose(self):
 
-        dlc_params = self.cfg['dlc_options'][self.dlc_option.get()]
+        dlc_params = self.cfg['dlc_options'][self.dlc_option.get()].copy()
         dlc_params['processor'] = self.dlc_proc_params
         ret = self.cam_pose_proc.start_pose_process(dlc_params)
         self.dlc_setup_window.destroy()
@@ -735,7 +735,7 @@ class DLCLiveGUI(object):
                 self.camera_name.set("")
                 self.save_config()
 
-    
+
     def browse_dlc_processor(self):
 
         new_dir = filedialog.askdirectory(parent=self.window)
@@ -830,11 +830,11 @@ class DLCLiveGUI(object):
             self.proc_param_default_types = [str] + self.proc_param_default_types
 
         ### check for existing settings in config ###
-        
+
         old_args = {}
         if self.dlc_proc_dir.get() in self.cfg['processor_args']:
             if self.dlc_proc_name.get() in self.cfg['processor_args'][self.dlc_proc_dir.get()]:
-                old_args = self.cfg['processor_args'][self.dlc_proc_dir.get()][self.dlc_proc_name.get()]
+                old_args = self.cfg['processor_args'][self.dlc_proc_dir.get()][self.dlc_proc_name.get()].copy()
         else:
             self.cfg['processor_args'][self.dlc_proc_dir.get()] = {}
 
@@ -843,14 +843,14 @@ class DLCLiveGUI(object):
 
         proc_args_dict = {}
         for i in range(1, len(self.proc_param_names)):
-            
+
             if self.proc_param_names[i] in old_args:
                 this_value = old_args[self.proc_param_names[i]]
             else:
                 this_value = self.proc_param_default_values[i]
 
-            proc_args_dict[self.proc_param_names[i]] = {'value' : this_value, 
-                                                   'dtype' : self.proc_param_default_types[i]}
+            proc_args_dict[self.proc_param_names[i]] = {'value' : this_value,
+                                                        'dtype' : self.proc_param_default_types[i]}
 
         proc_args_gui = SettingsWindow(title="DLC Processor Settings", settings=proc_args_dict, parent=self.window)
         proc_args_gui.mainloop()
@@ -862,9 +862,9 @@ class DLCLiveGUI(object):
         # self.proc_param_values = []
         # for i in range(1,len(self.proc_param_names)):
         #     Label(proc_param_gui, text=self.proc_param_names[i]+": ").grid(sticky="w", row=i, column=0)
-            
 
-            
+
+
         #     self.proc_param_values.append(StringVar(proc_param_gui, value=str(self.proc_param_default_values[i])))
         #     Entry(proc_param_gui, textvariable=self.proc_param_values[i-1]).grid(sticky="nsew", row=i, column=1)
 
@@ -877,13 +877,13 @@ class DLCLiveGUI(object):
 
         if self.record_on.get() > -1:
             messagebox.showerror("Session Open", "Session is currently open! Please release the current video (click 'Save Video' of 'Delete Video', even if no frames have been recorded) before setting up a new one.", parent=self.window)
-            return 
+            return
 
         ### check if camera is already set up ###
 
         if not self.cam_pose_proc:
             messagebox.showerror("No Camera", "No camera is found! Please initialize a camera before setting up the video.", parent=self.window)
-            return 
+            return
 
         ### set up session window
 
@@ -921,7 +921,7 @@ class DLCLiveGUI(object):
                 return
 
         ### start writer
-        
+
         ret = self.cam_pose_proc.start_writer_process(self.base_name)
 
         self.session_setup_window.destroy()
@@ -955,13 +955,13 @@ class DLCLiveGUI(object):
 
     def save_vid(self, delete=False):
         """ Saves video, timestamp, and DLC files
-        
+
         Parameters
         ----------
         delete : bool, optional
             flag to delete created files, by default False
         """
-        
+
         ### perform checks ###
 
         if self.cam_pose_proc is None:
@@ -974,7 +974,7 @@ class DLCLiveGUI(object):
 
         elif self.record_on.get() == 1:
             messagebox.showwarning("Active Recording", "You are currently recording a video. Please stop the video before saving.", parent=self.window)
-            return 
+            return
 
         elif delete:
             delete = messagebox.askokcancel("Delete Video?", "Do you wish to delete the video?", parent=self.window)
@@ -1089,7 +1089,7 @@ class DLCLiveGUI(object):
         Label(self.window, text="DeepLabCut: ").grid(sticky='w', row=cur_row, column=0)
         self.dlc_option = StringVar(self.window)
         self.dlc_options_entry = Combobox(self.window, textvariable=self.dlc_option)
-        self.dlc_options_entry['values'] = tuple(self.cfg['dlc_options'].keys()) + ('Add DLC',) 
+        self.dlc_options_entry['values'] = tuple(self.cfg['dlc_options'].keys()) + ('Add DLC',)
         self.dlc_options_entry.bind("<<ComboboxSelected>>", self.change_dlc_option)
         self.dlc_options_entry.grid(sticky='nsew', row=cur_row, column=1)
         Button(self.window, text='Init DLC', command=self.init_dlc).grid(sticky='nsew', row=cur_row, column=2)
@@ -1103,9 +1103,9 @@ class DLCLiveGUI(object):
         Checkbutton(self.window, text="Display DLC Keypoints", variable=self.display_keypoints, indicatoron=0, command=self.change_display_keypoints).grid(sticky="nsew", row=cur_row, column=1)
         Button(self.window, text='Remove DLC', command=self.remove_dlc_option).grid(sticky='nsew', row=cur_row, column=2)
         cur_row += 1
-        
+
         Button(self.window, text="Edit DLC Display Settings", command=self.edit_dlc_display).grid(sticky='nsew', row=cur_row, column=1)
-        
+
         cur_row += 2
 
         ### set up session ###
@@ -1153,7 +1153,7 @@ class DLCLiveGUI(object):
         Radiobutton(self.window, text="Off", selectcolor='red', indicatoron=0, variable=self.record_on, value=-1, command=self.stop_record).grid(sticky="nsew", row=cur_row+2, column=1)
         Button(self.window, text="Save Video", command=lambda: self.save_vid()).grid(sticky="nsew", row=cur_row+1, column=2)
         Button(self.window, text="Delete Video", command=lambda: self.save_vid(delete=True)).grid(sticky="nsew", row=cur_row+2, column=2)
-        
+
         cur_row += 4
 
         ### close program ###
