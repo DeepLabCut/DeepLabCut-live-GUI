@@ -83,6 +83,8 @@ class CameraPoseProcess(CameraProcess):
 
         ret = False
 
+        self.opt_rate = True if dlc_params.pop('mode') == "Optimize Rate" else False
+
         proc_params = dlc_params.pop('processor')
         if proc_params is not None:
             proc_obj = proc_params.pop('object', None)
@@ -106,22 +108,20 @@ class CameraPoseProcess(CameraProcess):
 
         run = True
         write = False
-        pose_frame_time = 0
+        frame_time = 0
+        pose_time = 0
+        end_time = time.time()
 
         while run:
 
-            stime = time.time()
-
-            if self.frame_time[0] > pose_frame_time:
-
-                ftime = time.time()
+            ref_time = frame_time if self.opt_rate else end_time
+            
+            if self.frame_time[0] > ref_time:
 
                 frame = self.frame
                 frame_time = self.frame_time[0]
                 pose = self.dlc.get_pose(frame, frame_time=frame_time, record=write)
                 pose_time = time.time()
-
-                ptime = time.time()
 
                 self.display_pose_queue.write(pose, clear=True)
 
@@ -129,8 +129,6 @@ class CameraPoseProcess(CameraProcess):
                     self.poses.append(pose)
                     self.pose_times.append(pose_time)
                     self.pose_frame_times.append(frame_time)
-
-                wtime = time.time()
 
                 cmd = self.q_to_process.read()
                 if cmd is not None:
@@ -146,10 +144,10 @@ class CameraPoseProcess(CameraProcess):
                     else:
                         self.q_to_process.write(cmd)
 
-                ctime = time.time()
+                # print(f"POSE RATE = {int(1 / (time.time()-end_time))} / POSE LATENCY = {(pose_time-frame_time):0.03f}")
 
-                # print(f"POSE RATE = {int(1/(ctime-ftime))} / FRAME TIME = {ftime-stime:0.6f} / GET POSE = {ptime-stime:0.6f} / WRITE TIME = {wtime-ptime:0.6f} / CMD TIME = {ctime-wtime:0.6f}")
-
+                end_time = time.time()
+            
 
     def start_record(self, timeout=5):
 

@@ -517,6 +517,7 @@ class DLCLiveGUI(object):
             cur_set['name'] = self.dlc_option.get()
             cur_set['cropping'] = ", ".join([str(c) for c in cur_set['cropping']]) if cur_set['cropping'] else ''
             cur_set['dynamic'] = ", ".join([str(d) for d in cur_set['dynamic']])
+            cur_set['mode'] = 'Optimize Latency' if 'mode' not in cur_set else cur_set['mode']
 
         self.dlc_settings_window = Toplevel(self.window)
         self.dlc_settings_window.title("DLC Settings")
@@ -558,6 +559,11 @@ class DLCLiveGUI(object):
         Entry(self.dlc_settings_window, textvariable=self.dlc_settings_resize).grid(sticky='nsew', row=cur_row, column=1)
         cur_row += 1
 
+        Label(self.dlc_settings_window, text="Mode: ").grid(sticky='w', row=cur_row, column=0)
+        self.dlc_settings_mode = StringVar(self.dlc_settings_window, value=cur_set['mode'])
+        Combobox(self.dlc_settings_window, textvariable=self.dlc_settings_mode, state='readonly', values=['Optimize Latency', 'Optimize Rate']).grid(sticky='nsew', row=cur_row, column=1)
+        cur_row += 1
+
         Button(self.dlc_settings_window, text="Update", command=self.update_dlc_settings).grid(sticky='nsew', row=cur_row, column=1)
         Button(self.dlc_settings_window, text="Cancel", command=self.dlc_settings_window.destroy).grid(sticky='nsew', row=cur_row, column=2)
 
@@ -570,7 +576,8 @@ class DLCLiveGUI(object):
                'precision' : 'FP32',
                'cropping' : '',
                'dynamic' : 'False, 0.5, 10',
-               'resize' : '1.0'}
+               'resize' : '1.0',
+               'mode' : 'Optimize Latency'}
 
 
     def browse_dlc_path(self):
@@ -614,6 +621,7 @@ class DLCLiveGUI(object):
             dlc_dynamic = (False, 0.5, 10)
 
         dlc_resize = float(self.dlc_settings_resize.get()) if self.dlc_settings_resize.get() else None
+        dlc_mode = self.dlc_settings_mode.get()
 
         warn_msg = ""
         if crop_warn:
@@ -628,7 +636,8 @@ class DLCLiveGUI(object):
                                                                  'precision' : precision,
                                                                  'cropping' : dlc_crop,
                                                                  'dynamic' : dlc_dynamic,
-                                                                 'resize' : dlc_resize}
+                                                                 'resize' : dlc_resize,
+                                                                 'mode' : dlc_mode}
 
         if self.dlc_settings_name.get() not in self.cfg['dlc_display_options']:
             self.cfg['dlc_display_options'][self.dlc_settings_name.get()] = {'cmap' : 'bgy',
