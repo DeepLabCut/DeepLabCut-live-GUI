@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 DeepLabCut Toolbox (deeplabcut.org)
 © A. & M. Mathis Labs
@@ -23,7 +21,7 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/DeepLabCut/DeepLabCut-live-GUI",
     python_requires = '>=3.5, <3.8',
-    install_requires=['deeplabcut-live', 'pyserial', 'pandas', 'tables', 'multiprocess', 'imutils', 'pillow'],
+    install_requires=['deeplabcut-live', 'pyserial', 'pandas', 'tables', 'multiprocess', 'imutils', 'pillow', 'tqdm'],
     packages=setuptools.find_packages(),
     include_package_data=True,
     classifiers=(

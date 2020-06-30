@@ -833,7 +833,7 @@ class DLCLiveGUI(object):
         def_args = inspect.getargspec(self.proc_object)
         self.proc_param_names = def_args[0]
         self.proc_param_default_values = def_args[3]
-        self.proc_param_default_types = [type(v) for v in def_args[3]]
+        self.proc_param_default_types = [type(v) if type(v) is not list else [type(v[0])] for v in def_args[3]]
         for i in range(len(def_args[0])-len(def_args[3])):
             self.proc_param_default_values = ('',) + self.proc_param_default_values
             self.proc_param_default_types = [str] + self.proc_param_default_types
@@ -866,18 +866,6 @@ class DLCLiveGUI(object):
 
         self.cfg['processor_args'][self.dlc_proc_dir.get()][self.dlc_proc_name.get()] = proc_args_gui.get_values()
         self.save_config()
-
-        # proc_param_gui = Tk()
-        # self.proc_param_values = []
-        # for i in range(1,len(self.proc_param_names)):
-        #     Label(proc_param_gui, text=self.proc_param_names[i]+": ").grid(sticky="w", row=i, column=0)
-
-
-
-        #     self.proc_param_values.append(StringVar(proc_param_gui, value=str(self.proc_param_default_values[i])))
-        #     Entry(proc_param_gui, textvariable=self.proc_param_values[i-1]).grid(sticky="nsew", row=i, column=1)
-
-        # Button(proc_param_gui, text="Update", command=lambda: self.start_proc(proc_param_gui)).grid(sticky="nsew", row=i+1, column=1)
 
 
     def init_session(self):
@@ -1047,7 +1035,7 @@ class DLCLiveGUI(object):
         ### select camera ###
 
         # camera entry
-        Label(self.window, text="Camera "+": ").grid(sticky="w", row=cur_row, column=0)
+        Label(self.window, text="Camera: ").grid(sticky="w", row=cur_row, column=0)
         self.camera_name = StringVar(self.window)
         self.camera_entry = Combobox(self.window, textvariable=self.camera_name)
         cam_names = self.get_camera_names()

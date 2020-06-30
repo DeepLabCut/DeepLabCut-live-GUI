@@ -144,10 +144,6 @@ class CameraPoseProcess(CameraProcess):
                     else:
                         self.q_to_process.write(cmd)
 
-                # print(f"POSE RATE = {int(1 / (time.time()-end_time))} / POSE LATENCY = {(pose_time-frame_time):0.03f}")
-
-                end_time = time.time()
-            
 
     def start_record(self, timeout=5):
 
