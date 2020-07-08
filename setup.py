@@ -15,7 +15,7 @@ setuptools.setup(
     name="deeplabcut-live-gui",
     version="0.0.b0",
     author="A. & M. Mathis Labs",
-    author_email="alexander@deeplabcut.org",
+    author_email="adim@deeplabcut.org",
     description="GUI to run real time deeplabcut experiments",
     long_description=long_description,
     long_description_content_type="text/markdown",

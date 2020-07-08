@@ -24,8 +24,8 @@ import colorcet as cc
 
 from dlclivegui import CameraPoseProcess
 from dlclivegui import processor
-from cameracontrol import camera
-from cameracontrol.tkutil import SettingsWindow
+from dlclivegui import camera
+from dlclivegui.tkutil import SettingsWindow
 
 
 class DLCLiveGUI(object):

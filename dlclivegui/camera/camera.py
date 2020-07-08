@@ -72,6 +72,7 @@ class Camera(object):
         self.fps = fps
         self.use_tk_display = use_tk_display
         self.display_resize = display_resize if display_resize else 1.0
+        self.next_frame = 0
 
 
     def set_im_size(self, res):
@@ -135,32 +136,4 @@ class Camera(object):
         """
 
         raise NotImplementedError
-
-
-
-    def get_display_frame(self):
-        """ Get latest frame for display
-        
-        Returns
-        -------
-        :class:`numpy.ndarray`
-            the lastest frame
-        """
-
-        frame_read = qread(self.display_frame_queue, self.display_frame_lock)
-        if frame_read is not None:
-            frame, _ = frame_read
-            if self.display_resize != 1:
-                frame = cv2.resize(frame, (int(frame.shape[1]*self.display_resize), int(frame.shape[0]*self.display_resize)))
-        else:
-            frame = None
-
-        return frame
-
-
-
-    def close_capture_device(self):
-        """ Closes camera
-        """
-
-        raise NotImplementedError
+    

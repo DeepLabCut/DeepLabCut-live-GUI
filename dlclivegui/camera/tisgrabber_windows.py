@@ -807,7 +807,7 @@ class TIS_CAM(object):
             data = C.c_int()
 
             err = TIS_GrabberDLL.FilterGetParameter(frame_filter_handle, parameter_name, C.byref(data))
-            return err
+            return data.value
 
         def FilterSetParameter(self, frame_filter_handle, parameter_name, data):
             if type(data) is int:
