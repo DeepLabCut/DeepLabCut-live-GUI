@@ -1,15 +1,15 @@
 """
+"""
 DeepLabCut Toolbox (deeplabcut.org)
 © A. & M. Mathis Labs
 
 Licensed under GNU Lesser General Public License v3.0
 """
 
-
 import time
 import cv2
 
-from dlclivegui.camera import Camera, DLCLiveCameraError
+from dlclivegui.camera import Camera, CameraError
 from dlclivegui.camera.tisgrabber_windows import TIS_CAM
 
 
@@ -22,7 +22,14 @@ class TISCam(Camera):
         return {'serial_number' : TIS_CAM().GetDevices()}
 
 
-    def __init__(self, serial_number='', exposure=.005, rotate=0, crop=[], fps=100, display=True):
+    def __init__(self,
+                 serial_number='',
+                 resolution=[720,540],
+                 exposure=.005,
+                 rotate=0,
+                 crop=None,
+                 fps=100,
+                 display=True):
         '''
         Params
         ------
@@ -31,18 +38,8 @@ class TISCam(Camera):
             default = None, uses default parameters specific to camera
         '''
 
-        self.cam = TIS_CAM()
-
-        self.serial_number = serial_number
-        self.im_size = (720, 540)
-
-        self.crop_filter = None
-        self.rotation_filter = None
-        self.display = display
-        self.next_frame = None
-
         super().__init__(serial_number, exposure=exposure, rotate=rotate, crop=crop, fps=fps)
-
+        self.display = display
 
     def set_exposure(self, val):
 
@@ -91,6 +88,20 @@ class TISCam(Camera):
         self.cam.SetFrameRate(fps)
 
 
+    def set_capture_device(self):
+
+        self.cam = TIS_CAM()
+        self.crop_filter = None
+        self.rotation_filter = None
+        self.next_frame = None
+
+        self.cam.open(self.serial_number)
+        self.cam.SetContinuousMode(0)
+        self.cam.StartLive(int(self.display))
+
+        return True
+
+
     def get_image(self):
 
         self.cam.SnapImage()
@@ -99,16 +110,7 @@ class TISCam(Camera):
         return frame
 
 
-    def open(self):
+    def close_capture_device(self):
 
-        super().open()
-
-        self.cam.open(self.serial_number)
-        self.cam.SetContinuousMode(0)
-        self.cam.StartLive(int(self.display))
-
-
-    def close(self):
-
-        super().close()
         self.cam.StopLive()
+        self.cam.close()

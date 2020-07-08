@@ -29,5 +29,6 @@ setuptools.setup(
         "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
         "Operating System :: OS Independent",
     ),
-    entry_points = {'console_scripts' : ['dlclivegui=dlclivegui.dlclivegui:main']}
+    entry_points = {'console_scripts' : ['dlclivegui=dlclivegui.dlclivegui:main',
+                                         'dlclivegui-video=dlclivegui.video:main']}
 )

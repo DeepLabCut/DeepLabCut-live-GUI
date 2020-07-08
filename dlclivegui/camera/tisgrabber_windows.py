@@ -1,9 +1,3 @@
-"""
-DeepLabCut Toolbox (deeplabcut.org)
-© A. & M. Mathis Labs
-
-Licensed under GNU Lesser General Public License v3.0
-"""
 
 """
 Created on Mon Nov 21 09:44:40 2016
@@ -12,9 +6,15 @@ Created on Mon Nov 21 09:44:40 2016
 From: https://github.com/TheImagingSource/IC-Imaging-Control-Samples/tree/master/Python
 
 modified 10/3/2019 by Gary Kane - https://github.com/gkane26
-post-doctoral fellow @ the Adaptive Motor Control Lab
-https://github.com/AdaptiveMotorControlLab
 """
+
+"""
+DeepLabCut Toolbox (deeplabcut.org)
+© A. & M. Mathis Labs
+
+Licensed under GNU Lesser General Public License v3.0
+"""
+
 
 from enum import Enum
 

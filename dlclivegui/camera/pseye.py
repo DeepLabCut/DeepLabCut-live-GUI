@@ -11,7 +11,7 @@ from imutils import rotate_bound
 import numpy as np
 import pseyepy
 
-from dlclivegui.camera import Camera, DLCLiveCameraError
+from dlclivegui.camera import Camera, CameraError
 
 
 class PSEyeCam(Camera):
@@ -27,10 +27,21 @@ class PSEyeCam(Camera):
                 'auto_whitebalance' : [True, False]}
 
 
-    def __init__(self, device=0, resolution=[320, 240],
-                 exposure=100, gain=20, rotate=0, crop=None, fps=60,
-                 colour=False, auto_whitebalance=False, red_balance=125, blue_balance=125, green_balance=125,
-                 display=True, display_resize=1.0):
+    def __init__(self,
+                 device=0,
+                 resolution=[320, 240],
+                 exposure=100,
+                 gain=20,
+                 rotate=0,
+                 crop=None,
+                 fps=60,
+                 colour=False,
+                 auto_whitebalance=False,
+                 red_balance=125,
+                 blue_balance=125,
+                 green_balance=125,
+                 display=True,
+                 display_resize=1.0):
 
         super().__init__(device, resolution=resolution, exposure=exposure, gain=gain, rotate=rotate, crop=crop, fps=fps, use_tk_display=display, display_resize=display_resize)
         self.colour = colour
@@ -47,7 +58,7 @@ class PSEyeCam(Camera):
         elif self.im_size[0] == 640:
             res = pseyepy.Camera.RES_LARGE
         else:
-            raise DLCLiveCameraError("pseye resolution {} not supported".format(self.im_size))
+            raise CameraError(f"pseye resolution {self.im_size} not supported")
         
         self.cap = pseyepy.Camera(self.id,
                                   fps=self.fps,
@@ -60,8 +71,10 @@ class PSEyeCam(Camera):
                                   blue_balance=self.blue_balance,
                                   green_balance=self.green_balance)
 
+        return True
 
-    def get_image(self):
+
+    def get_image_on_time(self):
 
         frame, _ = self.cap.read()
 

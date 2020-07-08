@@ -5,6 +5,7 @@ DeepLabCut Toolbox (deeplabcut.org)
 Licensed under GNU Lesser General Public License v3.0
 """
 
+
 import ctypes
 import numpy as np
 import time
@@ -12,6 +13,7 @@ import time
 import gi
 gi.require_version('Aravis', '0.6')
 from gi.repository import Aravis
+import cv2
 
 from dlclivegui.camera import Camera
 
@@ -44,6 +46,8 @@ class AravisCam(Camera):
         self.stream = self.cam.create_stream()
         self.stream.push_buffer(Aravis.Buffer.new_allocate(self.cam.get_payload()))
         self.cam.start_acquisition()
+
+        return True
 
 
     def no_auto(self):
@@ -98,6 +102,9 @@ class AravisCam(Camera):
 
         frame = np.ctypeslib.as_array(ptr, (buffer.get_image_height(), buffer.get_image_width()))
         frame = frame.copy()
+
+        if frame.ndim < 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
 
         return frame
 

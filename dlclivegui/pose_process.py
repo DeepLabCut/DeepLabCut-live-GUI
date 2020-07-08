@@ -12,8 +12,8 @@ import time
 import pandas as pd
 import numpy as np
 
-from cameracontrol import CameraProcess
-from cameracontrol.queue import ClearableQueue, ClearableMPQueue
+from dlclivegui import CameraProcess
+from dlclivegui.queue import ClearableQueue, ClearableMPQueue
 
 
 class DLCLiveProcessError(Exception):

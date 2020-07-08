@@ -8,6 +8,7 @@ Licensed under GNU Lesser General Public License v3.0
 
 import tkinter as tk
 from tkinter import ttk
+from distutils.util import strtobool
 
 
 class SettingsWindow(tk.Toplevel):
@@ -55,6 +56,7 @@ class SettingsWindow(tk.Toplevel):
 
         self.cur_row = 0
         self.combobox_width = 15
+
         self.create_window()
 
 
@@ -84,7 +86,7 @@ class SettingsWindow(tk.Toplevel):
             dt = dtypes[i] if dtypes is not None else None
 
             if vals is not None:
-                val = dt(val) if dt else val
+                val = dt(val) if type(dt) is type else [dt[0](v) for v in val]
             else:
                 val = None
 
@@ -110,12 +112,12 @@ class SettingsWindow(tk.Toplevel):
             tk.Label(self, text=names[i]+": ").grid(row=self.cur_row, column=0)
 
             v = this_setting['value']
-            if type(v) is list:
+            if type(this_setting['dtype']) is list:
                 v = [str(x) if x is not None else '' for x in v]
                 v = ", ".join(v)
             else:
-                v = v if v is not None else ''
-            self.entry_vars.append(tk.StringVar(self, value=str(v)))
+                v = str(v) if v is not None else ''
+            self.entry_vars.append(tk.StringVar(self, value=v))
 
             use_restriction = False
             if 'restriction' in this_setting:
@@ -149,16 +151,16 @@ class SettingsWindow(tk.Toplevel):
             val = self.entry_vars[i].get()
             dt = self.settings[name]['dtype'] if 'dtype' in self.settings[name] else None
 
-            val = val.split(",")
-            val = [v.strip() for v in val]
+            val = [v.strip() for v in val.split(",")]
+            use_dt = dt if type(dt) is type else dt[0]
+            use_dt = strtobool if use_dt is bool else use_dt
+            
             try:
-                if dt is bool:
-                    val = [True if v == "True" else False for v in val]
-                else:
-                    val = [dt(v) if v else None for v in val]
+                val = [use_dt(v) if v else None for v in val]
             except TypeError:
                 pass
-            val = val if len(val) > 1 else val[0]
+            
+            val = val if type(dt) is list else val[0]
 
             self.settings[name]['value'] = val
 
