@@ -35,7 +35,7 @@ dlclivegui
 
 - **Processor settings**:
   - Chose your processor directory using **Processor Dir**
-  - Pick the processor class your wrote (see [appendix 1](#Appendices)
+  - Pick the processor class your wrote (see [appendix 1](#Appendices))
   - **Edit** or **Set Proc**
 
 - **DeepLabCut**:
