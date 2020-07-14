@@ -35,7 +35,7 @@ dlclivegui
 
 - **Processor settings**:
   - Chose your processor directory using **Processor Dir**
-  - Pick the processor class your wrote (see appendix 1)
+  - Pick the processor class your wrote (see [appendix 1](#Appendices)
   - **Edit** or **Set Proc**
 
 - **DeepLabCut**:
@@ -54,7 +54,7 @@ dlclivegui
 - **Record**:
   - **Set Up Session -> Ready -> On -> Off -> Save Video**
   
-# Apendices
+# Appendices
 1. **Processor**:
 Use the processor folder as a template to create your own processor
 The default processor should contain:
