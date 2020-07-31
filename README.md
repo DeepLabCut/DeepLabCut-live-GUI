@@ -9,7 +9,6 @@ conda create -n dlc_live
 conda activate dlc_live
 conda install python=3.7 tensorflow-GPU==1.13.1
 ```
-after this installs, simply run `conda activate dlc_live` to launch the environment. 
 
 **Install** DLC-Live! GUI **packages**:
 ```python
