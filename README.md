@@ -1,5 +1,5 @@
-# DeepLabCutLive
-GUI to run DeepLabCut on live video feed
+# DeepLabCut-Live! GUI<img src="https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/1596193544929-NHMVMXPVEYZ6R4I45DSR/ke17ZwdGBToddI8pDm48kOHwsIwndRGCkvek0XAcW4ZZw-zPPgdn4jUwVcJE1ZvWEtT5uBSRWt4vQZAgTJucoTqqXjS3CfNDSuuf31e0tVH0wqgmu6zkAOZ3crWCtkmLcPIuzHaxU8QRzZwtrVtHupu3E9Ef3XsXP1C_826c-iU/DLCLIVEGUI_LOGO.png?format=750w" width="350" title="DLC-live GUI" alt="DLC LIVE! GUI" align="right" vspace = "50">
+GUI to run DeepLabCut-live video feed, record videos, and record external timestamps.
 
 ## Install
 
@@ -9,9 +9,11 @@ conda create -n dlc_live
 conda activate dlc_live
 conda install python=3.7 tensorflow-GPU==1.13.1
 ```
-**Install** dlc live GUI **packages**:
+after this installs, simply run `conda activate dlc_live` to launch the environment. 
+
+**Install** DLC-Live! GUI **packages**:
 ```python
-pip install https://github.com/DeepLabCut/DeepLabCut-live.git
+pip install deeplabcut-live
 pip install https://github.com/DeepLabCut/DeepLabCut-live-GUI.git
 ```
 **Run dlc live gui**:
