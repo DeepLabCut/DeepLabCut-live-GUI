@@ -4,21 +4,39 @@ GUI to run DeepLabCut-live video feed, record videos, and record external timest
 ## Install
 
 Launch **console**:
-```python
+```bash
 conda create -n dlc_live
 conda activate dlc_live
 conda install python=3.7 tensorflow-GPU==1.13.1
 ```
 
-**Install** DLC-Live! GUI **packages**:
-```python
-pip install deeplabcut-live
-pip install https://github.com/DeepLabCut/DeepLabCut-live-GUI.git
+**Install** DLC-Live! GUI **package**:
+```bash
+pip install deeplabcut-live-gui
 ```
 **Run dlc live gui**:
-```python
+```bash
 dlclivegui
 ```
+
+## Getting Started
+
+#### Configurations
+
+First, create a configuration file: select the drop down menu labeled `Config`, and click `Create New Config`. All settings, such as details about cameras, DLC networks, and DLC-live Processors, will be saved into configuration files so that you can close and reopen the GUI without losing all of these details. You can create multiple configuration files on the same system, so that different users can save different camera options, etc on the same computer. To load previous settings from a configuration file, please just select the file from the drop-down menu. Configuration files are stored at `$HOME/Documents/DeepLabCut-live-GUI/config`. These files do not need to be edited manually, they can be entirely created and edited automatically within the GUI. 
+
+#### Set up cameras
+
+To setup a new camera, select `Add Camera` from the dropdown menu, and then click `Init Cam`. This will be bring up a new window where you need to select the type of camera (see [Camera Support](docs/Camera Support.md)), input a name for the camera, and click `Add Camera`. This will initialize a new `Camera` entry in the drop down menu. Now, select your camera from the dropdown menu and click`Edit Camera Settings` to setup your camera settings (i.e. set the serial number, exposure, cropping parameters, etc; the exact settings depend on the specific type of camera). Once you have set the camera settings, click `Init Cam` to start streaming. To stop streaming data, click `Close Camera`, and to remove a camera from the dropdown menu, click `Remove Camera`.
+
+#### Processor
+
+To write custom `Processors`, please see [here](https://github.com/DeepLabCut/DeepLabCut-live/tree/master/dlclive/processor). The directory that contains your custom `Processor` should be a python module -- this directory must contain an `__init__.py` file that imports your custom `Processor`. For examples of how to structure a custom `Processor` directory, please see [here](https://github.com/DeepLabCut/DeepLabCut-live/tree/master/example_processors).
+
+To use your processor in the GUI, you must first add your custom `Processor` directory to the dropdown menu: next to the `Processor Dir` label, click `Browse`, and select your custom `Processor` directory. Next, select the desired directory from the `Processor Dir` dropdown menu, then select the `Processor` you would like to use from the `Processor` menu. If you would like to edit the arguments for your processor, please select `Edit Proc Settings`, and finally, to use the processor, click `Set Proc`. If you have previously set a `Processor` and would like to clear it, click `Clear Proc`.
+
+
+
 ## Configure GUI
 
 - **Config**: scroll down menu: Create new config
