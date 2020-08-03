@@ -170,7 +170,7 @@ class TISCam(Camera):
         height = struct.get_value('height')
         width = struct.get_value('width')
         fmat = struct.get_value('format')
-        dtype = np.uint8 if fmat == "GRAY16_LE" else np.uint8
+        dtype = np.uint16 if fmat == "GRAY16_LE" else np.uint8
         ncolors = 1 if "GRAY" in fmat else 4
         
         self.frame = np.ndarray(shape=(height, width, ncolors),
