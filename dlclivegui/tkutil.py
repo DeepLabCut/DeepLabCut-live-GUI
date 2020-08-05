@@ -12,9 +12,16 @@ from distutils.util import strtobool
 
 
 class SettingsWindow(tk.Toplevel):
-
-
-    def __init__(self, title="Edit Settings", settings={}, names=None, vals=None, dtypes=None, restrictions=None, parent=None):
+    def __init__(
+        self,
+        title="Edit Settings",
+        settings={},
+        names=None,
+        vals=None,
+        dtypes=None,
+        restrictions=None,
+        parent=None,
+    ):
         """ Create a tkinter settings window
         
         Parameters
@@ -50,7 +57,9 @@ class SettingsWindow(tk.Toplevel):
         if settings:
             self.settings = settings
         elif not names:
-            raise ValueError("No argument names or settings dictionary. One must be provided to create a SettingsWindow.")
+            raise ValueError(
+                "No argument names or settings dictionary. One must be provided to create a SettingsWindow."
+            )
         else:
             self.settings = self.create_settings_dict(names, vals, dtypes, restrictions)
 
@@ -58,7 +67,6 @@ class SettingsWindow(tk.Toplevel):
         self.combobox_width = 15
 
         self.create_window()
-
 
     def create_settings_dict(self, names, vals=None, dtypes=None, restrictions=None):
         """Create dictionary of settings from names, vals, dtypes, and restrictions
@@ -92,12 +100,9 @@ class SettingsWindow(tk.Toplevel):
 
             restrict = restrictions[names[i]] if restrictions is not None else None
 
-            set_dict[names[i]] = {'value' : val,
-                                  'dtype' : dt,
-                                  'restriction' : restrict}
-        
-        return set_dict 
+            set_dict[names[i]] = {"value": val, "dtype": dt, "restriction": restrict}
 
+        return set_dict
 
     def create_window(self):
         """ Create settings GUI widgets
@@ -109,71 +114,82 @@ class SettingsWindow(tk.Toplevel):
 
             this_setting = self.settings[names[i]]
 
-            tk.Label(self, text=names[i]+": ").grid(row=self.cur_row, column=0)
+            tk.Label(self, text=names[i] + ": ").grid(row=self.cur_row, column=0)
 
-            v = this_setting['value']
-            if type(this_setting['dtype']) is list:
-                v = [str(x) if x is not None else '' for x in v]
+            v = this_setting["value"]
+            if type(this_setting["dtype"]) is list:
+                v = [str(x) if x is not None else "" for x in v]
                 v = ", ".join(v)
             else:
-                v = str(v) if v is not None else ''
+                v = str(v) if v is not None else ""
             self.entry_vars.append(tk.StringVar(self, value=v))
 
             use_restriction = False
-            if 'restriction' in this_setting:
-                if this_setting['restriction'] is not None:
+            if "restriction" in this_setting:
+                if this_setting["restriction"] is not None:
                     use_restriction = True
 
             if use_restriction:
-                ttk.Combobox(self, textvariable=self.entry_vars[-1], values=this_setting['restriction'], state="readonly", width=self.combobox_width).grid(sticky='nsew', row=self.cur_row, column=1)
+                ttk.Combobox(
+                    self,
+                    textvariable=self.entry_vars[-1],
+                    values=this_setting["restriction"],
+                    state="readonly",
+                    width=self.combobox_width,
+                ).grid(sticky="nsew", row=self.cur_row, column=1)
             else:
-                tk.Entry(self, textvariable=self.entry_vars[-1]).grid(sticky='nsew', row=self.cur_row, column=1)
+                tk.Entry(self, textvariable=self.entry_vars[-1]).grid(
+                    sticky="nsew", row=self.cur_row, column=1
+                )
 
             self.cur_row += 1
 
         self.cur_row += 1
-        tk.Button(self, text="Update", command=self.update_vals).grid(sticky='nsew', row=self.cur_row, column=1)
+        tk.Button(self, text="Update", command=self.update_vals).grid(
+            sticky="nsew", row=self.cur_row, column=1
+        )
         self.cur_row += 1
-        tk.Button(self, text="Cancel", command=self.destroy).grid(sticky='nsew', row=self.cur_row, column=1)
+        tk.Button(self, text="Cancel", command=self.destroy).grid(
+            sticky="nsew", row=self.cur_row, column=1
+        )
 
         _, row_count = self.grid_size()
         for r in range(row_count):
             self.grid_rowconfigure(r, minsize=20)
 
-    
     def update_vals(self):
 
         names = tuple(self.settings.keys())
 
         for i in range(len(self.entry_vars)):
-            
+
             name = names[i]
             val = self.entry_vars[i].get()
-            dt = self.settings[name]['dtype'] if 'dtype' in self.settings[name] else None
+            dt = (
+                self.settings[name]["dtype"] if "dtype" in self.settings[name] else None
+            )
 
             val = [v.strip() for v in val.split(",")]
             use_dt = dt if type(dt) is type else dt[0]
             use_dt = strtobool if use_dt is bool else use_dt
-            
+
             try:
                 val = [use_dt(v) if v else None for v in val]
             except TypeError:
                 pass
-            
+
             val = val if type(dt) is list else val[0]
 
-            self.settings[name]['value'] = val
+            self.settings[name]["value"] = val
 
         self.quit()
         self.destroy()
 
-    
     def get_values(self):
 
         val_dict = {}
         names = tuple(self.settings.keys())
         for i in range(len(self.settings)):
-            val_dict[names[i]] = self.settings[names[i]]['value']
+            val_dict[names[i]] = self.settings[names[i]]["value"]
 
         return val_dict
-

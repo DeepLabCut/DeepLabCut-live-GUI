@@ -13,38 +13,44 @@ from dlclivegui.camera.tisgrabber_windows import TIS_CAM
 
 
 class TISCam(Camera):
-
-
     @staticmethod
     def arg_restrictions():
 
-        return {'serial_number' : TIS_CAM().GetDevices(),
-                'rotate' : [0, 90, 180, 270]}
+        return {"serial_number": TIS_CAM().GetDevices(), "rotate": [0, 90, 180, 270]}
 
-
-    def __init__(self,
-                 serial_number='',
-                 resolution=[720,540],
-                 exposure=.005,
-                 rotate=0,
-                 crop=None,
-                 fps=100,
-                 display=True,
-                 display_resize=1.0):
-        '''
+    def __init__(
+        self,
+        serial_number="",
+        resolution=[720, 540],
+        exposure=0.005,
+        rotate=0,
+        crop=None,
+        fps=100,
+        display=True,
+        display_resize=1.0,
+    ):
+        """
         Params
         ------
         serial_number = string; serial number for imaging source camera
         crop = dict; contains ints named top, left, height, width for cropping
             default = None, uses default parameters specific to camera
-        '''
+        """
 
         if (rotate == 90) or (rotate == 270):
             resolution = [resolution[1], resolution[0]]
 
-        super().__init__(serial_number, resolution=resolution, exposure=exposure, rotate=rotate, crop=crop, fps=fps, use_tk_display=display, display_resize=display_resize)
+        super().__init__(
+            serial_number,
+            resolution=resolution,
+            exposure=exposure,
+            rotate=rotate,
+            crop=crop,
+            fps=fps,
+            use_tk_display=display,
+            display_resize=display_resize,
+        )
         self.display = display
-
 
     def set_exposure(self):
 
@@ -53,13 +59,11 @@ class TISCam(Camera):
         val = 0 if val < 0 else val
         self.cam.SetPropertyAbsoluteValue("Exposure", "Value", val)
 
-
     def get_exposure(self):
 
         exposure = [0]
         self.cam.GetPropertyAbsoluteValue("Exposure", "Value", exposure)
         return round(exposure[0], 3)
-
 
     # def set_crop(self):
 
@@ -80,19 +84,18 @@ class TISCam(Camera):
     #         self.cam.FilterSetParameter(self.crop_filter, b'Height', height)
     #         self.cam.FilterSetParameter(self.crop_filter, b'Width', width)
 
-
     def set_rotation(self):
 
         if not self.rotation_filter:
-            self.rotation_filter = self.cam.CreateFrameFilter(b'Rotate Flip')
+            self.rotation_filter = self.cam.CreateFrameFilter(b"Rotate Flip")
             self.cam.AddFrameFilter(self.rotation_filter)
-        self.cam.FilterSetParameter(self.rotation_filter, b'Rotation Angle', self.rotate)
-
+        self.cam.FilterSetParameter(
+            self.rotation_filter, b"Rotation Angle", self.rotate
+        )
 
     def set_fps(self):
 
         self.cam.SetFrameRate(self.fps)
-
 
     def set_capture_device(self):
 
@@ -112,16 +115,14 @@ class TISCam(Camera):
 
         return True
 
-
     def get_image(self):
 
         self.cam.SnapImage()
         frame = self.cam.GetImageEx()
         frame = cv2.flip(frame, 0)
         if self.crop is not None:
-            frame = frame[self.crop[0]:self.crop[1], self.crop[2]:self.crop[3]]
+            frame = frame[self.crop[0] : self.crop[1], self.crop[2] : self.crop[3]]
         return frame
-
 
     def close_capture_device(self):
 

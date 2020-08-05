@@ -272,4 +272,3 @@ def main():
         progress=args.no_progress,
         label=args.no_label,
     )
-

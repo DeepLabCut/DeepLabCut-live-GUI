@@ -20,8 +20,17 @@ setuptools.setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/DeepLabCut/DeepLabCut-live-GUI",
-    python_requires = '>=3.5, <3.8',
-    install_requires=['deeplabcut-live', 'pyserial', 'pandas', 'tables', 'multiprocess', 'imutils', 'pillow', 'tqdm'],
+    python_requires=">=3.5, <3.8",
+    install_requires=[
+        "deeplabcut-live",
+        "pyserial",
+        "pandas",
+        "tables",
+        "multiprocess",
+        "imutils",
+        "pillow",
+        "tqdm",
+    ],
     packages=setuptools.find_packages(),
     include_package_data=True,
     classifiers=(
@@ -29,6 +38,10 @@ setuptools.setup(
         "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
         "Operating System :: OS Independent",
     ),
-    entry_points = {'console_scripts' : ['dlclivegui=dlclivegui.dlclivegui:main',
-                                         'dlclivegui-video=dlclivegui.video:main']}
+    entry_points={
+        "console_scripts": [
+            "dlclivegui=dlclivegui.dlclivegui:main",
+            "dlclivegui-video=dlclivegui.video:main",
+        ]
+    },
 )

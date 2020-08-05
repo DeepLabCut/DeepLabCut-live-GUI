@@ -12,11 +12,9 @@ class QueuePositionError(Exception):
 class ClearableQueue(Queue):
     """ A Queue that provides safe methods for writing to a full queue, reading to an empty queue, and a method to clear the queue """
 
-
     def __init__(self, maxsize=0):
 
         super().__init__(maxsize)
-
 
     def clear(self):
         """ Clears queue, returns all objects in a list
@@ -36,7 +34,6 @@ class ClearableQueue(Queue):
             pass
 
         return objs
-
 
     def write(self, obj, clear=False):
         """ Puts an object in the queue, with an option to clear queue before writing.
@@ -62,9 +59,8 @@ class ClearableQueue(Queue):
             success = True
         except Full:
             success = False
-        
-        return success
 
+        return success
 
     def read(self, clear=False, position="last"):
         """ Gets an object in the queue, with the option to clear the queue and return the first element, last element, or all elements
@@ -99,7 +95,9 @@ class ClearableQueue(Queue):
                 elif position == "all":
                     obj = objs
                 else:
-                    raise QueuePositionError("Queue read position should be one of 'first', 'last', or 'all'")
+                    raise QueuePositionError(
+                        "Queue read position should be one of 'first', 'last', or 'all'"
+                    )
         else:
 
             try:
@@ -107,17 +105,15 @@ class ClearableQueue(Queue):
             except Empty:
                 pass
 
-        return obj        
+        return obj
 
 
 class ClearableMPQueue(mp.queues.Queue):
     """ A multiprocess Queue that provides safe methods for writing to a full queue, reading to an empty queue, and a method to clear the queue """
 
-
     def __init__(self, maxsize=0, ctx=mp.get_context("spawn")):
 
         super().__init__(maxsize, ctx=ctx)
-
 
     def clear(self):
         """ Clears queue, returns all objects in a list
@@ -137,7 +133,6 @@ class ClearableMPQueue(mp.queues.Queue):
             pass
 
         return objs
-
 
     def write(self, obj, clear=False):
         """ Puts an object in the queue, with an option to clear queue before writing.
@@ -163,9 +158,8 @@ class ClearableMPQueue(mp.queues.Queue):
             success = True
         except Full:
             success = False
-        
-        return success
 
+        return success
 
     def read(self, clear=False, position="last"):
         """ Gets an object in the queue, with the option to clear the queue and return the first element, last element, or all elements
@@ -200,8 +194,10 @@ class ClearableMPQueue(mp.queues.Queue):
                 elif position == "all":
                     obj = objs
                 else:
-                    raise QueuePositionError("Queue read position should be one of 'first', 'last', or 'all'")
-        
+                    raise QueuePositionError(
+                        "Queue read position should be one of 'first', 'last', or 'all'"
+                    )
+
         else:
 
             try:
@@ -209,5 +205,4 @@ class ClearableMPQueue(mp.queues.Queue):
             except Empty:
                 pass
 
-        return obj        
-
+        return obj

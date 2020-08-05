@@ -14,7 +14,7 @@ class CameraError(Exception):
     """
     Exception for incorrect use of cameras
     """
-    
+
     pass
 
 
@@ -41,7 +41,6 @@ class Camera(object):
         factor to resize images if using opencv display (display is very slow for large images), by default None
     """
 
-
     @staticmethod
     def arg_restrictions():
         """ Returns a dictionary of arguments restrictions for DLCLiveGUI
@@ -49,17 +48,18 @@ class Camera(object):
 
         return {}
 
-
-    def __init__(self,
-                 id,
-                 resolution=None,
-                 exposure=None,
-                 gain=None,
-                 rotate=None,
-                 crop=None,
-                 fps=None,
-                 use_tk_display=False,
-                 display_resize=1.0):
+    def __init__(
+        self,
+        id,
+        resolution=None,
+        exposure=None,
+        gain=None,
+        rotate=None,
+        crop=None,
+        fps=None,
+        use_tk_display=False,
+        display_resize=1.0,
+    ):
         """ Constructor method
         """
 
@@ -73,7 +73,6 @@ class Camera(object):
         self.use_tk_display = use_tk_display
         self.display_resize = display_resize if display_resize else 1.0
         self.next_frame = 0
-
 
     def set_im_size(self, res):
         """[summary]
@@ -92,8 +91,11 @@ class Camera(object):
         if not res:
             raise CameraError("Resolution is not set!")
 
-        self.im_size = (int(res[0]), int(res[1])) if self.crop is None else (self.crop[3]-self.crop[2], self.crop[1]-self.crop[0])
-
+        self.im_size = (
+            (int(res[0]), int(res[1]))
+            if self.crop is None
+            else (self.crop[3] - self.crop[2], self.crop[1] - self.crop[0])
+        )
 
     def set_capture_device(self):
         """ Sets frame capture device with desired properties
@@ -101,7 +103,6 @@ class Camera(object):
 
         raise NotImplementedError
 
-    
     def get_image_on_time(self):
         """ Gets an image from frame capture device at the appropriate time (according to fps).
         
@@ -119,10 +120,11 @@ class Camera(object):
             if cur_time > self.next_frame:
                 frame = self.get_image()
                 timestamp = cur_time
-                self.next_frame = max(self.next_frame + 1.0/self.fps, cur_time + 0.5/self.fps)
+                self.next_frame = max(
+                    self.next_frame + 1.0 / self.fps, cur_time + 0.5 / self.fps
+                )
 
         return frame, timestamp
-
 
     def get_image(self):
         """ Gets image from frame capture device
@@ -130,10 +132,8 @@ class Camera(object):
 
         raise NotImplementedError
 
-
     def close_capture_device(self):
         """ Closes frame capture device
         """
 
         raise NotImplementedError
-    
