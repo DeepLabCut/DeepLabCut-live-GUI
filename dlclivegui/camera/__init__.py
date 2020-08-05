@@ -29,4 +29,7 @@ if platform.system() in ["Darwin", "Linux"]:
         # print(f"Error importing AravisCam: f{e}")
 
 if platform.system() == "Darwin":
-    from dlclivegui.camera.pseye import PSEyeCam
+    try:
+        from dlclivegui.camera.pseye import PSEyeCam
+    except Exception as e:
+        pass
