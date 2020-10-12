@@ -12,7 +12,10 @@ from dlclivegui.camera.camera import Camera, CameraError
 from dlclivegui.camera.opencv import OpenCVCam
 
 if platform.system() == "Windows":
-    from dlclivegui.camera.tiscamera_windows import TISCam
+    try:
+        from dlclivegui.camera.tiscamera_windows import TISCam
+    except Exception as e:
+        pass
 
 if platform.system() == "Linux":
     try:
