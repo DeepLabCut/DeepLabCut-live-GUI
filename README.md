@@ -10,7 +10,7 @@
 [![Gitter](https://badges.gitter.im/DeepLabCut/community.svg)](https://gitter.im/DeepLabCut/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 [![Twitter Follow](https://img.shields.io/twitter/follow/DeepLabCut.svg?label=DeepLabCut&style=social)](https://twitter.com/DeepLabCut)
 
-GUI to run DeepLabCut-live video feed, record videos, and record external timestamps.
+GUI to run [DeepLabCut-live](https://github.com/DeepLabCut/DeepLabCut-live) on a video feed, record videos, and record external timestamps.
 
 ## [Installation Instructions](docs/install.md)
 
