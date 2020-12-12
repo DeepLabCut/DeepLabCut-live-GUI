@@ -63,3 +63,7 @@ If the `Ready` button is selected, you can now start a recording by clicking `On
 - ATTEMPT : the attempt number chosen from the `Attempt` dropdown.
 
 If you would not like to save the data from the session, please click `Delete Video`, and all data will be discarded. After you click `Save Video` or `Delete Video`, the `Off` button will be selected, indicating you can now set up a new session.
+
+#### References:
+
+If you use this code we kindly ask you to you please [cite Kane et al, eLife 2020](https://elifesciences.org/articles/61909). The preprint is available here: https://www.biorxiv.org/content/10.1101/2020.08.04.236422v2
