@@ -1,8 +1,7 @@
 ## Camera Support
 
 ### Windows
-
-- **The Imaging Source USB3 Cameras**: via code based on [Windows code samples](https://github.com/TheImagingSource/IC-Imaging-Control-Samples) provided by The Imaging Source. To use The Imaging Source USB3 cameras on Windows, you must first [install their drivers](https://www.theimagingsource.com/support/downloads-for-windows/).
+- **The Imaging Source USB3 Cameras**: via code based on [Windows code samples](https://github.com/TheImagingSource/IC-Imaging-Control-Samples) provided by The Imaging Source. To use The Imaging Source USB3 cameras on Windows, you must first [install their drivers](https://www.theimagingsource.com/support/downloads-for-windows/device-drivers/icwdmuvccamtis/) and [C library](https://www.theimagingsource.com/support/downloads-for-windows/software-development-kits-sdks/tisgrabberdll/).
 - **OpenCV compatible cameras**: OpenCV is installed with DeepLabCut-live-GUI, so webcams or other cameras compatible with OpenCV on Windows require no additional installation.
 
 ### Linux and NVIDIA Jetson Development Kits
