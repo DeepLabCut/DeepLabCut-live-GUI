@@ -13,7 +13,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="deeplabcut-live-gui",
-    version="0.0.b0",
+    version="1.0",
     author="A. & M. Mathis Labs",
     author_email="adim@deeplabcut.org",
     description="GUI to run real time deeplabcut experiments",

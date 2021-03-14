@@ -185,10 +185,7 @@ class TIS_GrabberDLL(object):
     # 	@sa IC_GetVideoFormatCount
     GetVideoFormat = __tisgrabber.IC_GetVideoFormat
     GetVideoFormat.restype = C.c_char_p
-    GetVideoFormat.argtypes = (
-        GrabberHandlePtr,
-        C.c_int,
-    )
+    GetVideoFormat.argtypes = (GrabberHandlePtr, C.c_int)
 
     #    Get the number of the available input channels for the current device.
     #    A video	capture device must have been opened before this call.
@@ -216,10 +213,7 @@ class TIS_GrabberDLL(object):
     # 	@sa IC_GetInputChannelCount
     GetInputChannel = __tisgrabber.IC_GetInputChannel
     GetInputChannel.restype = C.c_char_p
-    GetInputChannel.argtypes = (
-        GrabberHandlePtr,
-        C.c_int,
-    )
+    GetInputChannel.argtypes = (GrabberHandlePtr, C.c_int)
 
     #     Get the number of the available video norms for the current device.
     # 	A video capture device must have been opened before this call.
@@ -248,17 +242,11 @@ class TIS_GrabberDLL(object):
     # 	@sa IC_GetVideoNormCount
     GetVideoNorm = __tisgrabber.IC_GetVideoNorm
     GetVideoNorm.restype = C.c_char_p
-    GetVideoNorm.argtypes = (
-        GrabberHandlePtr,
-        C.c_int,
-    )
+    GetVideoNorm.argtypes = (GrabberHandlePtr, C.c_int)
 
     SetFormat = __tisgrabber.IC_SetFormat
     SetFormat.restype = C.c_int
-    SetFormat.argtypes = (
-        GrabberHandlePtr,
-        C.c_int,
-    )
+    SetFormat.argtypes = (GrabberHandlePtr, C.c_int)
     GetFormat = __tisgrabber.IC_GetFormat
     GetFormat.restype = C.c_int
     GetFormat.argtypes = (GrabberHandlePtr,)
@@ -272,10 +260,7 @@ class TIS_GrabberDLL(object):
 
     StartLive = __tisgrabber.IC_StartLive
     StartLive.restype = C.c_int
-    StartLive.argtypes = (
-        GrabberHandlePtr,
-        C.c_int,
-    )
+    StartLive.argtypes = (GrabberHandlePtr, C.c_int)
 
     StopLive = __tisgrabber.IC_StopLive
     StopLive.restype = C.c_int
@@ -283,10 +268,7 @@ class TIS_GrabberDLL(object):
 
     SetHWND = __tisgrabber.IC_SetHWnd
     SetHWND.restype = C.c_int
-    SetHWND.argtypes = (
-        GrabberHandlePtr,
-        C.c_int,
-    )
+    SetHWND.argtypes = (GrabberHandlePtr, C.c_int)
 
     #    Snaps an image. The video capture device must be set to live mode and a
     # 	sink type has to be set before this call. The format of the snapped images depend on
@@ -306,10 +288,7 @@ class TIS_GrabberDLL(object):
 
     SnapImage = __tisgrabber.IC_SnapImage
     SnapImage.restype = C.c_int
-    SnapImage.argtypes = (
-        GrabberHandlePtr,
-        C.c_int,
-    )
+    SnapImage.argtypes = (GrabberHandlePtr, C.c_int)
 
     #    Retrieve the properties of the current video format and sink type
     # 	@param hGrabber The handle to the grabber object.
@@ -363,28 +342,15 @@ class TIS_GrabberDLL(object):
 
     GetCameraProperty = __tisgrabber.IC_GetCameraProperty
     GetCameraProperty.restype = C.c_int
-    GetCameraProperty.argtypes = (
-        GrabberHandlePtr,
-        C.c_int,
-        C.POINTER(C.c_long),
-    )
+    GetCameraProperty.argtypes = (GrabberHandlePtr, C.c_int, C.POINTER(C.c_long))
 
     SetCameraProperty = __tisgrabber.IC_SetCameraProperty
     SetCameraProperty.restype = C.c_int
-    SetCameraProperty.argtypes = (
-        GrabberHandlePtr,
-        C.c_int,
-        C.c_long,
-    )
+    SetCameraProperty.argtypes = (GrabberHandlePtr, C.c_int, C.c_long)
 
     SetPropertyValue = __tisgrabber.IC_SetPropertyValue
     SetPropertyValue.restype = C.c_int
-    SetPropertyValue.argtypes = (
-        GrabberHandlePtr,
-        C.c_char_p,
-        C.c_char_p,
-        C.c_int,
-    )
+    SetPropertyValue.argtypes = (GrabberHandlePtr, C.c_char_p, C.c_char_p, C.c_int)
 
     GetPropertyValue = __tisgrabber.IC_GetPropertyValue
     GetPropertyValue.restype = C.c_int
@@ -398,12 +364,7 @@ class TIS_GrabberDLL(object):
     # ############################################################################
     SetPropertySwitch = __tisgrabber.IC_SetPropertySwitch
     SetPropertySwitch.restype = C.c_int
-    SetPropertySwitch.argtypes = (
-        GrabberHandlePtr,
-        C.c_char_p,
-        C.c_char_p,
-        C.c_int,
-    )
+    SetPropertySwitch.argtypes = (GrabberHandlePtr, C.c_char_p, C.c_char_p, C.c_int)
 
     GetPropertySwitch = __tisgrabber.IC_GetPropertySwitch
     GetPropertySwitch.restype = C.c_int
@@ -417,19 +378,11 @@ class TIS_GrabberDLL(object):
 
     IsPropertyAvailable = __tisgrabber.IC_IsPropertyAvailable
     IsPropertyAvailable.restype = C.c_int
-    IsPropertyAvailable.argtypes = (
-        GrabberHandlePtr,
-        C.c_char_p,
-        C.c_char_p,
-    )
+    IsPropertyAvailable.argtypes = (GrabberHandlePtr, C.c_char_p, C.c_char_p)
 
     PropertyOnePush = __tisgrabber.IC_PropertyOnePush
     PropertyOnePush.restype = C.c_int
-    PropertyOnePush.argtypes = (
-        GrabberHandlePtr,
-        C.c_char_p,
-        C.c_char_p,
-    )
+    PropertyOnePush.argtypes = (GrabberHandlePtr, C.c_char_p, C.c_char_p)
 
     SetPropertyAbsoluteValue = __tisgrabber.IC_SetPropertyAbsoluteValue
     SetPropertyAbsoluteValue.restype = C.c_int
