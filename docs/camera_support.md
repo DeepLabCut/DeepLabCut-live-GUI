@@ -63,3 +63,15 @@ If you're camera has built in methods to ensure the correct frame rate (e.g. whe
 The `get_image` method has no input arguments, but must return an image as a numpy array. We also recommend converting images to 8-bit integers (data type `uint8`).
 
 The `get_image_on_time` method has no input arguments, but must return an image as a numpy array (as in `get_image`) and the timestamp at which the image is returned (using python's `time.time()` function).
+
+### Camera Specific Tips for Installation & Use:
+
+- For **Basler cameras**, `pylon viewer` need to be installed. It can be downloaded for many platforms on the Basler website.
+As an example (tested on ubuntu 20.04, contributed by [@antortjim](https://github.com/antortjim)):
+```
+wget https://github.com/basler/pypylon/archive/refs/tags/1.7.2.tar.gz
+tar -zxvf 1.7.2.tar.gz
+cd pypylon-1.7.2
+python setup.py install
+# this installs pypylon version 6.1.1
+```
