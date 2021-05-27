@@ -68,12 +68,12 @@ The `get_image_on_time` method has no input arguments, but must return an image 
 
 #### Basler cameras
 
-Basler USB3 cameras are compatible with Aravis. However, integration with DeepLabCut can also be obtained with `pypylon`, the python module to drive Basler cameras, and supported by the company. Please note using `pypylon` requires you to install Pylon viewer, a free of cost GUI also developed and supported by Basler and available on several platforms.
+Basler USB3 cameras are compatible with Aravis. However, integration with DeepLabCut-live-GUI can also be obtained with `pypylon`, the python module to drive Basler cameras, and supported by the company. Please note using `pypylon` requires you to install Pylon viewer, a free of cost GUI also developed and supported by Basler and available on several platforms.
 
 * **Pylon viewer**: https://www.baslerweb.com/en/sales-support/downloads/software-downloads/#type=pylonsoftware;language=all;version=all
 * `pypylon`: https://github.com/basler/pypylon/releases
 
-If you want to use DeepLabCut with a Basler USB3 camera via pypylon, see the folllowing instructions. Please note this is tested on Ubuntu 20.04. It may (or may not) work similarly in other platforms (contributed by [@antortjim](https://github.com/antortjim)). This procedure should take around 10 minutes:
+If you want to use DeepLabCut-live-GUI with a Basler USB3 camera via pypylon, see the folllowing instructions. Please note this is tested on Ubuntu 20.04. It may (or may not) work similarly in other platforms (contributed by [@antortjim](https://github.com/antortjim)). This procedure should take around 10 minutes:
 
 **Install Pylon viewer**
 
@@ -132,4 +132,4 @@ cd pypylon-1.7.2
 python setup.py install
 ```
 
-Once you have completed these steps, you should be able to call your Basler camera from DeepLabCut using the BaslerCam camera type that appears after clicking "Add camera")
+Once you have completed these steps, you should be able to call your Basler camera from DeepLabCut-live-GUI using the BaslerCam camera type that appears after clicking "Add camera")
