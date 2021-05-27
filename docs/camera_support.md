@@ -66,12 +66,70 @@ The `get_image_on_time` method has no input arguments, but must return an image 
 
 ### Camera Specific Tips for Installation & Use:
 
-- For **Basler cameras**, `pylon viewer` need to be installed. It can be downloaded for many platforms on the Basler website.
-As an example (tested on ubuntu 20.04, contributed by [@antortjim](https://github.com/antortjim)):
+#### Basler cameras
+
+Basler USB3 cameras are compatible with Aravis. However, integration with DeepLabCut can also be obtained with `pypylon`, the python module to drive Basler cameras, and supported by the company. Please note using `pypylon` requires you to install Pylon viewer, a free of cost GUI also developed and supported by Basler and available on several platforms.
+
+* **Pylon viewer**: https://www.baslerweb.com/en/sales-support/downloads/software-downloads/#type=pylonsoftware;language=all;version=all
+* `pypylon`: https://github.com/basler/pypylon/releases
+
+If you want to use DeepLabCut with a Basler USB3 camera via pypylon, see the folllowing instructions. Please note this is tested on Ubuntu 20.04. It may (or may not) work similarly in other platforms (contributed by [@antortjim](https://github.com/antortjim)). This procedure should take around 10 minutes:
+
+**Install Pylon viewer**
+
+1. Download .deb file
+Download the .deb file in the downloads center of Basler. Last version as of writing this was **pylon 6.2.0 Camera Software Suite Linux x86 (64 Bit) - Debian Installer Package**.
+
+
+2. Install .deb file
+
+```
+sudo dpkg -i pylon_6.2.0.21487-deb0_amd64.deb
+```
+
+**Install swig**
+
+Required for compilation of non python code within pypylon
+
+1. Install swig dependencies
+
+You may have to install these in a fresh Ubuntu 20.04 install
+
+```
+sudo apt install gcc g++
+sudo apt install libpcre3-dev
+sudo apt install make
+```
+
+2. Download swig
+
+Go to http://prdownloads.sourceforge.net/swig/swig-4.0.2.tar.gz and download the tar gz
+
+3. Install swig
+```
+tar -zxvf swig-4.0.2.tar.gz
+cd swig-4.0.2
+./configure
+make
+sudo make install
+```
+
+**Install pypylon**
+
+1. Download pypylon
+
 ```
 wget https://github.com/basler/pypylon/archive/refs/tags/1.7.2.tar.gz
+```
+
+or go to https://github.com/basler/pypylon/releases and get the version you want!
+
+2. Install pypylon
+
+```
 tar -zxvf 1.7.2.tar.gz
 cd pypylon-1.7.2
 python setup.py install
-# this installs pypylon version 6.1.1
 ```
+
+Once you have completed these steps, you should be able to call your Basler camera from DeepLabCut using the BaslerCam camera type that appears after clicking "Add camera")
