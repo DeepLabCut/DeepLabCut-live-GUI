@@ -5,31 +5,36 @@ DeepLabCut Toolbox (deeplabcut.org)
 Licensed under GNU Lesser General Public License v3.0
 """
 
-import pypylon as pylon
+#import pypylon as pylon
+from pypylon import pylon
 from imutils import rotate_bound
 import time
 
 from dlclivegui.camera import Camera, CameraError
+TIMEOUT = 100
 
+def get_devices():
+    tlFactory = pylon.TlFactory.GetInstance()
+    devices = tlFactory.EnumerateDevices()
+    return devices
 
 class BaslerCam(Camera):
     @staticmethod
     def arg_restrictions():
         """ Returns a dictionary of arguments restrictions for DLCLiveGUI
         """
-
-        tlFactory = pylon.TlFactory.GetInstance()
-        devices = tlFactory.EnumerateDevices()
-
-        return {"device": devices, "display": [True, False]}
+        devices = get_devices()
+        device_ids = list(range(len(devices)))
+        return {"device": device_ids, "display": [True, False]}
 
     def __init__(
         self,
-        device="",
+        device=0,
         resolution=[640, 480],
-        exposure=0,
+        exposure=15000,
         rotate=0,
         crop=None,
+        gain=0.0,
         fps=30,
         display=True,
         display_resize=1.0,
@@ -41,6 +46,7 @@ class BaslerCam(Camera):
             exposure=exposure,
             rotate=rotate,
             crop=crop,
+            gain=gain,
             fps=fps,
             use_tk_display=display,
             display_resize=display_resize,
@@ -50,12 +56,14 @@ class BaslerCam(Camera):
 
     def set_capture_device(self):
 
+        devices = get_devices()
         self.cam = pylon.InstantCamera(
-            pylon.TlFactory.GetInstance().CreateDevice(self.id))
+            pylon.TlFactory.GetInstance().CreateDevice(devices[self.id])
+        )
         self.cam.Open()
 
         self.cam.Gain.SetValue(self.gain)
-        self.cam.Exposure.SetValue(self.exposure)
+        self.cam.ExposureTime.SetValue(self.exposure)
         self.cam.Width.SetValue(self.im_size[0])
         self.cam.Height.SetValue(self.im_size[1])
 
@@ -67,9 +75,8 @@ class BaslerCam(Camera):
         return True
 
     def get_image(self):
-
         grabResult = self.cam.RetrieveResult(
-            1, pylon.TimeoutHandling_ThrowException)
+            TIMEOUT, pylon.TimeoutHandling_ThrowException)
 
         frame = None
 
