@@ -36,3 +36,8 @@ if platform.system() == "Darwin":
         from dlclivegui.camera.pseye import PSEyeCam
     except Exception as e:
         pass
+
+try:
+    from dlclivegui.camera.basler import BaslerCam
+except Exception as e:
+    pass
