@@ -20,7 +20,7 @@ setuptools.setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/DeepLabCut/DeepLabCut-live-GUI",
-    python_requires=">=3.5, <3.11",
+    python_requires=">=3.10, <=3.11",
     install_requires=[
         "deeplabcut-live",
         "pyserial",

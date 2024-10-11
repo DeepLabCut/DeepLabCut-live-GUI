@@ -30,6 +30,7 @@ import datetime
 import inspect
 import importlib
 
+import numpy as np
 from PIL import Image, ImageTk, ImageDraw
 import colorcet as cc
 
@@ -466,6 +467,13 @@ class DLCLiveGUI(object):
                 )
 
                 if pose is not None:
+                    pose = pose.numpy()
+                    print(pose.shape)
+                    if len(pose) > 0:
+                        pose = pose[0]
+                    else:
+                        bodyparts = pose.shape[-2]
+                        pose = np.zeros((bodyparts, 3))
 
                     im_size = (frame.shape[1], frame.shape[0])
 
@@ -592,7 +600,7 @@ class DLCLiveGUI(object):
             self.edit_dlc_settings(True)
 
     def edit_dlc_settings(self, new=False):
-
+        print(self.cfg)
         if new:
             cur_set = self.empty_dlc_settings()
         else:
@@ -646,7 +654,7 @@ class DLCLiveGUI(object):
         Combobox(
             self.dlc_settings_window,
             textvariable=self.dlc_settings_model_type,
-            value=["base", "tensorrt", "tflite"],
+            value=["pytorch"],
             state="readonly",
         ).grid(sticky="nsew", row=cur_row, column=1)
         cur_row += 1
@@ -794,6 +802,7 @@ class DLCLiveGUI(object):
                 "DLC Settings Error", warn_msg, parent=self.dlc_settings_window
             )
 
+        # CREATES DLC OPTIONS
         self.cfg["dlc_options"][self.dlc_settings_name.get()] = {
             "model_path": self.dlc_settings_model_path.get(),
             "model_type": self.dlc_settings_model_type.get(),
@@ -1015,13 +1024,25 @@ class DLCLiveGUI(object):
         ### get default args: load module and read arguments ###
 
         self.proc_object = getattr(self.dlc_proc_module, self.dlc_proc_name.get())
-        def_args = inspect.getargspec(self.proc_object)
-        self.proc_param_names = def_args[0]
-        self.proc_param_default_values = def_args[3]
-        self.proc_param_default_types = [
-            type(v) if type(v) is not list else [type(v[0])] for v in def_args[3]
+        sig = inspect.signature(self.proc_object)
+        parameter_names = [param.name for param_name, param in sig.parameters.items()]
+        parameter_default_values = [
+            param.default
+            for param_name, param in sig.parameters.items()
+            if param.default != inspect.Parameter.empty
         ]
-        for i in range(len(def_args[0]) - len(def_args[3])):
+
+        def_args = parameter_names
+        print(sig)
+        print(sig.parameters)
+
+        self.proc_param_names = parameter_names
+        self.proc_param_default_values = parameter_default_values
+        self.proc_param_default_types = [
+            type(v) if type(v) is not list else [type(v[0])]
+            for v in parameter_default_values
+        ]
+        for i in range(len(parameter_names) - len(parameter_default_values)):
             self.proc_param_default_values = ("",) + self.proc_param_default_values
             self.proc_param_default_types = [str] + self.proc_param_default_types
 
@@ -1054,8 +1075,12 @@ class DLCLiveGUI(object):
                 "dtype": self.proc_param_default_types[i],
             }
 
+        print("proc_args_dict")
+        print(proc_args_dict)
         proc_args_gui = SettingsWindow(
-            title="DLC Processor Settings", settings=proc_args_dict, parent=self.window
+            title="DLC Processor Settings",
+            settings=proc_args_dict,
+            parent=self.window,
         )
         proc_args_gui.mainloop()
 
