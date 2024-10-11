@@ -248,7 +248,7 @@ class CameraPoseProcess(CameraProcess):
             dlc_file = f"{filename}_DLC.hdf5"
             proc_file = f"{filename}_PROC"
 
-            bodyparts = self.dlc.cfg["all_joints_names"]
+            bodyparts = self.dlc.cfg["metadata"]["bodyparts"]
             poses = np.array(self.poses)
             poses = poses.reshape((poses.shape[0], poses.shape[1] * poses.shape[2]))
             pdindex = pd.MultiIndex.from_product(
