@@ -734,7 +734,7 @@ class DLCLiveGUI(object):
         return {
             "name": "",
             "model_path": "",
-            "model_type": "base",
+            "model_type": "pytorch",
             "precision": "FP32",
             "cropping": "",
             "dynamic": "False, 0.5, 10",
