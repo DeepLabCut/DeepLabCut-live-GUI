@@ -467,14 +467,7 @@ class DLCLiveGUI(object):
                 )
 
                 if pose is not None:
-                    pose = pose.numpy()
-                    print(pose.shape)
-                    if len(pose) > 0:
-                        pose = pose[0]
-                    else:
-                        bodyparts = pose.shape[-2]
-                        pose = np.zeros((bodyparts, 3))
-
+                    print(f"POSE: {pose.shape}")
                     im_size = (frame.shape[1], frame.shape[0])
 
                     if not self.display_colors:
