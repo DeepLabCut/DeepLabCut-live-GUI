@@ -592,7 +592,6 @@ class DLCLiveGUI(object):
             self.edit_dlc_settings(True)
 
     def edit_dlc_settings(self, new=False):
-        print(self.cfg)
         if new:
             cur_set = self.empty_dlc_settings()
         else:
@@ -735,12 +734,11 @@ class DLCLiveGUI(object):
         }
 
     def browse_dlc_path(self):
-        """ Open file browser to select DLC exported model directory
-        """
+        """ Open file browser to select DLC exported model directory """
 
-        new_dlc_path = filedialog.askdirectory(parent=self.dlc_settings_window)
+        new_dlc_path = filedialog.askopenfile(parent=self.dlc_settings_window)
         if new_dlc_path:
-            self.dlc_settings_model_path.set(new_dlc_path)
+            self.dlc_settings_model_path.set(new_dlc_path.name)
 
     def update_dlc_settings(self):
         """ Update DLC settings for the current dlc option from DLC Settings GUI
@@ -1025,9 +1023,6 @@ class DLCLiveGUI(object):
         ]
 
         def_args = parameter_names
-        print(sig)
-        print(sig.parameters)
-
         self.proc_param_names = parameter_names
         self.proc_param_default_values = parameter_default_values
         self.proc_param_default_types = [
@@ -1067,8 +1062,6 @@ class DLCLiveGUI(object):
                 "dtype": self.proc_param_default_types[i],
             }
 
-        print("proc_args_dict")
-        print(proc_args_dict)
         proc_args_gui = SettingsWindow(
             title="DLC Processor Settings",
             settings=proc_args_dict,

@@ -90,10 +90,6 @@ class CameraPoseProcess(CameraProcess):
             if proc_obj is not None:
                 dlc_params["processor"] = proc_obj(**proc_params)
 
-        dlc_params["path"] = dlc_params.pop("model_path")
-        dlc_params["snapshot"] = "superanimal_topviewmouse_resnet_50.pt"
-        dlc_params["detector_snapshot"] = "superanimal_topviewmouse_fasterrcnn_mobilenet_v3_large_fpn.pt"
-
         print("DLCLive params")
         for p, v in dlc_params.items():
             print(f"  {p}: {v}")
