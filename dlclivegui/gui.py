@@ -31,17 +31,17 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .camera_controller import CameraController, FrameData
-from .cameras import CameraFactory
-from .config import (
+from dlclivegui.camera_controller import CameraController, FrameData
+from dlclivegui.cameras import CameraFactory
+from dlclivegui.config import (
     ApplicationSettings,
     CameraSettings,
     DLCProcessorSettings,
     RecordingSettings,
     DEFAULT_CONFIG,
 )
-from .dlc_processor import DLCLiveProcessor, PoseResult
-from .video_recorder import VideoRecorder
+from dlclivegui.dlc_processor import DLCLiveProcessor, PoseResult
+from dlclivegui.video_recorder import VideoRecorder
 
 
 class MainWindow(QMainWindow):
