@@ -39,6 +39,22 @@ class OpenCVCameraBackend(CameraBackend):
             self._capture.release()
             self._capture = None
 
+    def stop(self) -> None:
+        if self._capture is not None:
+            self._capture.release()
+            self._capture = None
+
+    def device_name(self) -> str:
+        base_name = "OpenCV"
+        if self._capture is not None and hasattr(self._capture, "getBackendName"):
+            try:
+                backend_name = self._capture.getBackendName()
+            except Exception:  # pragma: no cover - backend specific
+                backend_name = ""
+            if backend_name:
+                base_name = backend_name
+        return f"{base_name} camera #{self.settings.index}"
+
     def _configure_capture(self) -> None:
         if self._capture is None:
             return

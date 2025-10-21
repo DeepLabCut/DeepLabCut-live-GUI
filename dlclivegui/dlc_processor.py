@@ -45,6 +45,18 @@ class DLCLiveProcessor(QObject):
     def configure(self, settings: DLCProcessorSettings) -> None:
         self._settings = settings
 
+    def reset(self) -> None:
+        """Cancel pending work and drop the current DLCLive instance."""
+
+        with self._lock:
+            if self._pending is not None and not self._pending.done():
+                self._pending.cancel()
+            self._pending = None
+            if self._init_future is not None and not self._init_future.done():
+                self._init_future.cancel()
+            self._init_future = None
+            self._dlc = None
+
     def shutdown(self) -> None:
         with self._lock:
             if self._pending is not None:
@@ -106,6 +118,10 @@ class DLCLiveProcessor(QObject):
         except Exception as exc:  # pragma: no cover - runtime behaviour
             LOGGER.exception("Failed to initialise DLCLive", exc_info=exc)
             self.error.emit(str(exc))
+        finally:
+            with self._lock:
+                if self._init_future is future:
+                    self._init_future = None
 
     def _run_inference(self, frame: np.ndarray, timestamp: float) -> PoseResult:
         if self._dlc is None:
@@ -120,4 +136,8 @@ class DLCLiveProcessor(QObject):
             LOGGER.exception("Pose inference failed", exc_info=exc)
             self.error.emit(str(exc))
             return
+        finally:
+            with self._lock:
+                if self._pending is future:
+                    self._pending = None
         self.pose_ready.emit(result)

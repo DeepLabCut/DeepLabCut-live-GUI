@@ -33,6 +33,11 @@ class CameraBackend(ABC):
         # Most backends do not require additional handling, but subclasses may
         # override when they need to interrupt blocking reads.
 
+    def device_name(self) -> str:
+        """Return a human readable name for the device currently in use."""
+
+        return self.settings.name
+
     @abstractmethod
     def open(self) -> None:
         """Open the capture device."""
