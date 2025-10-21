@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         self._video_recorder: Optional[VideoRecorder] = None
         self._rotation_degrees: int = 0
         self._detected_cameras: list[DetectedCamera] = []
+        self._active_camera_settings: Optional[CameraSettings] = None
 
         self.camera_controller = CameraController()
         self.dlc_processor = DLCLiveProcessor()
@@ -69,6 +70,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._apply_config(self._config)
         self._update_inference_buttons()
+        self._update_camera_controls_enabled()
 
     # ------------------------------------------------------------------ UI
     def _setup_ui(self) -> None:
@@ -132,6 +134,16 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Camera settings")
         form = QFormLayout(group)
 
+        self.camera_backend = QComboBox()
+        self.camera_backend.setEditable(True)
+        availability = CameraFactory.available_backends()
+        for backend in CameraFactory.backend_names():
+            label = backend
+            if not availability.get(backend, True):
+                label = f"{backend} (unavailable)"
+            self.camera_backend.addItem(label, backend)
+        form.addRow("Backend", self.camera_backend)
+
         index_layout = QHBoxLayout()
         self.camera_index = QComboBox()
         self.camera_index.setEditable(True)
@@ -152,16 +164,6 @@ class MainWindow(QMainWindow):
         self.camera_fps.setRange(1.0, 240.0)
         self.camera_fps.setDecimals(2)
         form.addRow("Frame rate", self.camera_fps)
-
-        self.camera_backend = QComboBox()
-        self.camera_backend.setEditable(True)
-        availability = CameraFactory.available_backends()
-        for backend in CameraFactory.backend_names():
-            label = backend
-            if not availability.get(backend, True):
-                label = f"{backend} (unavailable)"
-            self.camera_backend.addItem(label, backend)
-        form.addRow("Backend", self.camera_backend)
 
         self.camera_properties_edit = QPlainTextEdit()
         self.camera_properties_edit.setPlaceholderText(
@@ -287,6 +289,7 @@ class MainWindow(QMainWindow):
         )
 
         self.camera_controller.frame_ready.connect(self._on_frame_ready)
+        self.camera_controller.started.connect(self._on_camera_started)
         self.camera_controller.error.connect(self._show_error)
         self.camera_controller.stopped.connect(self._on_camera_stopped)
 
@@ -313,6 +316,7 @@ class MainWindow(QMainWindow):
         self.camera_properties_edit.setPlainText(
             json.dumps(camera.properties, indent=2) if camera.properties else ""
         )
+        self._active_camera_settings = None
 
         dlc = config.dlc
         self.model_path_edit.setText(dlc.model_path)
@@ -347,7 +351,7 @@ class MainWindow(QMainWindow):
         backend_text = self._current_backend_name()
         properties = self._parse_json(self.camera_properties_edit.toPlainText())
         name_text = self.camera_index.currentText().strip()
-        return CameraSettings(
+        settings = CameraSettings(
             name=name_text or f"Camera {index}",
             index=index,
             width=self.camera_width.value(),
@@ -356,6 +360,66 @@ class MainWindow(QMainWindow):
             backend=backend_text or "opencv",
             properties=properties,
         )
+        return settings.apply_defaults()
+
+    def _current_backend_name(self) -> str:
+        backend_data = self.camera_backend.currentData()
+        if isinstance(backend_data, str) and backend_data:
+            return backend_data
+        text = self.camera_backend.currentText().strip()
+        return text or "opencv"
+
+    def _refresh_camera_indices(
+        self, *_args: object, keep_current: bool = True
+    ) -> None:
+        backend = self._current_backend_name()
+        detected = CameraFactory.detect_cameras(backend)
+        debug_info = [f"{camera.index}:{camera.label}" for camera in detected]
+        print(
+            f"[CameraDetection] Available cameras for backend '{backend}': {debug_info}"
+        )
+        self._detected_cameras = detected
+        previous_index = self._current_camera_index_value()
+        previous_text = self.camera_index.currentText()
+        self.camera_index.blockSignals(True)
+        self.camera_index.clear()
+        for camera in detected:
+            self.camera_index.addItem(camera.label, camera.index)
+        if keep_current and previous_index is not None:
+            self._select_camera_by_index(previous_index, fallback_text=previous_text)
+        elif detected:
+            self.camera_index.setCurrentIndex(0)
+        else:
+            if keep_current and previous_text:
+                self.camera_index.setEditText(previous_text)
+            else:
+                self.camera_index.setEditText("")
+        self.camera_index.blockSignals(False)
+
+    def _select_camera_by_index(
+        self, index: int, fallback_text: Optional[str] = None
+    ) -> None:
+        self.camera_index.blockSignals(True)
+        for row in range(self.camera_index.count()):
+            if self.camera_index.itemData(row) == index:
+                self.camera_index.setCurrentIndex(row)
+                break
+        else:
+            text = fallback_text if fallback_text is not None else str(index)
+            self.camera_index.setEditText(text)
+        self.camera_index.blockSignals(False)
+
+    def _current_camera_index_value(self) -> Optional[int]:
+        data = self.camera_index.currentData()
+        if isinstance(data, int):
+            return data
+        text = self.camera_index.currentText().strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
 
     def _current_backend_name(self) -> str:
         backend_data = self.camera_backend.currentData()
@@ -519,6 +583,18 @@ class MainWindow(QMainWindow):
             self._last_pose = None
             self._update_video_display(rotated)
 
+    def _on_backend_changed(self, *_args: object) -> None:
+        self._refresh_camera_indices(keep_current=False)
+
+    def _on_rotation_changed(self, _index: int) -> None:
+        data = self.rotation_combo.currentData()
+        self._rotation_degrees = int(data) if isinstance(data, int) else 0
+        if self._raw_frame is not None:
+            rotated = self._apply_rotation(self._raw_frame)
+            self._current_frame = rotated
+            self._last_pose = None
+            self._update_video_display(rotated)
+
     # ------------------------------------------------------------------ camera control
     def _start_preview(self) -> None:
         try:
@@ -526,6 +602,7 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self._show_error(str(exc))
             return
+        self._active_camera_settings = settings
         self.camera_controller.start(settings)
         self.preview_button.setEnabled(False)
         self.stop_preview_button.setEnabled(True)
@@ -533,27 +610,61 @@ class MainWindow(QMainWindow):
         self._raw_frame = None
         self._last_pose = None
         self._dlc_active = False
-        self.statusBar().showMessage("Camera preview started", 3000)
+        self.statusBar().showMessage("Starting camera preview…", 3000)
         self._update_inference_buttons()
+        self._update_camera_controls_enabled()
 
     def _stop_preview(self) -> None:
+        if not self.camera_controller.is_running():
+            return
+        self.preview_button.setEnabled(False)
+        self.stop_preview_button.setEnabled(False)
+        self.start_inference_button.setEnabled(False)
+        self.stop_inference_button.setEnabled(False)
+        self.statusBar().showMessage("Stopping camera preview…", 3000)
         self.camera_controller.stop()
         self._stop_inference(show_message=False)
+
+    def _on_camera_started(self, settings: CameraSettings) -> None:
+        self._active_camera_settings = settings
+        self.preview_button.setEnabled(False)
+        self.stop_preview_button.setEnabled(True)
+        self.camera_width.blockSignals(True)
+        self.camera_width.setValue(int(settings.width))
+        self.camera_width.blockSignals(False)
+        self.camera_height.blockSignals(True)
+        self.camera_height.setValue(int(settings.height))
+        self.camera_height.blockSignals(False)
+        if getattr(settings, "fps", None):
+            self.camera_fps.blockSignals(True)
+            self.camera_fps.setValue(float(settings.fps))
+            self.camera_fps.blockSignals(False)
+        resolution = f"{int(settings.width)}×{int(settings.height)}"
+        if getattr(settings, "fps", None):
+            fps_text = f"{float(settings.fps):.2f} FPS"
+        else:
+            fps_text = "unknown FPS"
+        self.statusBar().showMessage(
+            f"Camera preview started: {resolution} @ {fps_text}", 5000
+        )
+        self._update_inference_buttons()
+        self._update_camera_controls_enabled()
+
+    def _on_camera_stopped(self) -> None:
+        if self._video_recorder and self._video_recorder.is_running:
+            self._stop_recording()
         self.preview_button.setEnabled(True)
         self.stop_preview_button.setEnabled(False)
+        self._stop_inference(show_message=False)
         self._current_frame = None
         self._raw_frame = None
         self._last_pose = None
+        self._active_camera_settings = None
         self.video_label.setPixmap(QPixmap())
         self.video_label.setText("Camera preview not started")
         self.statusBar().showMessage("Camera preview stopped", 3000)
         self._update_inference_buttons()
-
-    def _on_camera_stopped(self) -> None:
-        self.preview_button.setEnabled(True)
-        self.stop_preview_button.setEnabled(False)
-        self._stop_inference(show_message=False)
-        self._update_inference_buttons()
+        self._update_camera_controls_enabled()
 
     def _configure_dlc(self) -> bool:
         try:
@@ -572,6 +683,28 @@ class MainWindow(QMainWindow):
         self.start_inference_button.setEnabled(preview_running and not self._dlc_active)
         self.stop_inference_button.setEnabled(preview_running and self._dlc_active)
 
+    def _update_camera_controls_enabled(self) -> None:
+        recording_active = (
+            self._video_recorder is not None and self._video_recorder.is_running
+        )
+        allow_changes = (
+            not self.camera_controller.is_running()
+            and not self._dlc_active
+            and not recording_active
+        )
+        widgets = [
+            self.camera_backend,
+            self.camera_index,
+            self.refresh_cameras_button,
+            self.camera_width,
+            self.camera_height,
+            self.camera_fps,
+            self.camera_properties_edit,
+            self.rotation_combo,
+        ]
+        for widget in widgets:
+            widget.setEnabled(allow_changes)
+
     def _start_inference(self) -> None:
         if self._dlc_active:
             self.statusBar().showMessage("Pose inference already running", 3000)
@@ -589,6 +722,7 @@ class MainWindow(QMainWindow):
         self._dlc_active = True
         self.statusBar().showMessage("Starting pose inference…", 3000)
         self._update_inference_buttons()
+        self._update_camera_controls_enabled()
 
     def _stop_inference(self, show_message: bool = True) -> None:
         was_active = self._dlc_active
@@ -600,10 +734,17 @@ class MainWindow(QMainWindow):
         if was_active and show_message:
             self.statusBar().showMessage("Pose inference stopped", 3000)
         self._update_inference_buttons()
+        self._update_camera_controls_enabled()
 
     # ------------------------------------------------------------------ recording
     def _start_recording(self) -> None:
         if self._video_recorder and self._video_recorder.is_running:
+            return
+        if not self.camera_controller.is_running():
+            self._show_error("Start the camera preview before recording.")
+            return
+        if self._current_frame is None:
+            self._show_error("Wait for the first preview frame before recording.")
             return
         try:
             recording = self._recording_settings_from_ui()
@@ -613,8 +754,21 @@ class MainWindow(QMainWindow):
         if not recording.enabled:
             self._show_error("Recording is disabled in the configuration.")
             return
+        frame = self._current_frame
+        assert frame is not None
+        height, width = frame.shape[:2]
+        frame_rate = (
+            self._active_camera_settings.fps
+            if self._active_camera_settings is not None
+            else self.camera_fps.value()
+        )
         output_path = recording.output_path()
-        self._video_recorder = VideoRecorder(output_path, recording.options)
+        self._video_recorder = VideoRecorder(
+            output_path,
+            recording.options,
+            frame_size=(int(width), int(height)),
+            frame_rate=float(frame_rate),
+        )
         try:
             self._video_recorder.start()
         except Exception as exc:  # pragma: no cover - runtime error
@@ -624,6 +778,7 @@ class MainWindow(QMainWindow):
         self.start_record_button.setEnabled(False)
         self.stop_record_button.setEnabled(True)
         self.statusBar().showMessage(f"Recording to {output_path}", 5000)
+        self._update_camera_controls_enabled()
 
     def _stop_recording(self) -> None:
         if not self._video_recorder:
@@ -633,6 +788,7 @@ class MainWindow(QMainWindow):
         self.start_record_button.setEnabled(True)
         self.stop_record_button.setEnabled(False)
         self.statusBar().showMessage("Recording stopped", 3000)
+        self._update_camera_controls_enabled()
 
     # ------------------------------------------------------------------ frame handling
     def _on_frame_ready(self, frame_data: FrameData) -> None:
@@ -640,6 +796,10 @@ class MainWindow(QMainWindow):
         self._raw_frame = raw_frame
         frame = self._apply_rotation(raw_frame)
         self._current_frame = frame
+        if self._active_camera_settings is not None:
+            height, width = frame.shape[:2]
+            self._active_camera_settings.width = int(width)
+            self._active_camera_settings.height = int(height)
         if self._video_recorder and self._video_recorder.is_running:
             self._video_recorder.write(frame)
         if self._dlc_active:
@@ -709,7 +869,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ Qt overrides
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour
         if self.camera_controller.is_running():
-            self.camera_controller.stop()
+            self.camera_controller.stop(wait=True)
         if self._video_recorder and self._video_recorder.is_running:
             self._video_recorder.stop()
         self.dlc_processor.shutdown()

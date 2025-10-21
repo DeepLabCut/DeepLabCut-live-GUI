@@ -280,49 +280,24 @@ class GenTLCameraBackend(CameraBackend):
     def _configure_frame_rate(self, node_map) -> None:
         if not self.settings.fps:
             return
-        try:
-            node_map.AcquisitionFrameRateEnable.value = True
-        except Exception:
-            pass
-        try:
-            node_map.AcquisitionFrameRate.value = float(self.settings.fps)
-        except Exception:
-            pass
+        left, right, top, bottom = map(int, crop)
+        width = right - left
+        height = bottom - top
+        self._camera.set_region(left, top, width, height)
 
-    @staticmethod
-    def _adjust_to_increment(value: int, minimum: int, maximum: int, increment: int) -> int:
-        value = max(minimum, min(maximum, value))
-        if increment <= 0:
-            return value
-        return minimum + ((value - minimum) // increment) * increment
+    def _buffer_to_numpy(self, buffer) -> np.ndarray:
+        pixel_format = buffer.get_image_pixel_format()
+        bits_per_pixel = (pixel_format >> 16) & 0xFF
+        if bits_per_pixel == 8:
+            int_pointer = ctypes.POINTER(ctypes.c_uint8)
+        else:
+            int_pointer = ctypes.POINTER(ctypes.c_uint16)
+        addr = buffer.get_data()
+        ptr = ctypes.cast(addr, int_pointer)
+        frame = np.ctypeslib.as_array(ptr, (buffer.get_image_height(), buffer.get_image_width()))
+        frame = frame.copy()
+        if frame.ndim < 3:
+            import cv2
 
-    def _convert_frame(self, frame: np.ndarray) -> np.ndarray:
-        result = frame.astype(np.float32 if frame.dtype == np.float64 else frame.dtype)
-        if result.dtype != np.uint8:
-            max_val = np.max(result)
-            if max_val > 0:
-                result = (result / max_val * 255.0).astype(np.uint8)
-            else:
-                result = np.zeros_like(result, dtype=np.uint8)
-        if result.ndim == 2:
-            result = cv2.cvtColor(result, cv2.COLOR_GRAY2BGR)
-        elif result.ndim == 3 and result.shape[2] == 3 and self._pixel_format == "RGB8":
-            result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-
-        if self._rotate == 90:
-            result = cv2.rotate(result, cv2.ROTATE_90_CLOCKWISE)
-        elif self._rotate == 180:
-            result = cv2.rotate(result, cv2.ROTATE_180)
-        elif self._rotate == 270:
-            result = cv2.rotate(result, cv2.ROTATE_90_COUNTERCLOCKWISE)
-
-        if self._crop is not None:
-            top, bottom, left, right = self._crop
-            height, width = result.shape[:2]
-            top = max(0, min(height, top))
-            bottom = max(top, min(height, bottom))
-            left = max(0, min(width, left))
-            right = max(left, min(width, right))
-            result = result[top:bottom, left:right]
-
-        return result.copy()
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        return frame
