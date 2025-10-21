@@ -116,3 +116,5 @@ venv.bak/
 
 # ide files
 .vscode
+
+!dlclivegui/config.py
