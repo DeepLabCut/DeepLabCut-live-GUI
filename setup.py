@@ -1,36 +1,32 @@
-"""
-DeepLabCut Toolbox (deeplabcut.org)
-© A. & M. Mathis Labs
-
-Licensed under GNU Lesser General Public License v3.0
-"""
-
+"""Setup configuration for the DeepLabCut Live GUI."""
+from __future__ import annotations
 
 import setuptools
 
-with open("README.md", "r") as fh:
+with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setuptools.setup(
     name="deeplabcut-live-gui",
-    version="1.0",
+    version="2.0",
     author="A. & M. Mathis Labs",
     author_email="adim@deeplabcut.org",
-    description="GUI to run real time deeplabcut experiments",
+    description="PyQt-based GUI to run real time DeepLabCut experiments",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/DeepLabCut/DeepLabCut-live-GUI",
-    python_requires=">=3.5, <3.11",
+    python_requires=">=3.11",
     install_requires=[
         "deeplabcut-live",
-        "pyserial",
-        "pandas",
-        "tables",
-        "multiprocess",
-        "imutils",
-        "pillow",
-        "tqdm",
+        "PyQt6",
+        "numpy",
+        "opencv-python",
+        "vidgear[core]",
     ],
+    extras_require={
+        "basler": ["pypylon"],
+        "gentl": ["pygobject"],
+    },
     packages=setuptools.find_packages(),
     include_package_data=True,
     classifiers=(
@@ -40,8 +36,7 @@ setuptools.setup(
     ),
     entry_points={
         "console_scripts": [
-            "dlclivegui=dlclivegui.dlclivegui:main",
-            "dlclivegui-video=dlclivegui.video:main",
+            "dlclivegui=dlclivegui.gui:main",
         ]
     },
 )
