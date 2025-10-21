@@ -32,7 +32,7 @@ class VideoRecorder:
         if self._writer is not None:
             return
         self._output.parent.mkdir(parents=True, exist_ok=True)
-        self._writer = WriteGear(output_filename=str(self._output), logging=False, **self._options)
+        self._writer = WriteGear(output=str(self._output), logging=False, **self._options)
 
     def write(self, frame: np.ndarray) -> None:
         if self._writer is None:
