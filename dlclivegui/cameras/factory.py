@@ -2,10 +2,19 @@
 from __future__ import annotations
 
 import importlib
-from typing import Dict, Iterable, Tuple, Type
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Tuple, Type
 
 from ..config import CameraSettings
 from .base import CameraBackend
+
+
+@dataclass
+class DetectedCamera:
+    """Information about a camera discovered during probing."""
+
+    index: int
+    label: str
 
 
 _BACKENDS: Dict[str, Tuple[str, str]] = {
@@ -37,6 +46,57 @@ class CameraFactory:
                 continue
             availability[name] = backend_cls.is_available()
         return availability
+
+    @staticmethod
+    def detect_cameras(backend: str, max_devices: int = 10) -> List[DetectedCamera]:
+        """Probe ``backend`` for available cameras.
+
+        Parameters
+        ----------
+        backend:
+            The backend identifier, e.g. ``"opencv"``.
+        max_devices:
+            Upper bound for the indices that should be probed.
+
+        Returns
+        -------
+        list of :class:`DetectedCamera`
+            Sorted list of detected cameras with human readable labels.
+        """
+
+        try:
+            backend_cls = CameraFactory._resolve_backend(backend)
+        except RuntimeError:
+            return []
+        if not backend_cls.is_available():
+            return []
+
+        detected: List[DetectedCamera] = []
+        for index in range(max_devices):
+            settings = CameraSettings(
+                name=f"Probe {index}",
+                index=index,
+                width=640,
+                height=480,
+                fps=30.0,
+                backend=backend,
+                properties={},
+            )
+            backend_instance = backend_cls(settings)
+            try:
+                backend_instance.open()
+            except Exception:
+                continue
+            else:
+                label = backend_instance.device_name()
+                detected.append(DetectedCamera(index=index, label=label))
+            finally:
+                try:
+                    backend_instance.close()
+                except Exception:
+                    pass
+        detected.sort(key=lambda camera: camera.index)
+        return detected
 
     @staticmethod
     def create(settings: CameraSettings) -> CameraBackend:
