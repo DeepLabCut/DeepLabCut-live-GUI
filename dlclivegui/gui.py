@@ -289,6 +289,7 @@ class MainWindow(QMainWindow):
         )
 
         self.camera_controller.frame_ready.connect(self._on_frame_ready)
+        self.camera_controller.started.connect(self._on_camera_started)
         self.camera_controller.error.connect(self._show_error)
         self.camera_controller.stopped.connect(self._on_camera_stopped)
 
@@ -538,15 +539,52 @@ class MainWindow(QMainWindow):
         self._raw_frame = None
         self._last_pose = None
         self._dlc_active = False
-        self.statusBar().showMessage("Camera preview started", 3000)
+        self.statusBar().showMessage("Starting camera preview…", 3000)
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
 
     def _stop_preview(self) -> None:
+        if not self.camera_controller.is_running():
+            return
+        self.preview_button.setEnabled(False)
+        self.stop_preview_button.setEnabled(False)
+        self.start_inference_button.setEnabled(False)
+        self.stop_inference_button.setEnabled(False)
+        self.statusBar().showMessage("Stopping camera preview…", 3000)
         self.camera_controller.stop()
         self._stop_inference(show_message=False)
+
+    def _on_camera_started(self, settings: CameraSettings) -> None:
+        self._active_camera_settings = settings
+        self.preview_button.setEnabled(False)
+        self.stop_preview_button.setEnabled(True)
+        self.camera_width.blockSignals(True)
+        self.camera_width.setValue(int(settings.width))
+        self.camera_width.blockSignals(False)
+        self.camera_height.blockSignals(True)
+        self.camera_height.setValue(int(settings.height))
+        self.camera_height.blockSignals(False)
+        if getattr(settings, "fps", None):
+            self.camera_fps.blockSignals(True)
+            self.camera_fps.setValue(float(settings.fps))
+            self.camera_fps.blockSignals(False)
+        resolution = f"{int(settings.width)}×{int(settings.height)}"
+        if getattr(settings, "fps", None):
+            fps_text = f"{float(settings.fps):.2f} FPS"
+        else:
+            fps_text = "unknown FPS"
+        self.statusBar().showMessage(
+            f"Camera preview started: {resolution} @ {fps_text}", 5000
+        )
+        self._update_inference_buttons()
+        self._update_camera_controls_enabled()
+
+    def _on_camera_stopped(self) -> None:
+        if self._video_recorder and self._video_recorder.is_running:
+            self._stop_recording()
         self.preview_button.setEnabled(True)
         self.stop_preview_button.setEnabled(False)
+        self._stop_inference(show_message=False)
         self._current_frame = None
         self._raw_frame = None
         self._last_pose = None
@@ -555,14 +593,6 @@ class MainWindow(QMainWindow):
         self.video_label.setText("Camera preview not started")
         self.statusBar().showMessage("Camera preview stopped", 3000)
         self._update_inference_buttons()
-        self._update_camera_controls_enabled()
-
-    def _on_camera_stopped(self) -> None:
-        self.preview_button.setEnabled(True)
-        self.stop_preview_button.setEnabled(False)
-        self._stop_inference(show_message=False)
-        self._update_inference_buttons()
-        self._active_camera_settings = None
         self._update_camera_controls_enabled()
 
     def _configure_dlc(self) -> bool:
@@ -768,7 +798,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ Qt overrides
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour
         if self.camera_controller.is_running():
-            self.camera_controller.stop()
+            self.camera_controller.stop(wait=True)
         if self._video_recorder and self._video_recorder.is_running:
             self._video_recorder.stop()
         self.dlc_processor.shutdown()

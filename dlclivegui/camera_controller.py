@@ -25,6 +25,7 @@ class CameraWorker(QObject):
     """Worker object running inside a :class:`QThread`."""
 
     frame_captured = pyqtSignal(object)
+    started = pyqtSignal(object)
     error_occurred = pyqtSignal(str)
     finished = pyqtSignal()
 
@@ -44,6 +45,8 @@ class CameraWorker(QObject):
             self.error_occurred.emit(str(exc))
             self.finished.emit()
             return
+
+        self.started.emit(self._settings)
 
         while not self._stop_event.is_set():
             try:
@@ -75,7 +78,7 @@ class CameraController(QObject):
     """High level controller that manages a camera worker thread."""
 
     frame_ready = pyqtSignal(object)
-    started = pyqtSignal(CameraSettings)
+    started = pyqtSignal(object)
     stopped = pyqtSignal()
     error = pyqtSignal(str)
 
@@ -83,40 +86,56 @@ class CameraController(QObject):
         super().__init__()
         self._thread: Optional[QThread] = None
         self._worker: Optional[CameraWorker] = None
+        self._pending_settings: Optional[CameraSettings] = None
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
 
     def start(self, settings: CameraSettings) -> None:
         if self.is_running():
-            self.stop()
-        self._thread = QThread()
-        self._worker = CameraWorker(settings)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.frame_captured.connect(self.frame_ready)
-        self._worker.error_occurred.connect(self.error)
-        self._worker.finished.connect(self._thread.quit)
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._cleanup)
-        self._thread.start()
-        self.started.emit(settings)
+            self._pending_settings = settings
+            self.stop(preserve_pending=True)
+            return
+        self._pending_settings = None
+        self._start_worker(settings)
 
-    def stop(self) -> None:
+    def stop(self, wait: bool = False, *, preserve_pending: bool = False) -> None:
         if not self.is_running():
+            if not preserve_pending:
+                self._pending_settings = None
             return
         assert self._worker is not None
         assert self._thread is not None
+        if not preserve_pending:
+            self._pending_settings = None
         QMetaObject.invokeMethod(
             self._worker,
             "stop",
             Qt.ConnectionType.QueuedConnection,
         )
         self._thread.quit()
-        self._thread.wait()
+        if wait:
+            self._thread.wait()
+
+    def _start_worker(self, settings: CameraSettings) -> None:
+        self._thread = QThread()
+        self._worker = CameraWorker(settings)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.frame_captured.connect(self.frame_ready)
+        self._worker.started.connect(self.started)
+        self._worker.error_occurred.connect(self.error)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._cleanup)
+        self._thread.start()
 
     @pyqtSlot()
     def _cleanup(self) -> None:
         self._thread = None
         self._worker = None
         self.stopped.emit()
+        if self._pending_settings is not None:
+            pending = self._pending_settings
+            self._pending_settings = None
+            self.start(pending)

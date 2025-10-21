@@ -61,6 +61,15 @@ class BaslerCameraBackend(CameraBackend):
         self._converter = pylon.ImageFormatConverter()
         self._converter.OutputPixelFormat = pylon.PixelType_BGR8packed
         self._converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+        try:
+            self.settings.width = int(self._camera.Width.GetValue())
+            self.settings.height = int(self._camera.Height.GetValue())
+        except Exception:
+            pass
+        try:
+            self.settings.fps = float(self._camera.ResultingFrameRateAbs.GetValue())
+        except Exception:
+            pass
 
     def read(self) -> Tuple[np.ndarray, float]:
         if self._camera is None or self._converter is None:

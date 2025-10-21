@@ -69,6 +69,15 @@ class OpenCVCameraBackend(CameraBackend):
             except (TypeError, ValueError):
                 continue
             self._capture.set(prop_id, float(value))
+        actual_width = self._capture.get(cv2.CAP_PROP_FRAME_WIDTH)
+        actual_height = self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        actual_fps = self._capture.get(cv2.CAP_PROP_FPS)
+        if actual_width:
+            self.settings.width = int(actual_width)
+        if actual_height:
+            self.settings.height = int(actual_height)
+        if actual_fps:
+            self.settings.fps = float(actual_fps)
 
     def _resolve_backend(self, backend: str | None) -> int:
         if backend is None:

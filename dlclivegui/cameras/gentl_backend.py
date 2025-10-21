@@ -123,6 +123,11 @@ class GenTLCameraBackend(CameraBackend):
         ptr = ctypes.cast(addr, int_pointer)
         frame = np.ctypeslib.as_array(ptr, (buffer.get_image_height(), buffer.get_image_width()))
         frame = frame.copy()
+        try:
+            self.settings.width = int(buffer.get_image_width())
+            self.settings.height = int(buffer.get_image_height())
+        except Exception:
+            pass
         if frame.ndim < 3:
             import cv2
 
