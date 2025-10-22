@@ -254,10 +254,15 @@ class MainWindow(QMainWindow):
         self.container_combo.addItems(["mp4", "avi", "mov"])
         form.addRow("Container", self.container_combo)
 
-        self.recording_options_edit = QPlainTextEdit()
-        self.recording_options_edit.setPlaceholderText('{"compression_mode": "mp4"}')
-        self.recording_options_edit.setFixedHeight(60)
-        form.addRow("WriteGear options", self.recording_options_edit)
+        self.codec_combo = QComboBox()
+        self.codec_combo.addItems(["h264_nvenc", "libx264"])
+        self.codec_combo.setCurrentText("libx264")
+        form.addRow("Codec", self.codec_combo)
+
+        self.crf_spin = QSpinBox()
+        self.crf_spin.setRange(0, 51)
+        self.crf_spin.setValue(23)
+        form.addRow("CRF", self.crf_spin)
 
         self.start_record_button = QPushButton("Start recording")
         self.stop_record_button = QPushButton("Stop recording")
@@ -335,7 +340,13 @@ class MainWindow(QMainWindow):
         self.output_directory_edit.setText(recording.directory)
         self.filename_edit.setText(recording.filename)
         self.container_combo.setCurrentText(recording.container)
-        self.recording_options_edit.setPlainText(json.dumps(recording.options, indent=2))
+        codec_index = self.codec_combo.findText(recording.codec)
+        if codec_index >= 0:
+            self.codec_combo.setCurrentIndex(codec_index)
+        else:
+            self.codec_combo.addItem(recording.codec)
+            self.codec_combo.setCurrentIndex(self.codec_combo.count() - 1)
+        self.crf_spin.setValue(int(recording.crf))
 
     def _current_config(self) -> ApplicationSettings:
         return ApplicationSettings(
@@ -510,7 +521,8 @@ class MainWindow(QMainWindow):
             directory=self.output_directory_edit.text().strip(),
             filename=self.filename_edit.text().strip() or "session.mp4",
             container=self.container_combo.currentText().strip() or "mp4",
-            options=self._parse_json(self.recording_options_edit.toPlainText()),
+            codec=self.codec_combo.currentText().strip() or "libx264",
+            crf=int(self.crf_spin.value()),
         )
 
     # ------------------------------------------------------------------ actions
@@ -701,6 +713,8 @@ class MainWindow(QMainWindow):
             self.camera_fps,
             self.camera_properties_edit,
             self.rotation_combo,
+            self.codec_combo,
+            self.crf_spin,
         ]
         for widget in widgets:
             widget.setEnabled(allow_changes)
@@ -746,11 +760,7 @@ class MainWindow(QMainWindow):
         if self._current_frame is None:
             self._show_error("Wait for the first preview frame before recording.")
             return
-        try:
-            recording = self._recording_settings_from_ui()
-        except json.JSONDecodeError as exc:
-            self._show_error(f"Invalid recording options: {exc}")
-            return
+        recording = self._recording_settings_from_ui()
         if not recording.enabled:
             self._show_error("Recording is disabled in the configuration.")
             return
@@ -765,9 +775,10 @@ class MainWindow(QMainWindow):
         output_path = recording.output_path()
         self._video_recorder = VideoRecorder(
             output_path,
-            recording.options,
             frame_size=(int(width), int(height)),
             frame_rate=float(frame_rate),
+            codec=recording.codec,
+            crf=recording.crf,
         )
         try:
             self._video_recorder.start()
@@ -795,13 +806,18 @@ class MainWindow(QMainWindow):
         raw_frame = frame_data.image
         self._raw_frame = raw_frame
         frame = self._apply_rotation(raw_frame)
+        frame = np.ascontiguousarray(frame)
         self._current_frame = frame
         if self._active_camera_settings is not None:
             height, width = frame.shape[:2]
             self._active_camera_settings.width = int(width)
             self._active_camera_settings.height = int(height)
         if self._video_recorder and self._video_recorder.is_running:
-            self._video_recorder.write(frame)
+            try:
+                self._video_recorder.write(frame)
+            except RuntimeError as exc:
+                self._show_error(str(exc))
+                self._stop_recording()
         if self._dlc_active:
             self.dlc_processor.enqueue_frame(frame, frame_data.timestamp)
         self._update_video_display(frame)

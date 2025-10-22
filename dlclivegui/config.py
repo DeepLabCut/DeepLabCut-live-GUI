@@ -16,7 +16,7 @@ class CameraSettings:
     width: int = 640
     height: int = 480
     fps: float = 30.0
-    backend: str = "opencv"
+    backend: str = "gentl"
     properties: Dict[str, Any] = field(default_factory=dict)
 
     def apply_defaults(self) -> "CameraSettings":
@@ -48,7 +48,8 @@ class RecordingSettings:
     directory: str = str(Path.home() / "Videos" / "deeplabcut-live")
     filename: str = "session.mp4"
     container: str = "mp4"
-    options: Dict[str, Any] = field(default_factory=dict)
+    codec: str = "libx264"
+    crf: int = 23
 
     def output_path(self) -> Path:
         """Return the absolute output path for recordings."""
@@ -61,6 +62,18 @@ class RecordingSettings:
         else:
             filename = name.with_suffix(f".{self.container}")
         return directory / filename
+
+    def writegear_options(self, fps: float) -> Dict[str, Any]:
+        """Return compression parameters for WriteGear."""
+
+        fps_value = float(fps) if fps else 30.0
+        codec_value = (self.codec or "libx264").strip() or "libx264"
+        crf_value = int(self.crf) if self.crf is not None else 23
+        return {
+            "-input_framerate": f"{fps_value:.6f}",
+            "-vcodec": codec_value,
+            "-crf": str(crf_value),
+        }
 
 
 @dataclass
@@ -77,7 +90,9 @@ class ApplicationSettings:
 
         camera = CameraSettings(**data.get("camera", {})).apply_defaults()
         dlc = DLCProcessorSettings(**data.get("dlc", {}))
-        recording = RecordingSettings(**data.get("recording", {}))
+        recording_data = dict(data.get("recording", {}))
+        recording_data.pop("options", None)
+        recording = RecordingSettings(**recording_data)
         return cls(camera=camera, dlc=dlc, recording=recording)
 
     def to_dict(self) -> Dict[str, Any]:

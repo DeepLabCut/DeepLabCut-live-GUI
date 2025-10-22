@@ -8,9 +8,9 @@ from typing import Optional
 import numpy as np
 from PyQt6.QtCore import QObject, QThread, QMetaObject, Qt, pyqtSignal, pyqtSlot
 
-from .cameras import CameraFactory
-from .cameras.base import CameraBackend
-from .config import CameraSettings
+from dlclivegui.cameras import CameraFactory
+from dlclivegui.cameras.base import CameraBackend
+from dlclivegui.config import CameraSettings
 
 
 @dataclass
@@ -51,8 +51,15 @@ class CameraWorker(QObject):
         while not self._stop_event.is_set():
             try:
                 frame, timestamp = self._backend.read()
+            except TimeoutError:
+                if self._stop_event.is_set():
+                    break
+                continue
             except Exception as exc:  # pragma: no cover - device specific
-                self.error_occurred.emit(str(exc))
+                if not self._stop_event.is_set():
+                    self.error_occurred.emit(str(exc))
+                break
+            if self._stop_event.is_set():
                 break
             self.frame_captured.emit(FrameData(frame, timestamp))
 
@@ -113,6 +120,7 @@ class CameraController(QObject):
             "stop",
             Qt.ConnectionType.QueuedConnection,
         )
+        self._worker.stop()
         self._thread.quit()
         if wait:
             self._thread.wait()
@@ -129,15 +137,6 @@ class CameraController(QObject):
         self._worker.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._cleanup)
         self._thread.start()
-        self.started.emit(settings)
-
-    def stop(self) -> None:
-        if not self.is_running():
-            return
-        assert self._worker is not None
-        self._worker.stop()
-        assert self._thread is not None
-        self._thread.wait()
 
     @pyqtSlot()
     def _cleanup(self) -> None:

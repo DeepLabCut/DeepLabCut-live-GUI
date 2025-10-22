@@ -89,6 +89,8 @@ class CameraFactory:
                 continue
             else:
                 label = backend_instance.device_name()
+                if not label:
+                    label = f"{backend.title()} #{index}"
                 detected.append(DetectedCamera(index=index, label=label))
             finally:
                 try:

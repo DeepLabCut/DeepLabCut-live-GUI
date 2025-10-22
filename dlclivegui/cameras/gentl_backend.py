@@ -13,8 +13,13 @@ from .base import CameraBackend
 
 try:  # pragma: no cover - optional dependency
     from harvesters.core import Harvester
+    try:
+        from harvesters.core import HarvesterTimeoutError  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency
+        HarvesterTimeoutError = TimeoutError  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     Harvester = None  # type: ignore
+    HarvesterTimeoutError = TimeoutError  # type: ignore
 
 
 class GenTLCameraBackend(CameraBackend):
@@ -40,8 +45,9 @@ class GenTLCameraBackend(CameraBackend):
         self._timeout: float = float(props.get("timeout", 2.0))
         self._cti_search_paths: Tuple[str, ...] = self._parse_cti_paths(props.get("cti_search_paths"))
 
-        self._harvester: Optional[Harvester] = None
+        self._harvester = None
         self._acquirer = None
+        self._device_label: Optional[str] = None
 
     @classmethod
     def is_available(cls) -> bool:
@@ -84,6 +90,8 @@ class GenTLCameraBackend(CameraBackend):
         remote = self._acquirer.remote_device
         node_map = remote.node_map
 
+        self._device_label = self._resolve_device_label(node_map)
+
         self._configure_pixel_format(node_map)
         self._configure_resolution(node_map)
         self._configure_exposure(node_map)
@@ -96,15 +104,23 @@ class GenTLCameraBackend(CameraBackend):
         if self._acquirer is None:
             raise RuntimeError("GenTL image acquirer not initialised")
 
-        with self._acquirer.fetch(timeout=self._timeout) as buffer:
-            component = buffer.payload.components[0]
-            channels = 3 if self._pixel_format in {"RGB8", "BGR8"} else 1
-            if channels > 1:
-                frame = component.data.reshape(
-                    component.height, component.width, channels
-                ).copy()
-            else:
-                frame = component.data.reshape(component.height, component.width).copy()
+        try:
+            with self._acquirer.fetch(timeout=self._timeout) as buffer:
+                component = buffer.payload.components[0]
+                channels = 3 if self._pixel_format in {"RGB8", "BGR8"} else 1
+                array = np.asarray(component.data)
+                expected = component.height * component.width * channels
+                if array.size != expected:
+                    array = np.frombuffer(bytes(component.data), dtype=array.dtype)
+                try:
+                    if channels > 1:
+                        frame = array.reshape(component.height, component.width, channels).copy()
+                    else:
+                        frame = array.reshape(component.height, component.width).copy()
+                except ValueError:
+                    frame = array.copy()
+        except HarvesterTimeoutError as exc:
+            raise TimeoutError(str(exc)) from exc
 
         frame = self._convert_frame(frame)
         timestamp = time.time()
@@ -135,6 +151,8 @@ class GenTLCameraBackend(CameraBackend):
                 self._harvester.reset()
             finally:
                 self._harvester = None
+
+        self._device_label = None
 
     # ------------------------------------------------------------------
     # Helpers
@@ -177,8 +195,8 @@ class GenTLCameraBackend(CameraBackend):
     def _create_acquirer(self, serial: Optional[str], index: int):
         assert self._harvester is not None
         methods = [
-            getattr(self._harvester, "create_image_acquirer", None),
             getattr(self._harvester, "create", None),
+            getattr(self._harvester, "create_image_acquirer", None),            
         ]
         methods = [m for m in methods if m is not None]
         errors: List[str] = []
@@ -280,24 +298,86 @@ class GenTLCameraBackend(CameraBackend):
     def _configure_frame_rate(self, node_map) -> None:
         if not self.settings.fps:
             return
-        left, right, top, bottom = map(int, crop)
-        width = right - left
-        height = bottom - top
-        self._camera.set_region(left, top, width, height)
 
-    def _buffer_to_numpy(self, buffer) -> np.ndarray:
-        pixel_format = buffer.get_image_pixel_format()
-        bits_per_pixel = (pixel_format >> 16) & 0xFF
-        if bits_per_pixel == 8:
-            int_pointer = ctypes.POINTER(ctypes.c_uint8)
-        else:
-            int_pointer = ctypes.POINTER(ctypes.c_uint16)
-        addr = buffer.get_data()
-        ptr = ctypes.cast(addr, int_pointer)
-        frame = np.ctypeslib.as_array(ptr, (buffer.get_image_height(), buffer.get_image_width()))
-        frame = frame.copy()
-        if frame.ndim < 3:
-            import cv2
+        target = float(self.settings.fps)
+        for attr in ("AcquisitionFrameRateEnable", "AcquisitionFrameRateControlEnable"):
+            try:
+                getattr(node_map, attr).value = True
+            except Exception:
+                continue
 
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-        return frame
+        for attr in ("AcquisitionFrameRate", "ResultingFrameRate", "AcquisitionFrameRateAbs"):
+            try:
+                node = getattr(node_map, attr)
+            except AttributeError:
+                continue
+            try:
+                node.value = target
+                return
+            except Exception:
+                continue
+
+    def _convert_frame(self, frame: np.ndarray) -> np.ndarray:
+        if frame.dtype != np.uint8:
+            max_val = float(frame.max()) if frame.size else 0.0
+            scale = 255.0 / max_val if max_val > 0.0 else 1.0
+            frame = np.clip(frame * scale, 0, 255).astype(np.uint8)
+
+        if frame.ndim == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif frame.ndim == 3 and frame.shape[2] == 3 and self._pixel_format == "RGB8":
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        if self._crop is not None:
+            top, bottom, left, right = (int(v) for v in self._crop)
+            top = max(0, top)
+            left = max(0, left)
+            bottom = bottom if bottom > 0 else frame.shape[0]
+            right = right if right > 0 else frame.shape[1]
+            bottom = min(frame.shape[0], bottom)
+            right = min(frame.shape[1], right)
+            frame = frame[top:bottom, left:right]
+
+        if self._rotate in (90, 180, 270):
+            rotations = {
+                90: cv2.ROTATE_90_CLOCKWISE,
+                180: cv2.ROTATE_180,
+                270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+            }
+            frame = cv2.rotate(frame, rotations[self._rotate])
+
+        return frame.copy()
+
+    def _resolve_device_label(self, node_map) -> Optional[str]:
+        candidates = [
+            ("DeviceModelName", "DeviceSerialNumber"),
+            ("DeviceDisplayName", "DeviceSerialNumber"),
+        ]
+        for name_attr, serial_attr in candidates:
+            try:
+                model = getattr(node_map, name_attr).value
+            except AttributeError:
+                continue
+            serial = None
+            try:
+                serial = getattr(node_map, serial_attr).value
+            except AttributeError:
+                pass
+            if model:
+                model_str = str(model)
+                serial_str = str(serial) if serial else None
+                return f"{model_str} ({serial_str})" if serial_str else model_str
+        return None
+
+    def _adjust_to_increment(self, value: int, minimum: int, maximum: int, increment: int) -> int:
+        value = max(minimum, min(maximum, int(value)))
+        if increment <= 0:
+            return value
+        offset = value - minimum
+        steps = offset // increment
+        return minimum + steps * increment
+
+    def device_name(self) -> str:
+        if self._device_label:
+            return self._device_label
+        return super().device_name()
