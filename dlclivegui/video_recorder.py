@@ -1,6 +1,12 @@
 """Video recording support using the vidgear library."""
 from __future__ import annotations
 
+import logging
+import queue
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -10,6 +16,26 @@ try:
     from vidgear.gears import WriteGear
 except ImportError:  # pragma: no cover - handled at runtime
     WriteGear = None  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RecorderStats:
+    """Snapshot of recorder throughput metrics."""
+
+    frames_enqueued: int
+    frames_written: int
+    dropped_frames: int
+    queue_size: int
+    average_latency: float
+    last_latency: float
+    write_fps: float
+    buffer_seconds: float
+
+
+_SENTINEL = object()
 
 
 class VideoRecorder:
@@ -22,17 +48,31 @@ class VideoRecorder:
         frame_rate: Optional[float] = None,
         codec: str = "libx264",
         crf: int = 23,
+        buffer_size: int = 240,
     ):
         self._output = Path(output)
-        self._writer: Optional[WriteGear] = None
+        self._writer: Optional[Any] = None
         self._frame_size = frame_size
         self._frame_rate = frame_rate
         self._codec = codec
         self._crf = int(crf)
+        self._buffer_size = max(1, int(buffer_size))
+        self._queue: Optional[queue.Queue[Any]] = None
+        self._writer_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._stats_lock = threading.Lock()
+        self._frames_enqueued = 0
+        self._frames_written = 0
+        self._dropped_frames = 0
+        self._total_latency = 0.0
+        self._last_latency = 0.0
+        self._written_times: deque[float] = deque(maxlen=600)
+        self._encode_error: Optional[Exception] = None
+        self._last_log_time = 0.0
 
     @property
     def is_running(self) -> bool:
-        return self._writer is not None
+        return self._writer_thread is not None and self._writer_thread.is_alive()
 
     def start(self) -> None:
         if WriteGear is None:
@@ -54,6 +94,21 @@ class VideoRecorder:
 
         self._output.parent.mkdir(parents=True, exist_ok=True)
         self._writer = WriteGear(output=str(self._output), **writer_kwargs)
+        self._queue = queue.Queue(maxsize=self._buffer_size)
+        self._frames_enqueued = 0
+        self._frames_written = 0
+        self._dropped_frames = 0
+        self._total_latency = 0.0
+        self._last_latency = 0.0
+        self._written_times.clear()
+        self._encode_error = None
+        self._stop_event.clear()
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            name="VideoRecorderWriter",
+            daemon=True,
+        )
+        self._writer_thread.start()
 
     def configure_stream(
         self, frame_size: Tuple[int, int], frame_rate: Optional[float]
@@ -61,9 +116,12 @@ class VideoRecorder:
         self._frame_size = frame_size
         self._frame_rate = frame_rate
 
-    def write(self, frame: np.ndarray) -> None:
-        if self._writer is None:
-            return
+    def write(self, frame: np.ndarray) -> bool:
+        if not self.is_running or self._queue is None:
+            return False
+        error = self._current_error()
+        if error is not None:
+            raise RuntimeError(f"Video encoding failed: {error}") from error
         if frame.dtype != np.uint8:
             frame_float = frame.astype(np.float32, copy=False)
             max_val = float(frame_float.max()) if frame_float.size else 0.0
@@ -75,19 +133,139 @@ class VideoRecorder:
             frame = np.repeat(frame[:, :, None], 3, axis=2)
         frame = np.ascontiguousarray(frame)
         try:
-            self._writer.write(frame)
-        except OSError as exc:
-            writer = self._writer
-            self._writer = None
-            if writer is not None:
-                try:
-                    writer.close()
-                except Exception:
-                    pass
-            raise RuntimeError(f"Video encoding failed: {exc}") from exc
+            assert self._queue is not None
+            self._queue.put(frame, block=False)
+        except queue.Full:
+            with self._stats_lock:
+                self._dropped_frames += 1
+            queue_size = self._queue.qsize() if self._queue is not None else -1
+            logger.warning(
+                "Video recorder queue full; dropping frame. queue=%d buffer=%d",
+                queue_size,
+                self._buffer_size,
+            )
+            return False
+        with self._stats_lock:
+            self._frames_enqueued += 1
+        return True
 
     def stop(self) -> None:
-        if self._writer is None:
+        if self._writer is None and not self.is_running:
             return
-        self._writer.close()
+        self._stop_event.set()
+        if self._queue is not None:
+            try:
+                self._queue.put_nowait(_SENTINEL)
+            except queue.Full:
+                self._queue.put(_SENTINEL)
+        if self._writer_thread is not None:
+            self._writer_thread.join(timeout=5.0)
+            if self._writer_thread.is_alive():
+                logger.warning("Video recorder thread did not terminate cleanly")
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            except Exception:
+                logger.exception("Failed to close WriteGear cleanly")
         self._writer = None
+        self._writer_thread = None
+        self._queue = None
+
+    def get_stats(self) -> Optional[RecorderStats]:
+        if (
+            self._writer is None
+            and not self.is_running
+            and self._queue is None
+            and self._frames_enqueued == 0
+            and self._frames_written == 0
+            and self._dropped_frames == 0
+        ):
+            return None
+        queue_size = self._queue.qsize() if self._queue is not None else 0
+        with self._stats_lock:
+            frames_enqueued = self._frames_enqueued
+            frames_written = self._frames_written
+            dropped = self._dropped_frames
+            avg_latency = (
+                self._total_latency / self._frames_written
+                if self._frames_written
+                else 0.0
+            )
+            last_latency = self._last_latency
+            write_fps = self._compute_write_fps_locked()
+        buffer_seconds = queue_size * avg_latency if avg_latency > 0 else 0.0
+        return RecorderStats(
+            frames_enqueued=frames_enqueued,
+            frames_written=frames_written,
+            dropped_frames=dropped,
+            queue_size=queue_size,
+            average_latency=avg_latency,
+            last_latency=last_latency,
+            write_fps=write_fps,
+            buffer_seconds=buffer_seconds,
+        )
+
+    def _writer_loop(self) -> None:
+        assert self._queue is not None
+        while True:
+            try:
+                item = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                if self._stop_event.is_set():
+                    break
+                continue
+            if item is _SENTINEL:
+                self._queue.task_done()
+                break
+            frame = item
+            start = time.perf_counter()
+            try:
+                assert self._writer is not None
+                self._writer.write(frame)
+            except OSError as exc:
+                with self._stats_lock:
+                    self._encode_error = exc
+                logger.exception("Video encoding failed while writing frame")
+                self._queue.task_done()
+                self._stop_event.set()
+                break
+            elapsed = time.perf_counter() - start
+            now = time.perf_counter()
+            with self._stats_lock:
+                self._frames_written += 1
+                self._total_latency += elapsed
+                self._last_latency = elapsed
+                self._written_times.append(now)
+                if now - self._last_log_time >= 1.0:
+                    fps = self._compute_write_fps_locked()
+                    queue_size = self._queue.qsize()
+                    logger.info(
+                        "Recorder throughput: %.2f fps, latency %.2f ms, queue=%d",
+                        fps,
+                        elapsed * 1000.0,
+                        queue_size,
+                    )
+                    self._last_log_time = now
+            self._queue.task_done()
+        self._finalize_writer()
+
+    def _finalize_writer(self) -> None:
+        writer = self._writer
+        self._writer = None
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:
+                logger.exception("Failed to close WriteGear during finalisation")
+
+    def _compute_write_fps_locked(self) -> float:
+        if len(self._written_times) < 2:
+            return 0.0
+        duration = self._written_times[-1] - self._written_times[0]
+        if duration <= 0:
+            return 0.0
+        return (len(self._written_times) - 1) / duration
+
+    def _current_error(self) -> Optional[Exception]:
+        with self._stats_lock:
+            return self._encode_error

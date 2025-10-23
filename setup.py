@@ -15,7 +15,7 @@ setuptools.setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/DeepLabCut/DeepLabCut-live-GUI",
-    python_requires=">=3.11",
+    python_requires=">=3.10",
     install_requires=[
         "deeplabcut-live",
         "PyQt6",
@@ -25,7 +25,7 @@ setuptools.setup(
     ],
     extras_require={
         "basler": ["pypylon"],
-        "gentl": ["pygobject"],
+        "gentl": ["harvesters"],
     },
     packages=setuptools.find_packages(),
     include_package_data=True,

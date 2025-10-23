@@ -15,8 +15,10 @@ class CameraSettings:
     index: int = 0
     width: int = 640
     height: int = 480
-    fps: float = 30.0
+    fps: float = 25.0
     backend: str = "gentl"
+    exposure: int = 500  # 0 = auto, otherwise microseconds
+    gain: float = 10  # 0.0 = auto, otherwise gain value
     properties: Dict[str, Any] = field(default_factory=dict)
 
     def apply_defaults(self) -> "CameraSettings":
@@ -25,6 +27,8 @@ class CameraSettings:
         self.width = int(self.width) if self.width else 640
         self.height = int(self.height) if self.height else 480
         self.fps = float(self.fps) if self.fps else 30.0
+        self.exposure = int(self.exposure) if self.exposure else 0
+        self.gain = float(self.gain) if self.gain else 0.0
         return self
 
 
@@ -33,11 +37,8 @@ class DLCProcessorSettings:
     """Configuration for DLCLive processing."""
 
     model_path: str = ""
-    shuffle: Optional[int] = None
-    trainingsetindex: Optional[int] = None
-    processor: str = "cpu"
-    processor_args: Dict[str, Any] = field(default_factory=dict)
     additional_options: Dict[str, Any] = field(default_factory=dict)
+    model_type: Optional[str] = "base"
 
 
 @dataclass
@@ -89,7 +90,11 @@ class ApplicationSettings:
         """Create an :class:`ApplicationSettings` from a dictionary."""
 
         camera = CameraSettings(**data.get("camera", {})).apply_defaults()
-        dlc = DLCProcessorSettings(**data.get("dlc", {}))
+        dlc_data = dict(data.get("dlc", {}))
+        dlc = DLCProcessorSettings(
+            model_path=str(dlc_data.get("model_path", "")),
+            additional_options=dict(dlc_data.get("additional_options", {})),
+        )
         recording_data = dict(data.get("recording", {}))
         recording_data.pop("options", None)
         recording = RecordingSettings(**recording_data)
