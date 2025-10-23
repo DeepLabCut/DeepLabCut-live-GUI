@@ -171,14 +171,6 @@ class MainWindow(QMainWindow):
         index_layout.addWidget(self.refresh_cameras_button)
         form.addRow("Camera", index_layout)
 
-        self.camera_width = QSpinBox()
-        self.camera_width.setRange(1, 7680)
-        form.addRow("Width", self.camera_width)
-
-        self.camera_height = QSpinBox()
-        self.camera_height.setRange(1, 4320)
-        form.addRow("Height", self.camera_height)
-
         self.camera_fps = QDoubleSpinBox()
         self.camera_fps.setRange(1.0, 240.0)
         self.camera_fps.setDecimals(2)
@@ -197,6 +189,34 @@ class MainWindow(QMainWindow):
         self.camera_gain.setSpecialValueText("Auto")
         self.camera_gain.setDecimals(2)
         form.addRow("Gain", self.camera_gain)
+
+        # Crop settings
+        crop_layout = QHBoxLayout()
+        self.crop_x0 = QSpinBox()
+        self.crop_x0.setRange(0, 7680)
+        self.crop_x0.setPrefix("x0:")
+        self.crop_x0.setSpecialValueText("x0:None")
+        crop_layout.addWidget(self.crop_x0)
+        
+        self.crop_y0 = QSpinBox()
+        self.crop_y0.setRange(0, 4320)
+        self.crop_y0.setPrefix("y0:")
+        self.crop_y0.setSpecialValueText("y0:None")
+        crop_layout.addWidget(self.crop_y0)
+        
+        self.crop_x1 = QSpinBox()
+        self.crop_x1.setRange(0, 7680)
+        self.crop_x1.setPrefix("x1:")
+        self.crop_x1.setSpecialValueText("x1:None")
+        crop_layout.addWidget(self.crop_x1)
+        
+        self.crop_y1 = QSpinBox()
+        self.crop_y1.setRange(0, 4320)
+        self.crop_y1.setPrefix("y1:")
+        self.crop_y1.setSpecialValueText("y1:None")
+        crop_layout.addWidget(self.crop_y1)
+        
+        form.addRow("Crop (x0,y0,x1,y1)", crop_layout)
 
         self.camera_properties_edit = QPlainTextEdit()
         self.camera_properties_edit.setPlaceholderText(
@@ -329,6 +349,7 @@ class MainWindow(QMainWindow):
         self.camera_controller.frame_ready.connect(self._on_frame_ready)
         self.camera_controller.started.connect(self._on_camera_started)
         self.camera_controller.error.connect(self._show_error)
+        self.camera_controller.warning.connect(self._show_warning)
         self.camera_controller.stopped.connect(self._on_camera_stopped)
 
         self.dlc_processor.pose_ready.connect(self._on_pose_ready)
@@ -338,13 +359,17 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ config
     def _apply_config(self, config: ApplicationSettings) -> None:
         camera = config.camera
-        self.camera_width.setValue(int(camera.width))
-        self.camera_height.setValue(int(camera.height))
         self.camera_fps.setValue(float(camera.fps))
         
         # Set exposure and gain from config
         self.camera_exposure.setValue(int(camera.exposure))
         self.camera_gain.setValue(float(camera.gain))
+        
+        # Set crop settings from config
+        self.crop_x0.setValue(int(camera.crop_x0) if hasattr(camera, 'crop_x0') else 0)
+        self.crop_y0.setValue(int(camera.crop_y0) if hasattr(camera, 'crop_y0') else 0)
+        self.crop_x1.setValue(int(camera.crop_x1) if hasattr(camera, 'crop_x1') else 0)
+        self.crop_y1.setValue(int(camera.crop_y1) if hasattr(camera, 'crop_y1') else 0)
         
         backend_name = camera.backend or "opencv"
         index = self.camera_backend.findData(backend_name)
@@ -408,6 +433,12 @@ class MainWindow(QMainWindow):
         exposure = self.camera_exposure.value()
         gain = self.camera_gain.value()
         
+        # Get crop settings from UI
+        crop_x0 = self.crop_x0.value()
+        crop_y0 = self.crop_y0.value()
+        crop_x1 = self.crop_x1.value()
+        crop_y1 = self.crop_y1.value()
+        
         # Also add to properties dict for backward compatibility with camera backends
         if exposure > 0:
             properties["exposure"] = exposure
@@ -418,12 +449,14 @@ class MainWindow(QMainWindow):
         settings = CameraSettings(
             name=name_text or f"Camera {index}",
             index=index,
-            width=self.camera_width.value(),
-            height=self.camera_height.value(),
             fps=self.camera_fps.value(),
             backend=backend_text or "opencv",
             exposure=exposure,
             gain=gain,
+            crop_x0=crop_x0,
+            crop_y0=crop_y0,
+            crop_x1=crop_x1,
+            crop_y1=crop_y1,
             properties=properties,
         )
         return settings.apply_defaults()
@@ -441,7 +474,7 @@ class MainWindow(QMainWindow):
         backend = self._current_backend_name()
         detected = CameraFactory.detect_cameras(backend)
         debug_info = [f"{camera.index}:{camera.label}" for camera in detected]
-        print(
+        logging.info(
             f"[CameraDetection] Available cameras for backend '{backend}': {debug_info}"
         )
         self._detected_cameras = detected
@@ -500,7 +533,7 @@ class MainWindow(QMainWindow):
         backend = self._current_backend_name()
         detected = CameraFactory.detect_cameras(backend)
         debug_info = [f"{camera.index}:{camera.label}" for camera in detected]
-        print(
+        logging.info(
             f"[CameraDetection] Available cameras for backend '{backend}': {debug_info}"
         )
         self._detected_cameras = detected
@@ -687,23 +720,17 @@ class MainWindow(QMainWindow):
         self._active_camera_settings = settings
         self.preview_button.setEnabled(False)
         self.stop_preview_button.setEnabled(True)
-        self.camera_width.blockSignals(True)
-        self.camera_width.setValue(int(settings.width))
-        self.camera_width.blockSignals(False)
-        self.camera_height.blockSignals(True)
-        self.camera_height.setValue(int(settings.height))
-        self.camera_height.blockSignals(False)
         if getattr(settings, "fps", None):
             self.camera_fps.blockSignals(True)
             self.camera_fps.setValue(float(settings.fps))
             self.camera_fps.blockSignals(False)
-        resolution = f"{int(settings.width)}×{int(settings.height)}"
+        # Resolution will be determined from actual camera frames
         if getattr(settings, "fps", None):
             fps_text = f"{float(settings.fps):.2f} FPS"
         else:
             fps_text = "unknown FPS"
         self.statusBar().showMessage(
-            f"Camera preview started: {resolution} @ {fps_text}", 5000
+            f"Camera preview started @ {fps_text}", 5000
         )
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
@@ -758,11 +785,13 @@ class MainWindow(QMainWindow):
             self.camera_backend,
             self.camera_index,
             self.refresh_cameras_button,
-            self.camera_width,
-            self.camera_height,
             self.camera_fps,
             self.camera_exposure,
             self.camera_gain,
+            self.crop_x0,
+            self.crop_y0,
+            self.crop_x1,
+            self.crop_y1,
             self.camera_properties_edit,
             self.rotation_combo,
             self.codec_combo,
@@ -924,7 +953,7 @@ class MainWindow(QMainWindow):
         output_path = recording.output_path()
         self._video_recorder = VideoRecorder(
             output_path,
-            frame_size=(int(width), int(height)),
+            frame_size=(height, width),  # Use numpy convention: (height, width)
             frame_rate=float(frame_rate),
             codec=recording.codec,
             crf=recording.crf,
@@ -974,17 +1003,18 @@ class MainWindow(QMainWindow):
     def _on_frame_ready(self, frame_data: FrameData) -> None:
         raw_frame = frame_data.image
         self._raw_frame = raw_frame
-        frame = self._apply_rotation(raw_frame)
+        
+        # Apply cropping before rotation
+        frame = self._apply_crop(raw_frame)
+        
+        # Apply rotation
+        frame = self._apply_rotation(frame)
         frame = np.ascontiguousarray(frame)
         self._current_frame = frame
         self._track_camera_frame()
-        if self._active_camera_settings is not None:
-            height, width = frame.shape[:2]
-            self._active_camera_settings.width = int(width)
-            self._active_camera_settings.height = int(height)
         if self._video_recorder and self._video_recorder.is_running:
             try:
-                success = self._video_recorder.write(frame)
+                success = self._video_recorder.write(frame, timestamp=frame_data.timestamp)
                 if not success:
                     now = time.perf_counter()
                     if now - self._last_drop_warning > 1.0:
@@ -993,8 +1023,19 @@ class MainWindow(QMainWindow):
                         )
                         self._last_drop_warning = now
             except RuntimeError as exc:
-                self._show_error(str(exc))
-                self._stop_recording()
+                # Check if it's a frame size error
+                if "Frame size changed" in str(exc):
+                    self._show_warning(f"Camera resolution changed - restarting recording: {exc}")
+                    self._stop_recording()
+                    # Restart recording with new resolution if enabled
+                    if self.recording_enabled_checkbox.isChecked():
+                        try:
+                            self._start_recording()
+                        except Exception as restart_exc:
+                            self._show_error(f"Failed to restart recording: {restart_exc}")
+                else:
+                    self._show_error(str(exc))
+                    self._stop_recording()
         if self._dlc_active:
             self.dlc_processor.enqueue_frame(frame, frame_data.timestamp)
         self._display_frame(frame)
@@ -1003,7 +1044,7 @@ class MainWindow(QMainWindow):
         if not self._dlc_active:
             return
         self._last_pose = result
-        logging.info(f"Pose result: {result.pose}, Timestamp: {result.timestamp}")
+        #logging.info(f"Pose result: {result.pose}, Timestamp: {result.timestamp}")
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
 
@@ -1024,6 +1065,31 @@ class MainWindow(QMainWindow):
         bytes_per_line = ch * w
         image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(image))
+
+    def _apply_crop(self, frame: np.ndarray) -> np.ndarray:
+        """Apply cropping to the frame based on settings."""
+        if self._active_camera_settings is None:
+            return frame
+        
+        crop_region = self._active_camera_settings.get_crop_region()
+        if crop_region is None:
+            return frame
+        
+        x0, y0, x1, y1 = crop_region
+        height, width = frame.shape[:2]
+        
+        # Validate and constrain crop coordinates
+        x0 = max(0, min(x0, width))
+        y0 = max(0, min(y0, height))
+        x1 = max(x0, min(x1, width)) if x1 > 0 else width
+        y1 = max(y0, min(y1, height)) if y1 > 0 else height
+        
+        # Apply crop
+        if x0 < x1 and y0 < y1:
+            return frame[y0:y1, x0:x1]
+        else:
+            # Invalid crop region, return original frame
+            return frame
 
     def _apply_rotation(self, frame: np.ndarray) -> np.ndarray:
         if self._rotation_degrees == 90:
@@ -1069,6 +1135,10 @@ class MainWindow(QMainWindow):
     def _show_error(self, message: str) -> None:
         self.statusBar().showMessage(message, 5000)
         QMessageBox.critical(self, "Error", message)
+
+    def _show_warning(self, message: str) -> None:
+        """Display a warning message in the status bar without blocking."""
+        self.statusBar().showMessage(f"⚠ {message}", 3000)
 
     # ------------------------------------------------------------------ Qt overrides
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour

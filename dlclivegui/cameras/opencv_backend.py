@@ -29,20 +29,43 @@ class OpenCVCameraBackend(CameraBackend):
     def read(self) -> Tuple[np.ndarray, float]:
         if self._capture is None:
             raise RuntimeError("Camera has not been opened")
-        success, frame = self._capture.read()
-        if not success:
-            raise RuntimeError("Failed to read frame from OpenCV camera")
+        
+        # Try grab first - this is non-blocking and helps detect connection issues faster
+        grabbed = self._capture.grab()
+        if not grabbed:
+            # Check if camera is still opened - if not, it's a serious error
+            if not self._capture.isOpened():
+                raise RuntimeError("OpenCV camera connection lost")
+            # Otherwise treat as temporary frame read failure (timeout-like)
+            raise TimeoutError("Failed to grab frame from OpenCV camera (temporary)")
+        
+        # Now retrieve the frame
+        success, frame = self._capture.retrieve()
+        if not success or frame is None:
+            raise TimeoutError("Failed to retrieve frame from OpenCV camera (temporary)")
+        
         return frame, time.time()
 
     def close(self) -> None:
         if self._capture is not None:
-            self._capture.release()
-            self._capture = None
+            try:
+                # Try to release properly
+                self._capture.release()
+            except Exception:
+                pass
+            finally:
+                self._capture = None
+            # Give the system a moment to fully release the device
+            time.sleep(0.1)
 
     def stop(self) -> None:
         if self._capture is not None:
-            self._capture.release()
-            self._capture = None
+            try:
+                self._capture.release()
+            except Exception:
+                pass
+            finally:
+                self._capture = None
 
     def device_name(self) -> str:
         base_name = "OpenCV"
@@ -58,9 +81,11 @@ class OpenCVCameraBackend(CameraBackend):
     def _configure_capture(self) -> None:
         if self._capture is None:
             return
-        self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.settings.width))
-        self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.settings.height))
-        self._capture.set(cv2.CAP_PROP_FPS, float(self.settings.fps))
+        # Don't set width/height - capture at camera's native resolution
+        # Only set FPS if specified
+        if self.settings.fps:
+            self._capture.set(cv2.CAP_PROP_FPS, float(self.settings.fps))
+        # Set any additional properties from the properties dict
         for prop, value in self.settings.properties.items():
             if prop == "api":
                 continue
@@ -69,13 +94,8 @@ class OpenCVCameraBackend(CameraBackend):
             except (TypeError, ValueError):
                 continue
             self._capture.set(prop_id, float(value))
-        actual_width = self._capture.get(cv2.CAP_PROP_FRAME_WIDTH)
-        actual_height = self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        # Update actual FPS from camera
         actual_fps = self._capture.get(cv2.CAP_PROP_FPS)
-        if actual_width:
-            self.settings.width = int(actual_width)
-        if actual_height:
-            self.settings.height = int(actual_height)
         if actual_fps:
             self.settings.fps = float(actual_fps)
 

@@ -76,8 +76,6 @@ class CameraFactory:
             settings = CameraSettings(
                 name=f"Probe {index}",
                 index=index,
-                width=640,
-                height=480,
                 fps=30.0,
                 backend=backend,
                 properties={},

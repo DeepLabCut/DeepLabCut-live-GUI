@@ -13,23 +13,33 @@ class CameraSettings:
 
     name: str = "Camera 0"
     index: int = 0
-    width: int = 640
-    height: int = 480
     fps: float = 25.0
     backend: str = "gentl"
     exposure: int = 500  # 0 = auto, otherwise microseconds
     gain: float = 10  # 0.0 = auto, otherwise gain value
+    crop_x0: int = 0  # Left edge of crop region (0 = no crop)
+    crop_y0: int = 0  # Top edge of crop region (0 = no crop)
+    crop_x1: int = 0  # Right edge of crop region (0 = no crop)
+    crop_y1: int = 0  # Bottom edge of crop region (0 = no crop)
     properties: Dict[str, Any] = field(default_factory=dict)
 
     def apply_defaults(self) -> "CameraSettings":
-        """Ensure width, height and fps are positive numbers."""
+        """Ensure fps is a positive number and validate crop settings."""
 
-        self.width = int(self.width) if self.width else 640
-        self.height = int(self.height) if self.height else 480
         self.fps = float(self.fps) if self.fps else 30.0
         self.exposure = int(self.exposure) if self.exposure else 0
         self.gain = float(self.gain) if self.gain else 0.0
+        self.crop_x0 = max(0, int(self.crop_x0)) if hasattr(self, 'crop_x0') else 0
+        self.crop_y0 = max(0, int(self.crop_y0)) if hasattr(self, 'crop_y0') else 0
+        self.crop_x1 = max(0, int(self.crop_x1)) if hasattr(self, 'crop_x1') else 0
+        self.crop_y1 = max(0, int(self.crop_y1)) if hasattr(self, 'crop_y1') else 0
         return self
+    
+    def get_crop_region(self) -> Optional[tuple[int, int, int, int]]:
+        """Get crop region as (x0, y0, x1, y1) or None if no cropping."""
+        if self.crop_x0 == 0 and self.crop_y0 == 0 and self.crop_x1 == 0 and self.crop_y1 == 0:
+            return None
+        return (self.crop_x0, self.crop_y0, self.crop_x1, self.crop_y1)
 
 
 @dataclass

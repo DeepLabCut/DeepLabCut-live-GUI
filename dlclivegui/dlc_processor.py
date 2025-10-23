@@ -137,7 +137,7 @@ class DLCLiveProcessor(QObject):
         if self._worker_thread is not None and self._worker_thread.is_alive():
             return
         
-        self._queue = queue.Queue(maxsize=5)
+        self._queue = queue.Queue(maxsize=2)
         self._stop_event.clear()
         self._worker_thread = threading.Thread(
             target=self._worker_loop,

@@ -120,7 +120,7 @@ class GenTLCameraBackend(CameraBackend):
                 except ValueError:
                     frame = array.copy()
         except HarvesterTimeoutError as exc:
-            raise TimeoutError(str(exc)) from exc
+            raise TimeoutError(str(exc)+ " (GenTL timeout)") from exc
 
         frame = self._convert_frame(frame)
         timestamp = time.time()
@@ -244,22 +244,9 @@ class GenTLCameraBackend(CameraBackend):
             pass
 
     def _configure_resolution(self, node_map) -> None:
-        width = int(self.settings.width)
-        height = int(self.settings.height)
-        if self._rotate in (90, 270):
-            width, height = height, width
-        try:
-            node_map.Width.value = self._adjust_to_increment(
-                width, node_map.Width.min, node_map.Width.max, node_map.Width.inc
-            )
-        except Exception:
-            pass
-        try:
-            node_map.Height.value = self._adjust_to_increment(
-                height, node_map.Height.min, node_map.Height.max, node_map.Height.inc
-            )
-        except Exception:
-            pass
+        # Don't configure width/height - use camera's native resolution
+        # Width and height will be determined from actual frames
+        pass
 
     def _configure_exposure(self, node_map) -> None:
         if self._exposure is None:
