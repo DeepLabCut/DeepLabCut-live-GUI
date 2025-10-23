@@ -131,9 +131,27 @@ class BaseProcessor_socket(Processor):
         self.pose_time = deque()
         self.original_pose = deque()
 
+        self._session_name = "test_session"
+        self.filename = None
+        self._recording = Event()  # Thread-safe recording flag
+
         # State
         self.curr_step = 0
         self.save_original = save_original
+    
+    @property
+    def recording(self):
+        """Thread-safe recording flag."""
+        return self._recording.is_set()
+    
+    @property
+    def session_name(self):
+        return self._session_name
+    
+    @session_name.setter
+    def session_name(self, name):
+        self._session_name = name
+        self.filename = f"{name}_dlc_processor_data.pkl"
 
     def _accept_loop(self):
         """Background thread to accept new client connections."""
@@ -154,7 +172,8 @@ class BaseProcessor_socket(Processor):
             try:
                 if c.poll(0.05):
                     msg = c.recv()
-                    # Optional: handle client messages here
+                    # Handle control messages from client
+                    self._handle_client_message(msg)
             except (EOFError, OSError, BrokenPipeError):
                 break
         try:
@@ -163,6 +182,42 @@ class BaseProcessor_socket(Processor):
             pass
         self.conns.discard(c)
         LOG.info("Client disconnected")
+    
+    def _handle_client_message(self, msg):
+        """Handle control messages from clients."""
+        if not isinstance(msg, dict):
+            return
+        
+        cmd = msg.get("cmd")
+        if cmd == "set_session_name":
+            session_name = msg.get("session_name", "default_session")
+            self.session_name = session_name
+            LOG.info(f"Session name set to: {session_name}")
+        
+        elif cmd == "start_recording":
+            self._recording.set()
+            # Clear all data queues
+            self._clear_data_queues()
+            self.curr_step = 0
+            LOG.info("Recording started, data queues cleared")
+        
+        elif cmd == "stop_recording":
+            self._recording.clear()
+            LOG.info("Recording stopped")
+        
+        elif cmd == "save":
+            filename = msg.get("filename", self.filename)
+            save_code = self.save(filename)
+            LOG.info(f"Save {'successful' if save_code == 1 else 'failed'}: {filename}")
+    
+    def _clear_data_queues(self):
+        """Clear all data storage queues. Override in subclasses to clear additional queues."""
+        self.time_stamp.clear()
+        self.step.clear()
+        self.frame_time.clear()
+        self.pose_time.clear()
+        if self.save_original:
+            self.original_pose.clear()
 
     def broadcast(self, payload):
         """Send payload to all connected clients."""
@@ -202,12 +257,13 @@ class BaseProcessor_socket(Processor):
         # Update step counter
         self.curr_step = self.curr_step + 1
 
-        # Store metadata
-        self.time_stamp.append(curr_time)
-        self.step.append(self.curr_step)
-        self.frame_time.append(kwargs.get("frame_time", -1))
-        if "pose_time" in kwargs:
-            self.pose_time.append(kwargs["pose_time"])
+        # Store metadata (only if recording)
+        if self.recording:
+            self.time_stamp.append(curr_time)
+            self.step.append(self.curr_step)
+            self.frame_time.append(kwargs.get("frame_time", -1))
+            if "pose_time" in kwargs:
+                self.pose_time.append(kwargs["pose_time"])
 
         # Broadcast raw pose to all connected clients
         payload = [curr_time, pose]
@@ -344,6 +400,14 @@ class MyProcessor_socket(BaseProcessor_socket):
         self.filter_kwargs = filter_kwargs or {"min_cutoff": 1.0, "beta": 0.02, "d_cutoff": 1.0}
         self.filters = None  # Will be initialized on first pose
 
+    def _clear_data_queues(self):
+        """Clear all data storage queues including pose-specific ones."""
+        super()._clear_data_queues()
+        self.center_x.clear()
+        self.center_y.clear()
+        self.heading_direction.clear()
+        self.head_angle.clear()
+
     def _initialize_filters(self, vals):
         """Initialize One-Euro filters for each output variable."""
         t0 = self.timing_func()
@@ -423,16 +487,17 @@ class MyProcessor_socket(BaseProcessor_socket):
         # Update step counter
         self.curr_step = self.curr_step + 1
 
-        # Store processed data
-        self.center_x.append(vals[0])
-        self.center_y.append(vals[1])
-        self.heading_direction.append(vals[2])
-        self.head_angle.append(vals[3])
-        self.time_stamp.append(curr_time)
-        self.step.append(self.curr_step)
-        self.frame_time.append(kwargs.get("frame_time", -1))
-        if "pose_time" in kwargs:
-            self.pose_time.append(kwargs["pose_time"])
+        # Store processed data (only if recording)
+        if self.recording:
+            self.center_x.append(vals[0])
+            self.center_y.append(vals[1])
+            self.heading_direction.append(vals[2])
+            self.head_angle.append(vals[3])
+            self.time_stamp.append(curr_time)
+            self.step.append(self.curr_step)
+            self.frame_time.append(kwargs.get("frame_time", -1))
+            if "pose_time" in kwargs:
+                self.pose_time.append(kwargs["pose_time"])
 
         # Broadcast processed values to all connected clients
         payload = [curr_time, vals[0], vals[1], vals[2], vals[3]]
