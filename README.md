@@ -1,126 +1,375 @@
 # DeepLabCut Live GUI
 
-A modernised PyQt6 GUI for running [DeepLabCut-live](https://github.com/DeepLabCut/DeepLabCut-live) experiments. The application
-streams frames from a camera, optionally performs DLCLive inference, and records video using the
-[vidgear](https://github.com/abhiTronix/vidgear) toolkit.
+A modern PyQt6 GUI for running [DeepLabCut-live](https://github.com/DeepLabCut/DeepLabCut-live) experiments with real-time pose estimation. The application streams frames from industrial or consumer cameras, performs DLCLive inference, and records high-quality video with synchronized pose data.
 
 ## Features
 
-- Python 3.11+ compatible codebase with a PyQt6 interface.
-- Modular architecture with dedicated modules for camera control, video recording, configuration
-  management, and DLCLive processing.
-- Single JSON configuration file that captures camera settings, DLCLive parameters, and recording
-  options. All fields can be edited directly within the GUI.
-- Optional DLCLive inference with pose visualisation over the live video feed.
-- Recording support via vidgear's `WriteGear`, including custom encoder options.
+### Core Functionality
+- **Modern Python Stack**: Python 3.10+ compatible codebase with PyQt6 interface
+- **Multi-Backend Camera Support**: OpenCV, GenTL (Harvesters), Aravis, and Basler (pypylon)
+- **Real-Time Pose Estimation**: Live DLCLive inference with configurable models (TensorFlow, PyTorch)
+- **High-Performance Recording**: Hardware-accelerated video encoding via FFmpeg
+- **Flexible Configuration**: Single JSON file for all settings with GUI editing
+
+### Camera Features
+- **Multiple Backends**:
+  - OpenCV - Universal webcam support
+  - GenTL - Industrial cameras via Harvesters (Windows/Linux)
+  - Aravis - GenICam/GigE cameras (Linux/macOS)
+  - Basler - Basler cameras via pypylon
+- **Smart Device Detection**: Automatic camera enumeration without unnecessary probing
+- **Camera Controls**: Exposure time, gain, frame rate, and ROI cropping
+- **Live Preview**: Real-time camera feed with rotation support (0°, 90°, 180°, 270°)
+
+### DLCLive Features
+- **Model Support**: TensorFlow (base) and PyTorch models
+- **Processor System**: Plugin architecture for custom pose processing
+- **Auto-Recording**: Automatic video recording triggered by processor commands
+- **Performance Metrics**: Real-time FPS, latency, and queue monitoring
+- **Pose Visualization**: Optional overlay of detected keypoints on live feed
+
+### Recording Features
+- **Hardware Encoding**: NVENC (NVIDIA GPU) and software codecs (libx264, libx265)
+- **Configurable Quality**: CRF-based quality control
+- **Multiple Formats**: MP4, AVI, MOV containers
+- **Timestamp Support**: Frame-accurate timestamps for synchronization
+- **Performance Monitoring**: Write FPS, buffer status, and dropped frame tracking
+
+### User Interface
+- **Intuitive Layout**: Organized control panels with clear separation of concerns
+- **Configuration Management**: Load/save settings, support for multiple configurations
+- **Status Indicators**: Real-time feedback on camera, inference, and recording status
+- **Bounding Box Tool**: Visual overlay for ROI definition
 
 ## Installation
 
-1. Install the package and its dependencies:
+### Basic Installation
 
-   ```bash
-   pip install deeplabcut-live-gui
-   ```
+```bash
+pip install deeplabcut-live-gui
+```
 
-   The GUI requires additional runtime packages for optional features:
+This installs the core package with OpenCV camera support.
 
-   - [DeepLabCut-live](https://github.com/DeepLabCut/DeepLabCut-live) for pose estimation.
-   - [vidgear](https://github.com/abhiTronix/vidgear) for video recording.
-   - [OpenCV](https://opencv.org/) for camera access.
+### Full Installation with Optional Dependencies
 
-   These libraries are listed in `setup.py` and will be installed automatically when the package is
-   installed via `pip`.
+```bash
+# Install with gentl support
+pip install deeplabcut-live-gui[gentl]
+```
 
-2. Launch the GUI:
+### Platform-Specific Camera Backend Setup
 
+#### Windows (GenTL for Industrial Cameras)
+1. Install camera vendor drivers and SDK
+2. Ensure GenTL producer (.cti) files are accessible
+3. Common locations:
+   - `C:\Program Files\The Imaging Source Europe GmbH\IC4 GenTL Driver\bin\`
+   - Check vendor documentation for CTI file location
+
+#### Linux (Aravis for GenICam Cameras - Recommended)
+NOT tested
+```bash
+# Ubuntu/Debian
+sudo apt-get install gir1.2-aravis-0.8 python3-gi
+
+# Fedora
+sudo dnf install aravis python3-gobject
+```
+
+#### macOS (Aravis)
+NOT tested
+```bash
+brew install aravis
+pip install pygobject
+```
+
+#### Basler Cameras (All Platforms)
+NOT tested
+```bash
+# Install Pylon SDK from Basler website
+# Then install pypylon
+pip install pypylon
+```
+
+### Hardware Acceleration (Optional)
+
+For NVIDIA GPU encoding (highly recommended for high-resolution/high-FPS recording):
+```bash
+# Ensure NVIDIA drivers are installed
+# FFmpeg with NVENC support will be used automatically
+```
+
+## Quick Start
+
+1. **Launch the GUI**:
    ```bash
    dlclivegui
    ```
 
+2. **Select Camera Backend**: Choose from the dropdown (opencv, gentl, aravis, basler)
+
+3. **Configure Camera**: Set FPS, exposure, gain, and other parameters
+
+4. **Start Preview**: Click "Start Preview" to begin camera streaming
+
+5. **Optional - Load DLC Model**: Browse to your exported DLCLive model directory
+
+6. **Optional - Start Inference**: Click "Start pose inference" for real-time tracking
+
+7. **Optional - Record Video**: Configure output path and click "Start recording"
+
 ## Configuration
 
-The GUI works with a single JSON configuration describing the experiment. The configuration contains
-three main sections:
+The GUI uses a single JSON configuration file containing all experiment settings:
 
 ```json
 {
   "camera": {
+    "name": "Camera 0",
     "index": 0,
-    "width": 1280,
-    "height": 720,
     "fps": 60.0,
-    "backend": "opencv",
+    "backend": "gentl",
+    "exposure": 10000,
+    "gain": 5.0,
+    "crop_x0": 0,
+    "crop_y0": 0,
+    "crop_x1": 0,
+    "crop_y1": 0,
+    "max_devices": 3,
     "properties": {}
   },
   "dlc": {
     "model_path": "/path/to/exported-model",
-    "processor": "cpu",
-    "shuffle": 1,
-    "trainingsetindex": 0,
-    "processor_args": {},
-    "additional_options": {}
+    "model_type": "base",
+    "additional_options": {
+      "resize": 0.5,
+      "processor": "cpu"
+    }
   },
   "recording": {
     "enabled": true,
-    "directory": "~/Videos/deeplabcut",
+    "directory": "~/Videos/deeplabcut-live",
     "filename": "session.mp4",
     "container": "mp4",
-    "options": {
-      "compression_mode": "mp4"
-    }
+    "codec": "h264_nvenc",
+    "crf": 23
+  },
+  "bbox": {
+    "enabled": false,
+    "x0": 0,
+    "y0": 0,
+    "x1": 200,
+    "y1": 100
   }
 }
 ```
 
-Use **File → Load configuration…** to open an existing configuration, or **File → Save configuration**
-to persist the current settings. Every field in the GUI is editable, and values entered in the
-interface will be written back to the JSON file.
+### Configuration Management
 
-### Camera backends
+- **Load**: File → Load configuration… (or Ctrl+O)
+- **Save**: File → Save configuration (or Ctrl+S)
+- **Save As**: File → Save configuration as… (or Ctrl+Shift+S)
 
-Set `camera.backend` to one of the supported drivers:
+All GUI fields are automatically synchronized with the configuration file.
 
-- `opencv` – standard `cv2.VideoCapture` fallback available on every platform.
-- `basler` – uses the Basler Pylon SDK via `pypylon` (install separately).
-- `gentl` – uses Aravis for GenTL-compatible cameras (requires `python-gi` bindings).
+## Camera Backends
 
-Backend specific parameters can be supplied through the `camera.properties` object. For example:
+### Backend Selection Guide
 
+| Backend | Platform | Use Case | Auto-Detection |
+|---------|----------|----------|----------------|
+| **opencv** | All | Webcams, simple USB cameras | Basic |
+| **gentl** | Windows, Linux | Industrial cameras via CTI files | Yes |
+| **aravis** | Linux, macOS | GenICam/GigE cameras | Yes |
+| **basler** | All | Basler cameras specifically | Yes |
+
+### Backend-Specific Configuration
+
+#### OpenCV
 ```json
 {
   "camera": {
+    "backend": "opencv",
     "index": 0,
-    "backend": "basler",
+    "fps": 30.0
+  }
+}
+```
+**Note**: Exposure and gain controls are disabled for OpenCV backend due to limited driver support.
+
+#### GenTL (Harvesters)
+```json
+{
+  "camera": {
+    "backend": "gentl",
+    "index": 0,
+    "fps": 60.0,
+    "exposure": 15000,
+    "gain": 8.0,
     "properties": {
-      "serial": "40123456",
-      "exposure": 15000,
-      "gain": 6.0
+      "cti_file": "C:\\Path\\To\\Producer.cti",
+      "serial_number": "12345678",
+      "pixel_format": "Mono8"
     }
   }
 }
 ```
 
-If optional dependencies are missing, the GUI will show the backend as unavailable in the drop-down
-but you can still configure it for a system where the drivers are present.
+#### Aravis
+```json
+{
+  "camera": {
+    "backend": "aravis",
+    "index": 0,
+    "fps": 60.0,
+    "exposure": 10000,
+    "gain": 5.0,
+    "properties": {
+      "camera_id": "TheImagingSource-12345678",
+      "pixel_format": "Mono8",
+      "n_buffers": 10,
+      "timeout": 2000000
+    }
+  }
+}
+```
 
-## Development
+See [Camera Backend Documentation](docs/camera_support.md) for detailed setup instructions.
 
-The core modules of the package are organised as follows:
+## DLCLive Integration
 
-- `dlclivegui.config` – dataclasses for loading, storing, and saving application settings.
-- `dlclivegui.cameras` – modular camera backends (OpenCV, Basler, GenTL) and factory helpers.
-- `dlclivegui.camera_controller` – camera capture worker running in a dedicated `QThread`.
-- `dlclivegui.video_recorder` – wrapper around `WriteGear` for video output.
-- `dlclivegui.dlc_processor` – asynchronous DLCLive inference with optional pose overlay.
-- `dlclivegui.gui` – PyQt6 user interface and application entry point.
+### Model Types
 
-Run a quick syntax check with:
+The GUI supports both TensorFlow and PyTorch DLCLive models:
+
+1. **Base (TensorFlow)**: Original DLC models exported for live inference
+2. **PyTorch**: PyTorch-based models (requires PyTorch installation)
+
+Select the model type from the dropdown before starting inference.
+
+### Processor System
+
+The GUI includes a plugin system for custom pose processing:
+
+```python
+# Example processor
+class MyProcessor:
+    def process(self, pose, timestamp):
+        # Custom processing logic
+        x, y = pose[0, :2]  # First keypoint
+        print(f"Position: ({x}, {y})")
+    def save(self):
+      pass
+```
+
+Place processors in `dlclivegui/processors/` and refresh to load them.
+
+See [Processor Plugin Documentation](docs/PLUGIN_SYSTEM.md) for details.
+
+### Auto-Recording Feature
+
+Enable "Auto-record video on processor command" to automatically start/stop recording based on processor signals. Useful for event-triggered recording in behavioral experiments.
+
+## Performance Optimization
+
+### High-Speed Camera Tips
+
+1. **Use Hardware Encoding**: Select `h264_nvenc` codec for NVIDIA GPUs
+2. **Adjust Buffer Count**: Increase buffers for GenTL/Aravis backends
+   ```json
+   "properties": {"n_buffers": 20}
+   ```
+3. **Optimize CRF**: Lower CRF = higher quality but larger files (default: 23)
+4. **Disable Visualization**: Uncheck "Display pose predictions" during recording
+5. **Crop Region**: Use cropping to reduce frame size before inference
+
+### Recommended Settings by FPS
+
+| FPS Range | Codec | CRF | Buffers | Notes |
+|-----------|-------|-----|---------|-------|
+| 30-60 | libx264 | 23 | 10 | Standard quality |
+| 60-120 | h264_nvenc | 23 | 15 | GPU encoding |
+| 120-200 | h264_nvenc | 28 | 20 | Higher compression |
+| 200+ | h264_nvenc | 30 | 30 | Max performance |
+
+### Project Structure
+
+```
+dlclivegui/
+├── __init__.py
+├── gui.py                 # Main PyQt6 application
+├── config.py             # Configuration dataclasses
+├── camera_controller.py  # Camera capture thread
+├── dlc_processor.py      # DLCLive inference thread
+├── video_recorder.py     # Video encoding thread
+├── cameras/              # Camera backend modules
+│   ├── base.py          # Abstract base class
+│   ├── factory.py       # Backend registry and detection
+│   ├── opencv_backend.py
+│   ├── gentl_backend.py
+│   ├── aravis_backend.py
+│   └── basler_backend.py
+└── processors/           # Pose processor plugins
+    ├── processor_utils.py
+    └── dlc_processor_socket.py
+```
+
+### Running Tests
 
 ```bash
+# Syntax check
 python -m compileall dlclivegui
+
+# Type checking (optional)
+mypy dlclivegui
+
 ```
+
+### Adding New Camera Backends
+
+1. Create new backend inheriting from `CameraBackend`
+2. Implement required methods: `open()`, `read()`, `close()`
+3. Optional: Implement `get_device_count()` for smart detection
+4. Register in `cameras/factory.py`
+
+See [Camera Backend Development](docs/camera_support.md) for detailed instructions.
+
+
+## Documentation
+
+- [Camera Support](docs/camera_support.md) - All camera backends and setup
+- [Aravis Backend](docs/aravis_backend.md) - GenICam camera setup (Linux/macOS)
+- [Processor Plugins](docs/PLUGIN_SYSTEM.md) - Custom pose processing
+- [Installation Guide](docs/install.md) - Detailed setup instructions
+- [Timestamp Format](docs/timestamp_format.md) - Timestamp synchronization
+
+## System Requirements
+
+
+### Recommended
+- Python 3.10+
+- 8 GB RAM
+- NVIDIA GPU with CUDA support (for DLCLive inference and video encoding)
+- USB 3.0 or GigE network (for industrial cameras)
+- SSD storage (for high-speed recording)
+
+### Tested Platforms
+- Windows 11
 
 ## License
 
-This project is licensed under the GNU Lesser General Public License v3.0. See the `LICENSE` file for
-more information.
+This project is licensed under the GNU Lesser General Public License v3.0. See the [LICENSE](LICENSE) file for more information.
+
+## Citation
+
+Cite the original DeepLabCut-live paper:
+```bibtex
+@article{Kane2020,
+  title={Real-time, low-latency closed-loop feedback using markerless posture tracking},
+  author={Kane, Gary A and Lopes, Gonçalo and Saunders, Jonny L and Mathis, Alexander and Mathis, Mackenzie W},
+  journal={eLife},
+  year={2020},
+  doi={10.7554/eLife.61909}
+}
+```

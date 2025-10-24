@@ -22,6 +22,7 @@ _BACKENDS: Dict[str, Tuple[str, str]] = {
     "opencv": ("dlclivegui.cameras.opencv_backend", "OpenCVCameraBackend"),
     "basler": ("dlclivegui.cameras.basler_backend", "BaslerCameraBackend"),
     "gentl": ("dlclivegui.cameras.gentl_backend", "GenTLCameraBackend"),
+    "aravis": ("dlclivegui.cameras.aravis_backend", "AravisCameraBackend"),
 }
 
 
@@ -58,7 +59,7 @@ class CameraFactory:
             The backend identifier, e.g. ``"opencv"``.
         max_devices:
             Upper bound for the indices that should be probed.
-            For GenTL backend, the actual device count is queried if available.
+            For backends with get_device_count (GenTL, Aravis), the actual device count is queried.
 
         Returns
         -------

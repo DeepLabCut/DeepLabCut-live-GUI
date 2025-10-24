@@ -1,13 +1,85 @@
 ## Camera Support
 
-### Windows
-- **The Imaging Source USB3 Cameras**: via code based on [Windows code samples](https://github.com/TheImagingSource/IC-Imaging-Control-Samples) provided by The Imaging Source. To use The Imaging Source USB3 cameras on Windows, you must first [install their drivers](https://www.theimagingsource.com/support/downloads-for-windows/device-drivers/icwdmuvccamtis/) and [C library](https://www.theimagingsource.com/support/downloads-for-windows/software-development-kits-sdks/tisgrabberdll/).
-- **OpenCV compatible cameras**: OpenCV is installed with DeepLabCut-live-GUI, so webcams or other cameras compatible with OpenCV on Windows require no additional installation.
+DeepLabCut-live-GUI supports multiple camera backends for different platforms and camera types:
 
-### Linux and NVIDIA Jetson Development Kits
+### Supported Backends
 
-- **OpenCV compatible cameras**: We provide support for many webcams and industrial cameras using OpenCV via Video4Linux drivers. This includes The Imaging Source USB3 cameras (and others, but untested). OpenCV is installed with DeepLabCut-live-GUI.
-- **Aravis Project compatible USB3Vision and GigE Cameras**: [The Aravis Project](https://github.com/AravisProject/aravis) supports a number of popular industrial cameras used in neuroscience, including The Imaging Source, Point Grey, and Basler cameras. To use Aravis Project drivers, please follow their [installation instructions](https://github.com/AravisProject/aravis#installing-aravis). The Aravis Project drivers are supported on the NVIDIA Jetson platform, but there are known bugs (e.g. [here](https://github.com/AravisProject/aravis/issues/324)).
+1. **OpenCV** - Universal webcam and USB camera support (all platforms)
+2. **GenTL** - Industrial cameras via GenTL producers (Windows, Linux)
+3. **Aravis** - GenICam/GigE Vision cameras (Linux, macOS)
+4. **Basler** - Basler cameras via pypylon (all platforms)
+
+### Backend Selection
+
+You can select the backend in the GUI from the "Backend" dropdown, or in your configuration file:
+
+```json
+{
+  "camera": {
+    "backend": "aravis",
+    "index": 0,
+    "fps": 30.0
+  }
+}
+```
+
+### Platform-Specific Recommendations
+
+#### Windows
+- **OpenCV compatible cameras**: Best for webcams and simple USB cameras. OpenCV is installed with DeepLabCut-live-GUI.
+- **GenTL backend**: Recommended for industrial cameras (The Imaging Source, Basler, etc.) via vendor-provided CTI files.
+- **Basler cameras**: Can use either GenTL or pypylon backend.
+
+#### Linux
+- **OpenCV compatible cameras**: Good for webcams via Video4Linux drivers. Installed with DeepLabCut-live-GUI.
+- **Aravis backend**: **Recommended** for GenICam/GigE Vision industrial cameras (The Imaging Source, Basler, Point Grey, etc.)
+  - Easy installation via system package manager
+  - Better Linux support than GenTL
+  - See [Aravis Backend Documentation](aravis_backend.md)
+- **GenTL backend**: Alternative for industrial cameras if vendor provides Linux CTI files.
+
+#### macOS
+- **OpenCV compatible cameras**: For webcams and compatible USB cameras.
+- **Aravis backend**: For GenICam/GigE Vision cameras (requires Homebrew installation).
+
+#### NVIDIA Jetson
+- **OpenCV compatible cameras**: Standard V4L2 camera support.
+- **Aravis backend**: Supported but may have platform-specific bugs. See [Aravis issues](https://github.com/AravisProject/aravis/issues/324).
+
+### Quick Installation Guide
+
+#### Aravis (Linux/Ubuntu)
+```bash
+sudo apt-get install gir1.2-aravis-0.8 python3-gi
+```
+
+#### Aravis (macOS)
+```bash
+brew install aravis
+pip install pygobject
+```
+
+#### GenTL (Windows)
+Install vendor-provided camera drivers and SDK. CTI files are typically in:
+- `C:\Program Files\The Imaging Source Europe GmbH\IC4 GenTL Driver\bin\`
+
+### Backend Comparison
+
+| Feature | OpenCV | GenTL | Aravis | Basler (pypylon) |
+|---------|--------|-------|--------|------------------|
+| Ease of use | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
+| Auto-detection | Basic | Yes | Yes | Yes |
+| Exposure control | Limited | Yes | Yes | Yes |
+| Gain control | Limited | Yes | Yes | Yes |
+| Windows | ✅ | ✅ | ❌ | ✅ |
+| Linux | ✅ | ✅ | ✅ | ✅ |
+| macOS | ✅ | ❌ | ✅ | ✅ |
+
+### Detailed Backend Documentation
+
+- [Aravis Backend](aravis_backend.md) - GenICam/GigE cameras on Linux/macOS
+- GenTL Backend - Industrial cameras via vendor CTI files
+- OpenCV Backend - Universal webcam support
 
 ### Contributing New Camera Types
 
