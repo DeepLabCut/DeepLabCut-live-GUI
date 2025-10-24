@@ -1,4 +1,5 @@
 """Basler camera backend implemented with :mod:`pypylon`."""
+
 from __future__ import annotations
 
 import time
@@ -28,9 +29,7 @@ class BaslerCameraBackend(CameraBackend):
 
     def open(self) -> None:
         if pylon is None:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "pypylon is required for the Basler backend but is not installed"
-            )
+            raise RuntimeError("pypylon is required for the Basler backend but is not installed")
         devices = self._enumerate_devices()
         if not devices:
             raise RuntimeError("No Basler cameras detected")
@@ -114,7 +113,9 @@ class BaslerCameraBackend(CameraBackend):
         return factory.EnumerateDevices()
 
     def _select_device(self, devices):
-        serial = self.settings.properties.get("serial") or self.settings.properties.get("serial_number")
+        serial = self.settings.properties.get("serial") or self.settings.properties.get(
+            "serial_number"
+        )
         if serial:
             for device in devices:
                 if getattr(device, "GetSerialNumber", None) and device.GetSerialNumber() == serial:

@@ -1,4 +1,5 @@
 """OpenCV based camera backend."""
+
 from __future__ import annotations
 
 import time
@@ -21,15 +22,13 @@ class OpenCVCameraBackend(CameraBackend):
         backend_flag = self._resolve_backend(self.settings.properties.get("api"))
         self._capture = cv2.VideoCapture(int(self.settings.index), backend_flag)
         if not self._capture.isOpened():
-            raise RuntimeError(
-                f"Unable to open camera index {self.settings.index} with OpenCV"
-            )
+            raise RuntimeError(f"Unable to open camera index {self.settings.index} with OpenCV")
         self._configure_capture()
 
     def read(self) -> Tuple[np.ndarray, float]:
         if self._capture is None:
             raise RuntimeError("Camera has not been opened")
-        
+
         # Try grab first - this is non-blocking and helps detect connection issues faster
         grabbed = self._capture.grab()
         if not grabbed:
@@ -38,12 +37,12 @@ class OpenCVCameraBackend(CameraBackend):
                 raise RuntimeError("OpenCV camera connection lost")
             # Otherwise treat as temporary frame read failure (timeout-like)
             raise TimeoutError("Failed to grab frame from OpenCV camera (temporary)")
-        
+
         # Now retrieve the frame
         success, frame = self._capture.retrieve()
         if not success or frame is None:
             raise TimeoutError("Failed to retrieve frame from OpenCV camera (temporary)")
-        
+
         return frame, time.time()
 
     def close(self) -> None:

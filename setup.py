@@ -1,4 +1,5 @@
 """Setup configuration for the DeepLabCut Live GUI."""
+
 from __future__ import annotations
 
 import setuptools

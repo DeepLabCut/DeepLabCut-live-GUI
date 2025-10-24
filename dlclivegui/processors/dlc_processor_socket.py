@@ -65,7 +65,7 @@ class BaseProcessor_socket(Processor):
     Handles network connections, timing, and data logging.
     Subclasses should implement custom pose processing logic.
     """
-    
+
     # Metadata for GUI discovery
     PROCESSOR_NAME = "Base Socket Processor"
     PROCESSOR_DESCRIPTION = "Base class for socket-based processors with multi-client support"
@@ -73,23 +73,23 @@ class BaseProcessor_socket(Processor):
         "bind": {
             "type": "tuple",
             "default": ("0.0.0.0", 6000),
-            "description": "Server address (host, port)"
+            "description": "Server address (host, port)",
         },
         "authkey": {
             "type": "bytes",
             "default": b"secret password",
-            "description": "Authentication key for clients"
+            "description": "Authentication key for clients",
         },
         "use_perf_counter": {
             "type": "bool",
             "default": False,
-            "description": "Use time.perf_counter() instead of time.time()"
+            "description": "Use time.perf_counter() instead of time.time()",
         },
         "save_original": {
             "type": "bool",
             "default": False,
-            "description": "Save raw pose arrays for analysis"
-        }
+            "description": "Save raw pose arrays for analysis",
+        },
     }
 
     def __init__(
@@ -139,12 +139,12 @@ class BaseProcessor_socket(Processor):
         # State
         self.curr_step = 0
         self.save_original = save_original
-    
+
     @property
     def recording(self):
         """Thread-safe recording flag."""
         return self._recording.is_set()
-    
+
     @property
     def video_recording(self):
         """Thread-safe video recording flag."""
@@ -153,7 +153,7 @@ class BaseProcessor_socket(Processor):
     @property
     def session_name(self):
         return self._session_name
-    
+
     @session_name.setter
     def session_name(self, name):
         self._session_name = name
@@ -188,18 +188,18 @@ class BaseProcessor_socket(Processor):
             pass
         self.conns.discard(c)
         LOG.info("Client disconnected")
-    
+
     def _handle_client_message(self, msg):
         """Handle control messages from clients."""
         if not isinstance(msg, dict):
             return
-        
+
         cmd = msg.get("cmd")
         if cmd == "set_session_name":
             session_name = msg.get("session_name", "default_session")
             self.session_name = session_name
             LOG.info(f"Session name set to: {session_name}")
-        
+
         elif cmd == "start_recording":
             self._vid_recording.set()
             self._recording.set()
@@ -207,12 +207,12 @@ class BaseProcessor_socket(Processor):
             self._clear_data_queues()
             self.curr_step = 0
             LOG.info("Recording started, data queues cleared")
-        
+
         elif cmd == "stop_recording":
             self._recording.clear()
             self._vid_recording.clear()
             LOG.info("Recording stopped")
-        
+
         elif cmd == "save":
             filename = msg.get("filename", self.filename)
             save_code = self.save(filename)
@@ -222,7 +222,7 @@ class BaseProcessor_socket(Processor):
             # Placeholder for video recording start
             self._vid_recording.set()
             LOG.info("Start video recording command received")
-    
+
     def _clear_data_queues(self):
         """Clear all data storage queues. Override in subclasses to clear additional queues."""
         self.time_stamp.clear()
@@ -338,41 +338,43 @@ class MyProcessor_socket(BaseProcessor_socket):
 
     Broadcasts: [timestamp, center_x, center_y, heading, head_angle]
     """
-    
+
     # Metadata for GUI discovery
     PROCESSOR_NAME = "Mouse Pose Processor"
-    PROCESSOR_DESCRIPTION = "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
+    PROCESSOR_DESCRIPTION = (
+        "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
+    )
     PROCESSOR_PARAMS = {
         "bind": {
             "type": "tuple",
             "default": ("0.0.0.0", 6000),
-            "description": "Server address (host, port)"
+            "description": "Server address (host, port)",
         },
         "authkey": {
             "type": "bytes",
             "default": b"secret password",
-            "description": "Authentication key for clients"
+            "description": "Authentication key for clients",
         },
         "use_perf_counter": {
             "type": "bool",
             "default": False,
-            "description": "Use time.perf_counter() instead of time.time()"
+            "description": "Use time.perf_counter() instead of time.time()",
         },
         "use_filter": {
             "type": "bool",
             "default": False,
-            "description": "Apply One-Euro filter to calculated values"
+            "description": "Apply One-Euro filter to calculated values",
         },
         "filter_kwargs": {
             "type": "dict",
             "default": {"min_cutoff": 1.0, "beta": 0.02, "d_cutoff": 1.0},
-            "description": "One-Euro filter parameters (min_cutoff, beta, d_cutoff)"
+            "description": "One-Euro filter parameters (min_cutoff, beta, d_cutoff)",
         },
         "save_original": {
             "type": "bool",
             "default": False,
-            "description": "Save raw pose arrays for analysis"
-        }
+            "description": "Save raw pose arrays for analysis",
+        },
     }
 
     def __init__(
@@ -542,7 +544,7 @@ PROCESSOR_REGISTRY["MyProcessor_socket"] = MyProcessor_socket
 def get_available_processors():
     """
     Get list of available processor classes.
-    
+
     Returns:
         dict: Dictionary mapping class names to processor info:
             {
@@ -560,7 +562,7 @@ def get_available_processors():
             "class": processor_class,
             "name": getattr(processor_class, "PROCESSOR_NAME", class_name),
             "description": getattr(processor_class, "PROCESSOR_DESCRIPTION", ""),
-            "params": getattr(processor_class, "PROCESSOR_PARAMS", {})
+            "params": getattr(processor_class, "PROCESSOR_PARAMS", {}),
         }
     return processors
 
@@ -568,20 +570,20 @@ def get_available_processors():
 def instantiate_processor(class_name, **kwargs):
     """
     Instantiate a processor by class name with given parameters.
-    
+
     Args:
         class_name: Name of the processor class (e.g., "MyProcessor_socket")
         **kwargs: Parameters to pass to the processor constructor
-    
+
     Returns:
         Processor instance
-    
+
     Raises:
         ValueError: If class_name is not in registry
     """
     if class_name not in PROCESSOR_REGISTRY:
         available = ", ".join(PROCESSOR_REGISTRY.keys())
         raise ValueError(f"Unknown processor '{class_name}'. Available: {available}")
-    
+
     processor_class = PROCESSOR_REGISTRY[class_name]
     return processor_class(**kwargs)

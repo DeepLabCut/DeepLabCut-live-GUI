@@ -97,13 +97,13 @@ dropdown.set_items(display_names)
 def on_processor_selected(dropdown_index):
     # Get the key
     key = self.processor_keys[dropdown_index]
-    
+
     # Get processor info
     info = all_processors[key]
-    
+
     # Show description
     description_label.text = info['description']
-    
+
     # Build parameter form
     for param_name, param_info in info['params'].items():
         add_parameter_field(
@@ -119,17 +119,17 @@ def on_processor_selected(dropdown_index):
 def on_create_clicked():
     # Get selected key
     key = self.processor_keys[dropdown.current_index]
-    
+
     # Get user's parameter values
     user_params = parameter_form.get_values()
-    
+
     # Instantiate using the key!
     self.processor = instantiate_from_scan(
         all_processors,
         key,
         **user_params
     )
-    
+
     print(f"Created: {self.processor.__class__.__name__}")
 ```
 

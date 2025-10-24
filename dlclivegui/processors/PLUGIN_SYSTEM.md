@@ -47,7 +47,7 @@ Two helper functions enable GUI discovery:
 ```python
 def get_available_processors():
     """Returns dict of available processors with metadata."""
-    
+
 def instantiate_processor(class_name, **kwargs):
     """Instantiates a processor by name with given parameters."""
 ```
@@ -96,7 +96,7 @@ def load_processors_from_file(file_path):
     spec = importlib.util.spec_from_file_location("processors", file_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    
+
     if hasattr(module, 'get_available_processors'):
         return module.get_available_processors()
     return {}

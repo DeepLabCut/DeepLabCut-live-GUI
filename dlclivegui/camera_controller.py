@@ -1,4 +1,5 @@
 """Camera management for the DLC Live GUI."""
+
 from __future__ import annotations
 
 import logging
@@ -8,7 +9,7 @@ from threading import Event
 from typing import Optional
 
 import numpy as np
-from PyQt6.QtCore import QObject, QThread, QMetaObject, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QMetaObject, QObject, Qt, QThread, pyqtSignal, pyqtSlot
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
@@ -39,20 +40,20 @@ class CameraWorker(QObject):
         self._settings = settings
         self._stop_event = Event()
         self._backend: Optional[CameraBackend] = None
-        
+
         # Error recovery settings
         self._max_consecutive_errors = 5
         self._max_reconnect_attempts = 3
         self._retry_delay = 0.1  # seconds
         self._reconnect_delay = 1.0  # seconds
-        
+
         # Frame validation
         self._expected_frame_size: Optional[tuple[int, int]] = None  # (height, width)
 
     @pyqtSlot()
     def run(self) -> None:
         self._stop_event.clear()
-        
+
         # Initialize camera
         if not self._initialize_camera():
             self.finished.emit()
@@ -66,30 +67,36 @@ class CameraWorker(QObject):
         while not self._stop_event.is_set():
             try:
                 frame, timestamp = self._backend.read()
-                
+
                 # Validate frame size
                 if not self._validate_frame_size(frame):
                     consecutive_errors += 1
-                    LOGGER.warning(f"Frame size validation failed ({consecutive_errors}/{self._max_consecutive_errors})")
+                    LOGGER.warning(
+                        f"Frame size validation failed ({consecutive_errors}/{self._max_consecutive_errors})"
+                    )
                     if consecutive_errors >= self._max_consecutive_errors:
                         self.error_occurred.emit("Too many frames with incorrect size")
                         break
                     time.sleep(self._retry_delay)
                     continue
-                
+
                 consecutive_errors = 0  # Reset error count on success
                 reconnect_attempts = 0  # Reset reconnect attempts on success
-                
+
             except TimeoutError as exc:
                 consecutive_errors += 1
-                LOGGER.warning(f"Camera frame timeout ({consecutive_errors}/{self._max_consecutive_errors}): {exc}")
-                
+                LOGGER.warning(
+                    f"Camera frame timeout ({consecutive_errors}/{self._max_consecutive_errors}): {exc}"
+                )
+
                 if self._stop_event.is_set():
                     break
-                
+
                 # Handle timeout with retry logic
                 if consecutive_errors < self._max_consecutive_errors:
-                    self.warning_occurred.emit(f"Frame timeout (retry {consecutive_errors}/{self._max_consecutive_errors})")
+                    self.warning_occurred.emit(
+                        f"Frame timeout (retry {consecutive_errors}/{self._max_consecutive_errors})"
+                    )
                     time.sleep(self._retry_delay)
                     continue
                 else:
@@ -98,29 +105,39 @@ class CameraWorker(QObject):
                     if self._attempt_reconnection():
                         consecutive_errors = 0
                         reconnect_attempts += 1
-                        self.warning_occurred.emit(f"Camera reconnected (attempt {reconnect_attempts})")
+                        self.warning_occurred.emit(
+                            f"Camera reconnected (attempt {reconnect_attempts})"
+                        )
                         continue
                     else:
                         reconnect_attempts += 1
                         if reconnect_attempts >= self._max_reconnect_attempts:
-                            self.error_occurred.emit(f"Camera reconnection failed after {reconnect_attempts} attempts")
+                            self.error_occurred.emit(
+                                f"Camera reconnection failed after {reconnect_attempts} attempts"
+                            )
                             break
                         else:
                             consecutive_errors = 0  # Reset to try again
-                            self.warning_occurred.emit(f"Reconnection attempt {reconnect_attempts} failed, retrying...")
+                            self.warning_occurred.emit(
+                                f"Reconnection attempt {reconnect_attempts} failed, retrying..."
+                            )
                             time.sleep(self._reconnect_delay)
                             continue
-                            
+
             except Exception as exc:
                 consecutive_errors += 1
-                LOGGER.warning(f"Camera read error ({consecutive_errors}/{self._max_consecutive_errors}): {exc}")
-                
+                LOGGER.warning(
+                    f"Camera read error ({consecutive_errors}/{self._max_consecutive_errors}): {exc}"
+                )
+
                 if self._stop_event.is_set():
                     break
-                
+
                 # Handle general errors with retry logic
                 if consecutive_errors < self._max_consecutive_errors:
-                    self.warning_occurred.emit(f"Frame read error (retry {consecutive_errors}/{self._max_consecutive_errors})")
+                    self.warning_occurred.emit(
+                        f"Frame read error (retry {consecutive_errors}/{self._max_consecutive_errors})"
+                    )
                     time.sleep(self._retry_delay)
                     continue
                 else:
@@ -129,22 +146,28 @@ class CameraWorker(QObject):
                     if self._attempt_reconnection():
                         consecutive_errors = 0
                         reconnect_attempts += 1
-                        self.warning_occurred.emit(f"Camera reconnected (attempt {reconnect_attempts})")
+                        self.warning_occurred.emit(
+                            f"Camera reconnected (attempt {reconnect_attempts})"
+                        )
                         continue
                     else:
                         reconnect_attempts += 1
                         if reconnect_attempts >= self._max_reconnect_attempts:
-                            self.error_occurred.emit(f"Camera failed after {reconnect_attempts} reconnection attempts: {exc}")
+                            self.error_occurred.emit(
+                                f"Camera failed after {reconnect_attempts} reconnection attempts: {exc}"
+                            )
                             break
                         else:
                             consecutive_errors = 0  # Reset to try again
-                            self.warning_occurred.emit(f"Reconnection attempt {reconnect_attempts} failed, retrying...")
+                            self.warning_occurred.emit(
+                                f"Reconnection attempt {reconnect_attempts} failed, retrying..."
+                            )
                             time.sleep(self._reconnect_delay)
                             continue
-            
+
             if self._stop_event.is_set():
                 break
-            
+
             self.frame_captured.emit(FrameData(frame, timestamp))
 
         # Cleanup
@@ -158,7 +181,9 @@ class CameraWorker(QObject):
             self._backend.open()
             # Don't set expected frame size - will be established from first frame
             self._expected_frame_size = None
-            LOGGER.info("Camera initialized successfully, frame size will be determined from camera")
+            LOGGER.info(
+                "Camera initialized successfully, frame size will be determined from camera"
+            )
             return True
         except Exception as exc:
             LOGGER.exception("Failed to initialize camera", exc_info=exc)
@@ -170,15 +195,17 @@ class CameraWorker(QObject):
         if frame is None or frame.size == 0:
             LOGGER.warning("Received empty frame")
             return False
-        
+
         actual_size = (frame.shape[0], frame.shape[1])  # (height, width)
-        
+
         if self._expected_frame_size is None:
             # First frame - establish expected size
             self._expected_frame_size = actual_size
-            LOGGER.info(f"Established expected frame size: (h={actual_size[0]}, w={actual_size[1]})")
+            LOGGER.info(
+                f"Established expected frame size: (h={actual_size[0]}, w={actual_size[1]})"
+            )
             return True
-        
+
         if actual_size != self._expected_frame_size:
             LOGGER.warning(
                 f"Frame size mismatch: expected (h={self._expected_frame_size[0]}, w={self._expected_frame_size[1]}), "
@@ -192,26 +219,26 @@ class CameraWorker(QObject):
                 f"Camera resolution changed to {actual_size[1]}x{actual_size[0]}"
             )
             return True  # Accept the new size
-        
+
         return True
 
     def _attempt_reconnection(self) -> bool:
         """Attempt to reconnect to the camera. Returns True on success, False on failure."""
         if self._stop_event.is_set():
             return False
-        
+
         LOGGER.info("Attempting camera reconnection...")
-        
+
         # Close existing connection
         self._cleanup_camera()
-        
+
         # Wait longer before reconnecting to let the device fully release
         LOGGER.info(f"Waiting {self._reconnect_delay}s before reconnecting...")
         time.sleep(self._reconnect_delay)
-        
+
         if self._stop_event.is_set():
             return False
-        
+
         # Try to reinitialize (this will also reset expected frame size)
         try:
             self._backend = CameraFactory.create(self._settings)

@@ -1,4 +1,5 @@
 """Backend discovery and construction utilities."""
+
 from __future__ import annotations
 
 import importlib
@@ -74,7 +75,7 @@ class CameraFactory:
 
         # For GenTL backend, try to get actual device count
         num_devices = max_devices
-        if hasattr(backend_cls, 'get_device_count'):
+        if hasattr(backend_cls, "get_device_count"):
             try:
                 actual_count = backend_cls.get_device_count()
                 if actual_count >= 0:

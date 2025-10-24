@@ -1,4 +1,5 @@
 """Video recording support using the vidgear library."""
+
 from __future__ import annotations
 
 import json
@@ -113,9 +114,7 @@ class VideoRecorder:
         )
         self._writer_thread.start()
 
-    def configure_stream(
-        self, frame_size: Tuple[int, int], frame_rate: Optional[float]
-    ) -> None:
+    def configure_stream(self, frame_size: Tuple[int, int], frame_rate: Optional[float]) -> None:
         self._frame_size = frame_size
         self._frame_rate = frame_rate
 
@@ -125,13 +124,13 @@ class VideoRecorder:
         error = self._current_error()
         if error is not None:
             raise RuntimeError(f"Video encoding failed: {error}") from error
-        
+
         # Record timestamp for this frame
         if timestamp is None:
             timestamp = time.time()
         with self._stats_lock:
             self._frame_timestamps.append(timestamp)
-        
+
         # Convert frame to uint8 if needed
         if frame.dtype != np.uint8:
             frame_float = frame.astype(np.float32, copy=False)
@@ -140,14 +139,14 @@ class VideoRecorder:
             if max_val > 0:
                 scale = 255.0 / max_val if max_val > 255.0 else (255.0 if max_val <= 1.0 else 1.0)
             frame = np.clip(frame_float * scale, 0.0, 255.0).astype(np.uint8)
-        
+
         # Convert grayscale to RGB if needed
         if frame.ndim == 2:
             frame = np.repeat(frame[:, :, None], 3, axis=2)
-        
+
         # Ensure contiguous array
         frame = np.ascontiguousarray(frame)
-        
+
         # Check if frame size matches expected size
         if self._frame_size is not None:
             expected_h, expected_w = self._frame_size
@@ -164,7 +163,7 @@ class VideoRecorder:
                         f"Frame size changed from (h={expected_h}, w={expected_w}) to (h={actual_h}, w={actual_w})"
                     )
                 return False
-        
+
         try:
             assert self._queue is not None
             self._queue.put(frame, block=False)
@@ -200,10 +199,10 @@ class VideoRecorder:
                 self._writer.close()
             except Exception:
                 logger.exception("Failed to close WriteGear cleanly")
-        
+
         # Save timestamps to JSON file
         self._save_timestamps()
-        
+
         self._writer = None
         self._writer_thread = None
         self._queue = None
@@ -224,9 +223,7 @@ class VideoRecorder:
             frames_written = self._frames_written
             dropped = self._dropped_frames
             avg_latency = (
-                self._total_latency / self._frames_written
-                if self._frames_written
-                else 0.0
+                self._total_latency / self._frames_written if self._frames_written else 0.0
             )
             last_latency = self._last_latency
             write_fps = self._compute_write_fps_locked()
@@ -312,14 +309,16 @@ class VideoRecorder:
         if not self._frame_timestamps:
             logger.info("No timestamps to save")
             return
-        
+
         # Create timestamps file path
-        timestamp_file = self._output.with_suffix('').with_suffix(self._output.suffix + '_timestamps.json')
-        
+        timestamp_file = self._output.with_suffix("").with_suffix(
+            self._output.suffix + "_timestamps.json"
+        )
+
         try:
             with self._stats_lock:
                 timestamps = self._frame_timestamps.copy()
-            
+
             # Prepare metadata
             data = {
                 "video_file": str(self._output.name),
@@ -329,11 +328,11 @@ class VideoRecorder:
                 "end_time": timestamps[-1] if timestamps else None,
                 "duration_seconds": timestamps[-1] - timestamps[0] if len(timestamps) > 1 else 0.0,
             }
-            
+
             # Write to JSON
-            with open(timestamp_file, 'w') as f:
+            with open(timestamp_file, "w") as f:
                 json.dump(data, f, indent=2)
-            
+
             logger.info(f"Saved {len(timestamps)} frame timestamps to {timestamp_file}")
         except Exception as exc:
             logger.exception(f"Failed to save timestamps to {timestamp_file}: {exc}")

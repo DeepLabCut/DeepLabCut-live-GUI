@@ -1,11 +1,12 @@
 """PyQt6 based GUI for DeepLabCut Live."""
+
 from __future__ import annotations
 
-import os
 import json
+import logging
+import os
 import sys
 import time
-import logging
 from collections import deque
 from pathlib import Path
 from typing import Optional
@@ -18,6 +19,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -30,7 +32,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
-    QDoubleSpinBox,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -40,22 +41,24 @@ from dlclivegui.camera_controller import CameraController, FrameData
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.factory import DetectedCamera
 from dlclivegui.config import (
+    DEFAULT_CONFIG,
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
     DLCProcessorSettings,
     RecordingSettings,
-    DEFAULT_CONFIG,
 )
 from dlclivegui.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStats
-from dlclivegui.processors.processor_utils import scan_processor_folder, instantiate_from_scan
+from dlclivegui.processors.processor_utils import instantiate_from_scan, scan_processor_folder
 from dlclivegui.video_recorder import RecorderStats, VideoRecorder
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0" 
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 logging.basicConfig(level=logging.INFO)
 
 PATH2MODELS = "C:\\Users\\User\\Repos\\DeepLabCut-live-GUI\\models"
+
+
 class MainWindow(QMainWindow):
     """Main application window."""
 
@@ -112,16 +115,12 @@ class MainWindow(QMainWindow):
         self.video_label = QLabel("Camera preview not started")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumSize(640, 360)
-        self.video_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Controls panel with fixed width to prevent shifting
         controls_widget = QWidget()
         controls_widget.setMaximumWidth(500)
-        controls_widget.setSizePolicy(
-            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
-        )
+        controls_widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         controls_layout = QVBoxLayout(controls_widget)
         controls_layout.setContentsMargins(5, 5, 5, 5)
         controls_layout.addWidget(self._build_camera_group())
@@ -218,25 +217,25 @@ class MainWindow(QMainWindow):
         self.crop_x0.setPrefix("x0:")
         self.crop_x0.setSpecialValueText("x0:None")
         crop_layout.addWidget(self.crop_x0)
-        
+
         self.crop_y0 = QSpinBox()
         self.crop_y0.setRange(0, 4320)
         self.crop_y0.setPrefix("y0:")
         self.crop_y0.setSpecialValueText("y0:None")
         crop_layout.addWidget(self.crop_y0)
-        
+
         self.crop_x1 = QSpinBox()
         self.crop_x1.setRange(0, 7680)
         self.crop_x1.setPrefix("x1:")
         self.crop_x1.setSpecialValueText("x1:None")
         crop_layout.addWidget(self.crop_x1)
-        
+
         self.crop_y1 = QSpinBox()
         self.crop_y1.setRange(0, 4320)
         self.crop_y1.setPrefix("y1:")
         self.crop_y1.setSpecialValueText("y1:None")
         crop_layout.addWidget(self.crop_y1)
-        
+
         form.addRow("Crop (x0,y0,x1,y1)", crop_layout)
 
         self.rotation_combo = QComboBox()
@@ -275,22 +274,22 @@ class MainWindow(QMainWindow):
         self.processor_folder_edit = QLineEdit()
         self.processor_folder_edit.setText(str(Path(__file__).parent.joinpath("processors")))
         processor_path_layout.addWidget(self.processor_folder_edit)
-        
+
         self.browse_processor_folder_button = QPushButton("Browse...")
         self.browse_processor_folder_button.clicked.connect(self._action_browse_processor_folder)
         processor_path_layout.addWidget(self.browse_processor_folder_button)
-        
+
         self.refresh_processors_button = QPushButton("Refresh")
         self.refresh_processors_button.clicked.connect(self._refresh_processors)
         processor_path_layout.addWidget(self.refresh_processors_button)
         form.addRow("Processor folder", processor_path_layout)
-        
+
         self.processor_combo = QComboBox()
         self.processor_combo.addItem("No Processor", None)
         form.addRow("Processor", self.processor_combo)
 
         self.additional_options_edit = QPlainTextEdit()
-        self.additional_options_edit.setPlaceholderText('')
+        self.additional_options_edit.setPlaceholderText("")
         self.additional_options_edit.setFixedHeight(40)
         form.addRow("Additional options", self.additional_options_edit)
 
@@ -314,7 +313,9 @@ class MainWindow(QMainWindow):
 
         self.auto_record_checkbox = QCheckBox("Auto-record video on processor command")
         self.auto_record_checkbox.setChecked(False)
-        self.auto_record_checkbox.setToolTip("Automatically start/stop video recording when processor receives video recording commands")
+        self.auto_record_checkbox.setToolTip(
+            "Automatically start/stop video recording when processor receives video recording commands"
+        )
         form.addRow(self.auto_record_checkbox)
 
         self.processor_status_label = QLabel("Processor: No clients | Recording: No")
@@ -386,31 +387,31 @@ class MainWindow(QMainWindow):
         form.addRow(self.bbox_enabled_checkbox)
 
         bbox_layout = QHBoxLayout()
-        
+
         self.bbox_x0_spin = QSpinBox()
         self.bbox_x0_spin.setRange(0, 7680)
         self.bbox_x0_spin.setPrefix("x0:")
         self.bbox_x0_spin.setValue(0)
         bbox_layout.addWidget(self.bbox_x0_spin)
-        
+
         self.bbox_y0_spin = QSpinBox()
         self.bbox_y0_spin.setRange(0, 4320)
         self.bbox_y0_spin.setPrefix("y0:")
         self.bbox_y0_spin.setValue(0)
         bbox_layout.addWidget(self.bbox_y0_spin)
-        
+
         self.bbox_x1_spin = QSpinBox()
         self.bbox_x1_spin.setRange(0, 7680)
         self.bbox_x1_spin.setPrefix("x1:")
         self.bbox_x1_spin.setValue(100)
         bbox_layout.addWidget(self.bbox_x1_spin)
-        
+
         self.bbox_y1_spin = QSpinBox()
         self.bbox_y1_spin.setRange(0, 4320)
         self.bbox_y1_spin.setPrefix("y1:")
         self.bbox_y1_spin.setValue(100)
         bbox_layout.addWidget(self.bbox_y1_spin)
-        
+
         form.addRow("Coordinates", bbox_layout)
 
         return group
@@ -429,10 +430,8 @@ class MainWindow(QMainWindow):
         self.rotation_combo.currentIndexChanged.connect(self._on_rotation_changed)
         self.start_inference_button.clicked.connect(self._start_inference)
         self.stop_inference_button.clicked.connect(lambda: self._stop_inference())
-        self.show_predictions_checkbox.stateChanged.connect(
-            self._on_show_predictions_changed
-        )
-        
+        self.show_predictions_checkbox.stateChanged.connect(self._on_show_predictions_changed)
+
         # Connect bounding box controls
         self.bbox_enabled_checkbox.stateChanged.connect(self._on_bbox_changed)
         self.bbox_x0_spin.valueChanged.connect(self._on_bbox_changed)
@@ -454,17 +453,17 @@ class MainWindow(QMainWindow):
     def _apply_config(self, config: ApplicationSettings) -> None:
         camera = config.camera
         self.camera_fps.setValue(float(camera.fps))
-        
+
         # Set exposure and gain from config
         self.camera_exposure.setValue(int(camera.exposure))
         self.camera_gain.setValue(float(camera.gain))
-        
+
         # Set crop settings from config
-        self.crop_x0.setValue(int(camera.crop_x0) if hasattr(camera, 'crop_x0') else 0)
-        self.crop_y0.setValue(int(camera.crop_y0) if hasattr(camera, 'crop_y0') else 0)
-        self.crop_x1.setValue(int(camera.crop_x1) if hasattr(camera, 'crop_x1') else 0)
-        self.crop_y1.setValue(int(camera.crop_y1) if hasattr(camera, 'crop_y1') else 0)
-        
+        self.crop_x0.setValue(int(camera.crop_x0) if hasattr(camera, "crop_x0") else 0)
+        self.crop_y0.setValue(int(camera.crop_y0) if hasattr(camera, "crop_y0") else 0)
+        self.crop_x1.setValue(int(camera.crop_x1) if hasattr(camera, "crop_x1") else 0)
+        self.crop_y1.setValue(int(camera.crop_y1) if hasattr(camera, "crop_y1") else 0)
+
         backend_name = camera.backend or "opencv"
         self.camera_backend.blockSignals(True)
         index = self.camera_backend.findData(backend_name)
@@ -474,25 +473,21 @@ class MainWindow(QMainWindow):
             self.camera_backend.setEditText(backend_name)
         self.camera_backend.blockSignals(False)
         self._refresh_camera_indices(keep_current=False)
-        self._select_camera_by_index(
-            camera.index, fallback_text=camera.name or str(camera.index)
-        )
-        
+        self._select_camera_by_index(camera.index, fallback_text=camera.name or str(camera.index))
+
         self._active_camera_settings = None
         self._update_backend_specific_controls()
 
         dlc = config.dlc
         self.model_path_edit.setText(dlc.model_path)
-        
+
         # Set model type
         model_type = dlc.model_type or "base"
         model_type_index = self.model_type_combo.findData(model_type)
         if model_type_index >= 0:
             self.model_type_combo.setCurrentIndex(model_type_index)
-        
-        self.additional_options_edit.setPlainText(
-            json.dumps(dlc.additional_options, indent=2)
-        )
+
+        self.additional_options_edit.setPlainText(json.dumps(dlc.additional_options, indent=2))
 
         recording = config.recording
         self.output_directory_edit.setText(recording.directory)
@@ -527,17 +522,17 @@ class MainWindow(QMainWindow):
         if index is None:
             raise ValueError("Camera selection must provide a numeric index")
         backend_text = self._current_backend_name()
-        
+
         # Get exposure and gain from explicit UI fields
         exposure = self.camera_exposure.value()
         gain = self.camera_gain.value()
-        
+
         # Get crop settings from UI
         crop_x0 = self.crop_x0.value()
         crop_y0 = self.crop_y0.value()
         crop_x1 = self.crop_x1.value()
         crop_y1 = self.crop_y1.value()
-        
+
         name_text = self.camera_index.currentText().strip()
         settings = CameraSettings(
             name=name_text or f"Camera {index}",
@@ -561,17 +556,15 @@ class MainWindow(QMainWindow):
         text = self.camera_backend.currentText().strip()
         return text or "opencv"
 
-    def _refresh_camera_indices(
-        self, *_args: object, keep_current: bool = True
-    ) -> None:
+    def _refresh_camera_indices(self, *_args: object, keep_current: bool = True) -> None:
         backend = self._current_backend_name()
         # Get max_devices from config, default to 3
-        max_devices = self._config.camera.max_devices if hasattr(self._config.camera, 'max_devices') else 3
+        max_devices = (
+            self._config.camera.max_devices if hasattr(self._config.camera, "max_devices") else 3
+        )
         detected = CameraFactory.detect_cameras(backend, max_devices=max_devices)
         debug_info = [f"{camera.index}:{camera.label}" for camera in detected]
-        logging.info(
-            f"[CameraDetection] Available cameras for backend '{backend}': {debug_info}"
-        )
+        logging.info(f"[CameraDetection] Available cameras for backend '{backend}': {debug_info}")
         self._detected_cameras = detected
         previous_index = self._current_camera_index_value()
         previous_text = self.camera_index.currentText()
@@ -590,9 +583,7 @@ class MainWindow(QMainWindow):
                 self.camera_index.setEditText("")
         self.camera_index.blockSignals(False)
 
-    def _select_camera_by_index(
-        self, index: int, fallback_text: Optional[str] = None
-    ) -> None:
+    def _select_camera_by_index(self, index: int, fallback_text: Optional[str] = None) -> None:
         self.camera_index.blockSignals(True)
         for row in range(self.camera_index.count()):
             if self.camera_index.itemData(row) == index:
@@ -615,9 +606,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             return None
         debug_info = [f"{camera.index}:{camera.label}" for camera in detected]
-        logging.info(
-            f"[CameraDetection] Available cameras for backend '{backend}': {debug_info}"
-        )
+        logging.info(f"[CameraDetection] Available cameras for backend '{backend}': {debug_info}")
         self._detected_cameras = detected
         previous_index = self._current_camera_index_value()
         previous_text = self.camera_index.currentText()
@@ -636,9 +625,7 @@ class MainWindow(QMainWindow):
                 self.camera_index.setEditText("")
         self.camera_index.blockSignals(False)
 
-    def _select_camera_by_index(
-        self, index: int, fallback_text: Optional[str] = None
-    ) -> None:
+    def _select_camera_by_index(self, index: int, fallback_text: Optional[str] = None) -> None:
         self.camera_index.blockSignals(True)
         for row in range(self.camera_index.count()):
             if self.camera_index.itemData(row) == index:
@@ -671,13 +658,11 @@ class MainWindow(QMainWindow):
         model_type = self.model_type_combo.currentData()
         if not isinstance(model_type, str):
             model_type = "base"
-        
+
         return DLCProcessorSettings(
             model_path=self.model_path_edit.text().strip(),
             model_type=model_type,
-            additional_options=self._parse_json(
-                self.additional_options_edit.toPlainText()
-            ),
+            additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
         )
 
     def _recording_settings_from_ui(self) -> RecordingSettings:
@@ -760,9 +745,7 @@ class MainWindow(QMainWindow):
     def _action_browse_processor_folder(self) -> None:
         """Browse for processor folder."""
         current_path = self.processor_folder_edit.text() or "./processors"
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select processor folder", current_path
-        )
+        directory = QFileDialog.getExistingDirectory(self, "Select processor folder", current_path)
         if directory:
             self.processor_folder_edit.setText(directory)
             self._refresh_processors()
@@ -770,25 +753,25 @@ class MainWindow(QMainWindow):
     def _refresh_processors(self) -> None:
         """Scan processor folder and populate dropdown."""
         folder_path = self.processor_folder_edit.text() or "./processors"
-        
+
         # Clear existing items (keep "No Processor")
         self.processor_combo.clear()
         self.processor_combo.addItem("No Processor", None)
-        
+
         # Scan folder
         try:
             self._scanned_processors = scan_processor_folder(folder_path)
             self._processor_keys = list(self._scanned_processors.keys())
-            
+
             # Populate dropdown
             for key in self._processor_keys:
                 info = self._scanned_processors[key]
                 display_name = f"{info['name']} ({info['file']})"
                 self.processor_combo.addItem(display_name, key)
-            
+
             status_msg = f"Found {len(self._processor_keys)} processor(s) in {folder_path}"
             self.statusBar().showMessage(status_msg, 3000)
-            
+
         except Exception as e:
             error_msg = f"Error scanning processors: {e}"
             self.statusBar().showMessage(error_msg, 5000)
@@ -803,11 +786,11 @@ class MainWindow(QMainWindow):
         """Enable/disable controls based on selected backend."""
         backend = self._current_backend_name()
         is_opencv = backend.lower() == "opencv"
-        
+
         # Disable exposure and gain controls for OpenCV backend
         self.camera_exposure.setEnabled(not is_opencv)
         self.camera_gain.setEnabled(not is_opencv)
-        
+
         # Set tooltip to explain why controls are disabled
         if is_opencv:
             tooltip = "Exposure and gain control not supported with OpenCV backend"
@@ -877,9 +860,7 @@ class MainWindow(QMainWindow):
             fps_text = f"{float(settings.fps):.2f} FPS"
         else:
             fps_text = "unknown FPS"
-        self.statusBar().showMessage(
-            f"Camera preview started @ {fps_text}", 5000
-        )
+        self.statusBar().showMessage(f"Camera preview started @ {fps_text}", 5000)
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
 
@@ -912,7 +893,7 @@ class MainWindow(QMainWindow):
         if not settings.model_path:
             self._show_error("Please select a DLCLive model before starting inference.")
             return False
-        
+
         # Instantiate processor if selected
         processor = None
         selected_key = self.processor_combo.currentData()
@@ -920,16 +901,16 @@ class MainWindow(QMainWindow):
             try:
                 # For now, instantiate with no parameters
                 # TODO: Add parameter dialog for processors that need params
-                # or pass kwargs from config ? 
+                # or pass kwargs from config ?
                 processor = instantiate_from_scan(self._scanned_processors, selected_key)
-                processor_name = self._scanned_processors[selected_key]['name']
+                processor_name = self._scanned_processors[selected_key]["name"]
                 self.statusBar().showMessage(f"Loaded processor: {processor_name}", 3000)
             except Exception as e:
                 error_msg = f"Failed to instantiate processor: {e}"
                 self._show_error(error_msg)
                 logging.error(error_msg)
                 return False
-        
+
         self.dlc_processor.configure(settings, processor=processor)
         return True
 
@@ -955,9 +936,7 @@ class MainWindow(QMainWindow):
             widget.setEnabled(allow_changes)
 
     def _update_camera_controls_enabled(self) -> None:
-        recording_active = (
-            self._video_recorder is not None and self._video_recorder.is_running
-        )
+        recording_active = self._video_recorder is not None and self._video_recorder.is_running
         allow_changes = (
             not self.camera_controller.is_running()
             and not self._dlc_active
@@ -1043,7 +1022,7 @@ class MainWindow(QMainWindow):
                     self.camera_stats_label.setText("Measuring…")
             else:
                 self.camera_stats_label.setText("Camera idle")
-        
+
         if hasattr(self, "dlc_stats_label"):
             if self._dlc_active and self._dlc_initialized:
                 stats = self.dlc_processor.get_stats()
@@ -1051,11 +1030,11 @@ class MainWindow(QMainWindow):
                 self.dlc_stats_label.setText(summary)
             else:
                 self.dlc_stats_label.setText("DLC processor idle")
-        
+
         # Update processor status (connection and recording state)
         if hasattr(self, "processor_status_label"):
             self._update_processor_status()
-        
+
         if hasattr(self, "recording_stats_label"):
             if self._video_recorder is not None:
                 stats = self._video_recorder.get_stats()
@@ -1074,47 +1053,49 @@ class MainWindow(QMainWindow):
         if not self._dlc_active or not self._dlc_initialized:
             self.processor_status_label.setText("Processor: Not active")
             return
-        
+
         # Get processor instance from dlc_processor
         processor = self.dlc_processor._processor
-        
+
         if processor is None:
             self.processor_status_label.setText("Processor: None loaded")
             return
-        
+
         # Check if processor has the required attributes (socket-based processors)
-        if not hasattr(processor, 'conns') or not hasattr(processor, '_recording'):
+        if not hasattr(processor, "conns") or not hasattr(processor, "_recording"):
             self.processor_status_label.setText("Processor: No status info")
             return
-        
+
         # Get connection count and recording state
         num_clients = len(processor.conns)
-        is_recording = processor.recording if hasattr(processor, 'recording') else False
-        
+        is_recording = processor.recording if hasattr(processor, "recording") else False
+
         # Format status message
         client_str = f"{num_clients} client{'s' if num_clients != 1 else ''}"
         recording_str = "Yes" if is_recording else "No"
         self.processor_status_label.setText(f"Clients: {client_str} | Recording: {recording_str}")
-        
+
         # Handle auto-recording based on processor's video recording flag
-        if hasattr(processor, '_vid_recording') and self.auto_record_checkbox.isChecked():
+        if hasattr(processor, "_vid_recording") and self.auto_record_checkbox.isChecked():
             current_vid_recording = processor.video_recording
-            
+
             # Check if video recording state changed
             if current_vid_recording != self._last_processor_vid_recording:
                 if current_vid_recording:
                     # Start video recording
                     if not self._video_recorder or not self._video_recorder.is_running:
                         # Get session name from processor
-                        session_name = getattr(processor, 'session_name', 'auto_session')
+                        session_name = getattr(processor, "session_name", "auto_session")
                         self._auto_record_session_name = session_name
-                        
+
                         # Update filename with session name
                         original_filename = self.filename_edit.text()
                         self.filename_edit.setText(f"{session_name}.mp4")
-                        
+
                         self._start_recording()
-                        self.statusBar().showMessage(f"Auto-started recording: {session_name}", 3000)
+                        self.statusBar().showMessage(
+                            f"Auto-started recording: {session_name}", 3000
+                        )
                         logging.info(f"Auto-recording started for session: {session_name}")
                 else:
                     # Stop video recording
@@ -1122,7 +1103,7 @@ class MainWindow(QMainWindow):
                         self._stop_recording()
                         self.statusBar().showMessage("Auto-stopped recording", 3000)
                         logging.info("Auto-recording stopped")
-                
+
                 self._last_processor_vid_recording = current_vid_recording
 
     def _start_inference(self) -> None:
@@ -1130,9 +1111,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Pose inference already running", 3000)
             return
         if not self.camera_controller.is_running():
-            self._show_error(
-                "Start the camera preview before running pose inference."
-            )
+            self._show_error("Start the camera preview before running pose inference.")
             return
         if not self._configure_dlc():
             self._update_inference_buttons()
@@ -1141,13 +1120,13 @@ class MainWindow(QMainWindow):
         self._last_pose = None
         self._dlc_active = True
         self._dlc_initialized = False
-        
+
         # Update button to show initializing state
         self.start_inference_button.setText("Initializing DLCLive!")
         self.start_inference_button.setStyleSheet("background-color: #4A90E2; color: white;")
         self.start_inference_button.setEnabled(False)
         self.stop_inference_button.setEnabled(True)
-        
+
         self.statusBar().showMessage("Initializing DLCLive…", 3000)
         self._update_camera_controls_enabled()
         self._update_dlc_controls_enabled()
@@ -1160,11 +1139,11 @@ class MainWindow(QMainWindow):
         self._last_pose = None
         self._last_processor_vid_recording = False
         self._auto_record_session_name = None
-        
+
         # Reset button appearance
         self.start_inference_button.setText("Start pose inference")
         self.start_inference_button.setStyleSheet("")
-        
+
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
         if was_active and show_message:
@@ -1236,9 +1215,7 @@ class MainWindow(QMainWindow):
             self.recording_stats_label.setText(summary)
         else:
             self._last_recorder_summary = (
-                self._format_recorder_stats(stats)
-                if stats is not None
-                else "Recorder idle"
+                self._format_recorder_stats(stats) if stats is not None else "Recorder idle"
             )
         self._last_drop_warning = 0.0
         self.statusBar().showMessage("Recording stopped", 3000)
@@ -1248,10 +1225,10 @@ class MainWindow(QMainWindow):
     def _on_frame_ready(self, frame_data: FrameData) -> None:
         raw_frame = frame_data.image
         self._raw_frame = raw_frame
-        
+
         # Apply cropping before rotation
         frame = self._apply_crop(raw_frame)
-        
+
         # Apply rotation
         frame = self._apply_rotation(frame)
         frame = np.ascontiguousarray(frame)
@@ -1263,9 +1240,7 @@ class MainWindow(QMainWindow):
                 if not success:
                     now = time.perf_counter()
                     if now - self._last_drop_warning > 1.0:
-                        self.statusBar().showMessage(
-                            "Recorder backlog full; dropping frames", 2000
-                        )
+                        self.statusBar().showMessage("Recorder backlog full; dropping frames", 2000)
                         self._last_drop_warning = now
             except RuntimeError as exc:
                 # Check if it's a frame size error
@@ -1290,7 +1265,7 @@ class MainWindow(QMainWindow):
         if not self._dlc_active:
             return
         self._last_pose = result
-        #logging.info(f"Pose result: {result.pose}, Timestamp: {result.timestamp}")
+        # logging.info(f"Pose result: {result.pose}, Timestamp: {result.timestamp}")
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
 
@@ -1306,11 +1281,11 @@ class MainWindow(QMainWindow):
             and self._last_pose.pose is not None
         ):
             display_frame = self._draw_pose(frame, self._last_pose.pose)
-        
+
         # Draw bounding box if enabled
         if self._bbox_enabled:
             display_frame = self._draw_bbox(display_frame)
-        
+
         rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         bytes_per_line = ch * w
@@ -1321,20 +1296,20 @@ class MainWindow(QMainWindow):
         """Apply cropping to the frame based on settings."""
         if self._active_camera_settings is None:
             return frame
-        
+
         crop_region = self._active_camera_settings.get_crop_region()
         if crop_region is None:
             return frame
-        
+
         x0, y0, x1, y1 = crop_region
         height, width = frame.shape[:2]
-        
+
         # Validate and constrain crop coordinates
         x0 = max(0, min(x0, width))
         y0 = max(0, min(y0, height))
         x1 = max(x0, min(x1, width)) if x1 > 0 else width
         y1 = max(y0, min(y1, height)) if y1 > 0 else height
-        
+
         # Apply crop
         if x0 < x1 and y0 < y1:
             return frame[y0:y1, x0:x1]
@@ -1362,7 +1337,7 @@ class MainWindow(QMainWindow):
         self._bbox_y0 = self.bbox_y0_spin.value()
         self._bbox_x1 = self.bbox_x1_spin.value()
         self._bbox_y1 = self.bbox_y1_spin.value()
-        
+
         # Force redraw if preview is running
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
@@ -1374,20 +1349,20 @@ class MainWindow(QMainWindow):
         y0 = self._bbox_y0
         x1 = self._bbox_x1
         y1 = self._bbox_y1
-        
+
         # Validate coordinates
         if x0 >= x1 or y0 >= y1:
             return overlay
-        
+
         height, width = frame.shape[:2]
         x0 = max(0, min(x0, width - 1))
         y0 = max(0, min(y0, height - 1))
         x1 = max(x0 + 1, min(x1, width))
         y1 = max(y0 + 1, min(y1, height))
-        
+
         # Draw red rectangle (BGR format: red is (0, 0, 255))
         cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 255), 2)
-        
+
         return overlay
 
     def _draw_pose(self, frame: np.ndarray, pose: np.ndarray) -> np.ndarray:

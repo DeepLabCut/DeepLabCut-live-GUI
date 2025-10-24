@@ -1,4 +1,5 @@
 """GenTL backend implemented using the Harvesters library."""
+
 from __future__ import annotations
 
 import glob
@@ -13,6 +14,7 @@ from .base import CameraBackend
 
 try:  # pragma: no cover - optional dependency
     from harvesters.core import Harvester
+
     try:
         from harvesters.core import HarvesterTimeoutError  # type: ignore
     except Exception:  # pragma: no cover - optional dependency
@@ -43,7 +45,9 @@ class GenTLCameraBackend(CameraBackend):
         self._exposure: Optional[float] = props.get("exposure")
         self._gain: Optional[float] = props.get("gain")
         self._timeout: float = float(props.get("timeout", 2.0))
-        self._cti_search_paths: Tuple[str, ...] = self._parse_cti_paths(props.get("cti_search_paths"))
+        self._cti_search_paths: Tuple[str, ...] = self._parse_cti_paths(
+            props.get("cti_search_paths")
+        )
 
         self._harvester = None
         self._acquirer = None
@@ -56,21 +60,21 @@ class GenTLCameraBackend(CameraBackend):
     @classmethod
     def get_device_count(cls) -> int:
         """Get the actual number of GenTL devices detected by Harvester.
-        
+
         Returns the number of devices found, or -1 if detection fails.
         """
         if Harvester is None:
             return -1
-        
+
         harvester = None
         try:
             harvester = Harvester()
             # Use the static helper to find CTI file with default patterns
             cti_file = cls._search_cti_file(cls._DEFAULT_CTI_PATTERNS)
-            
+
             if not cti_file:
                 return -1
-            
+
             harvester.add_file(cti_file)
             harvester.update()
             return len(harvester.device_info_list)
@@ -120,28 +124,28 @@ class GenTLCameraBackend(CameraBackend):
         remote = self._acquirer.remote_device
         node_map = remote.node_map
 
-        #print(dir(node_map))
+        # print(dir(node_map))
         """
-        ['AcquisitionBurstFrameCount', 'AcquisitionControl', 'AcquisitionFrameRate', 'AcquisitionMode', 
+        ['AcquisitionBurstFrameCount', 'AcquisitionControl', 'AcquisitionFrameRate', 'AcquisitionMode',
         'AcquisitionStart', 'AcquisitionStop', 'AnalogControl', 'AutoFunctionsROI', 'AutoFunctionsROIEnable',
         'AutoFunctionsROIHeight', 'AutoFunctionsROILeft', 'AutoFunctionsROIPreset', 'AutoFunctionsROITop',
         'AutoFunctionsROIWidth', 'BinningHorizontal', 'BinningVertical', 'BlackLevel', 'CameraRegisterAddress',
-        'CameraRegisterAddressSpace', 'CameraRegisterControl', 'CameraRegisterRead', 'CameraRegisterValue', 
+        'CameraRegisterAddressSpace', 'CameraRegisterControl', 'CameraRegisterRead', 'CameraRegisterValue',
         'CameraRegisterWrite', 'Contrast', 'DecimationHorizontal', 'DecimationVertical', 'Denoise',
-        'DeviceControl', 'DeviceFirmwareVersion', 'DeviceModelName', 'DeviceReset', 'DeviceSFNCVersionMajor', 
-        'DeviceSFNCVersionMinor', 'DeviceSFNCVersionSubMinor', 'DeviceScanType', 'DeviceSerialNumber', 
-        'DeviceTLType', 'DeviceTLVersionMajor', 'DeviceTLVersionMinor', 'DeviceTLVersionSubMinor', 
-        'DeviceTemperature', 'DeviceTemperatureSelector', 'DeviceType', 'DeviceUserID', 'DeviceVendorName', 
-        'DigitalIO', 'ExposureAuto', 'ExposureAutoHighlightReduction', 'ExposureAutoLowerLimit', 
-        'ExposureAutoReference', 'ExposureAutoUpperLimit', 'ExposureAutoUpperLimitAuto', 'ExposureTime', 
+        'DeviceControl', 'DeviceFirmwareVersion', 'DeviceModelName', 'DeviceReset', 'DeviceSFNCVersionMajor',
+        'DeviceSFNCVersionMinor', 'DeviceSFNCVersionSubMinor', 'DeviceScanType', 'DeviceSerialNumber',
+        'DeviceTLType', 'DeviceTLVersionMajor', 'DeviceTLVersionMinor', 'DeviceTLVersionSubMinor',
+        'DeviceTemperature', 'DeviceTemperatureSelector', 'DeviceType', 'DeviceUserID', 'DeviceVendorName',
+        'DigitalIO', 'ExposureAuto', 'ExposureAutoHighlightReduction', 'ExposureAutoLowerLimit',
+        'ExposureAutoReference', 'ExposureAutoUpperLimit', 'ExposureAutoUpperLimitAuto', 'ExposureTime',
         'GPIn', 'GPOut', 'Gain', 'GainAuto', 'GainAutoLowerLimit', 'GainAutoUpperLimit', 'Gamma', 'Height',
         'HeightMax', 'IMXLowLatencyTriggerMode', 'ImageFormatControl', 'OffsetAutoCenter', 'OffsetX', 'OffsetY',
         'PayloadSize', 'PixelFormat', 'ReverseX', 'ReverseY', 'Root', 'SensorHeight', 'SensorWidth', 'Sharpness',
         'ShowOverlay', 'SoftwareAnalogControl', 'SoftwareTransformControl', 'SoftwareTransformEnable',
         'StrobeDelay', 'StrobeDuration', 'StrobeEnable', 'StrobeOperation', 'StrobePolarity', 'TLParamsLocked',
-        'TestControl', 'TestPendingAck', 'TimestampLatch', 'TimestampLatchValue', 'TimestampReset', 'ToneMappingAuto', 
-        'ToneMappingControl', 'ToneMappingEnable', 'ToneMappingGlobalBrightness', 'ToneMappingIntensity', 
-        'TransportLayerControl', 'TriggerActivation', 'TriggerDebouncer', 'TriggerDelay', 'TriggerDenoise', 
+        'TestControl', 'TestPendingAck', 'TimestampLatch', 'TimestampLatchValue', 'TimestampReset', 'ToneMappingAuto',
+        'ToneMappingControl', 'ToneMappingEnable', 'ToneMappingGlobalBrightness', 'ToneMappingIntensity',
+        'TransportLayerControl', 'TriggerActivation', 'TriggerDebouncer', 'TriggerDelay', 'TriggerDenoise',
         'TriggerMask', 'TriggerMode', 'TriggerOverlap', 'TriggerSelector', 'TriggerSoftware', 'TriggerSource',
         'UserSetControl', 'UserSetDefault', 'UserSetLoad', 'UserSetSave', 'UserSetSelector', 'Width', 'WidthMax']
         """
@@ -176,7 +180,7 @@ class GenTLCameraBackend(CameraBackend):
                 except ValueError:
                     frame = array.copy()
         except HarvesterTimeoutError as exc:
-            raise TimeoutError(str(exc)+ " (GenTL timeout)") from exc
+            raise TimeoutError(str(exc) + " (GenTL timeout)") from exc
 
         frame = self._convert_frame(frame)
         timestamp = time.time()
@@ -231,7 +235,7 @@ class GenTLCameraBackend(CameraBackend):
     @staticmethod
     def _search_cti_file(patterns: Tuple[str, ...]) -> Optional[str]:
         """Search for a CTI file using the given patterns.
-        
+
         Returns the first CTI file found, or None if none found.
         """
         for pattern in patterns:
@@ -242,7 +246,7 @@ class GenTLCameraBackend(CameraBackend):
 
     def _find_cti_file(self) -> str:
         """Find a CTI file using configured or default search paths.
-        
+
         Raises RuntimeError if no CTI file is found.
         """
         cti_file = self._search_cti_file(self._cti_search_paths)
@@ -266,7 +270,7 @@ class GenTLCameraBackend(CameraBackend):
         assert self._harvester is not None
         methods = [
             getattr(self._harvester, "create", None),
-            getattr(self._harvester, "create_image_acquirer", None),            
+            getattr(self._harvester, "create_image_acquirer", None),
         ]
         methods = [m for m in methods if m is not None]
         errors: List[str] = []
