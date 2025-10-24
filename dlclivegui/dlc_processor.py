@@ -54,6 +54,7 @@ class DLCLiveProcessor(QObject):
         super().__init__()
         self._settings = DLCProcessorSettings()
         self._dlc: Optional[Any] = None
+        self._processor: Optional[Any] = None
         self._queue: Optional[queue.Queue[Any]] = None
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -67,8 +68,9 @@ class DLCLiveProcessor(QObject):
         self._processing_times: deque[float] = deque(maxlen=60)
         self._stats_lock = threading.Lock()
 
-    def configure(self, settings: DLCProcessorSettings) -> None:
+    def configure(self, settings: DLCProcessorSettings, processor: Optional[Any] = None) -> None:
         self._settings = settings
+        self._processor = processor
 
     def reset(self) -> None:
         """Stop the worker thread and drop the current DLCLive instance."""
@@ -91,6 +93,10 @@ class DLCLiveProcessor(QObject):
         if not self._initialized and self._worker_thread is None:
             # Start worker thread with initialization
             self._start_worker(frame.copy(), timestamp)
+            return
+        
+        # Don't count dropped frames until processor is initialized
+        if not self._initialized:
             return
         
         if self._queue is not None:
@@ -178,10 +184,11 @@ class DLCLiveProcessor(QObject):
             options = {
                 "model_path": self._settings.model_path,
                 "model_type": self._settings.model_type,
-                "processor": None,
+                "processor": self._processor,
                 "dynamic": [False,0.5,10],
                 "resize": 1.0,
             }
+            # todo expose more parameters from settings
             self._dlc = DLCLive(**options)
             self._dlc.init_inference(init_frame)
             self._initialized = True

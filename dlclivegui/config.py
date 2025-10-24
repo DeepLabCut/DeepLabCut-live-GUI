@@ -21,6 +21,7 @@ class CameraSettings:
     crop_y0: int = 0  # Top edge of crop region (0 = no crop)
     crop_x1: int = 0  # Right edge of crop region (0 = no crop)
     crop_y1: int = 0  # Bottom edge of crop region (0 = no crop)
+    max_devices: int = 3  # Maximum number of devices to probe during detection
     properties: Dict[str, Any] = field(default_factory=dict)
 
     def apply_defaults(self) -> "CameraSettings":
@@ -49,6 +50,17 @@ class DLCProcessorSettings:
     model_path: str = ""
     additional_options: Dict[str, Any] = field(default_factory=dict)
     model_type: Optional[str] = "base"
+
+
+@dataclass
+class BoundingBoxSettings:
+    """Configuration for bounding box visualization."""
+
+    enabled: bool = False
+    x0: int = 0
+    y0: int = 0
+    x1: int = 200
+    y1: int = 100
 
 
 @dataclass
@@ -94,6 +106,7 @@ class ApplicationSettings:
     camera: CameraSettings = field(default_factory=CameraSettings)
     dlc: DLCProcessorSettings = field(default_factory=DLCProcessorSettings)
     recording: RecordingSettings = field(default_factory=RecordingSettings)
+    bbox: BoundingBoxSettings = field(default_factory=BoundingBoxSettings)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ApplicationSettings":
@@ -108,7 +121,8 @@ class ApplicationSettings:
         recording_data = dict(data.get("recording", {}))
         recording_data.pop("options", None)
         recording = RecordingSettings(**recording_data)
-        return cls(camera=camera, dlc=dlc, recording=recording)
+        bbox = BoundingBoxSettings(**data.get("bbox", {}))
+        return cls(camera=camera, dlc=dlc, recording=recording, bbox=bbox)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise the configuration to a dictionary."""
@@ -117,6 +131,7 @@ class ApplicationSettings:
             "camera": asdict(self.camera),
             "dlc": asdict(self.dlc),
             "recording": asdict(self.recording),
+            "bbox": asdict(self.bbox),
         }
 
     @classmethod

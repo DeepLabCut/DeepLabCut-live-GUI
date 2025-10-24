@@ -134,6 +134,7 @@ class BaseProcessor_socket(Processor):
         self._session_name = "test_session"
         self.filename = None
         self._recording = Event()  # Thread-safe recording flag
+        self._vid_recording = Event()  # Thread-safe video recording flag
 
         # State
         self.curr_step = 0
@@ -145,6 +146,11 @@ class BaseProcessor_socket(Processor):
         return self._recording.is_set()
     
     @property
+    def video_recording(self):
+        """Thread-safe video recording flag."""
+        return self._vid_recording.is_set()
+
+    @property
     def session_name(self):
         return self._session_name
     
@@ -155,11 +161,11 @@ class BaseProcessor_socket(Processor):
 
     def _accept_loop(self):
         """Background thread to accept new client connections."""
-        LOG.info(f"DLC Processor listening on {self.address[0]}:{self.address[1]}")
+        LOG.debug(f"DLC Processor listening on {self.address[0]}:{self.address[1]}")
         while not self._stop.is_set():
             try:
                 c = self.listener.accept()
-                LOG.info(f"Client connected from {self.listener.last_accepted}")
+                LOG.debug(f"Client connected from {self.listener.last_accepted}")
                 self.conns.add(c)
                 # Start RX loop for this connection (in case clients send data)
                 Thread(target=self._rx_loop, args=(c,), name="DLCRX", daemon=True).start()
@@ -195,6 +201,7 @@ class BaseProcessor_socket(Processor):
             LOG.info(f"Session name set to: {session_name}")
         
         elif cmd == "start_recording":
+            self._vid_recording.set()
             self._recording.set()
             # Clear all data queues
             self._clear_data_queues()
@@ -203,12 +210,18 @@ class BaseProcessor_socket(Processor):
         
         elif cmd == "stop_recording":
             self._recording.clear()
+            self._vid_recording.clear()
             LOG.info("Recording stopped")
         
         elif cmd == "save":
             filename = msg.get("filename", self.filename)
             save_code = self.save(filename)
             LOG.info(f"Save {'successful' if save_code == 1 else 'failed'}: {filename}")
+
+        elif cmd == "start_video":
+            # Placeholder for video recording start
+            self._vid_recording.set()
+            LOG.info("Start video recording command received")
     
     def _clear_data_queues(self):
         """Clear all data storage queues. Override in subclasses to clear additional queues."""

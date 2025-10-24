@@ -57,6 +57,7 @@ class CameraFactory:
             The backend identifier, e.g. ``"opencv"``.
         max_devices:
             Upper bound for the indices that should be probed.
+            For GenTL backend, the actual device count is queried if available.
 
         Returns
         -------
@@ -71,8 +72,18 @@ class CameraFactory:
         if not backend_cls.is_available():
             return []
 
+        # For GenTL backend, try to get actual device count
+        num_devices = max_devices
+        if hasattr(backend_cls, 'get_device_count'):
+            try:
+                actual_count = backend_cls.get_device_count()
+                if actual_count >= 0:
+                    num_devices = actual_count
+            except Exception:
+                pass
+
         detected: List[DetectedCamera] = []
-        for index in range(max_devices):
+        for index in range(num_devices):
             settings = CameraSettings(
                 name=f"Probe {index}",
                 index=index,
