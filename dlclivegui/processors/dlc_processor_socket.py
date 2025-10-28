@@ -1,5 +1,6 @@
 import logging
 import pickle
+import socket
 import time
 from collections import deque
 from math import acos, atan2, copysign, degrees, pi, sqrt
@@ -7,7 +8,7 @@ from multiprocessing.connection import Listener
 from threading import Event, Thread
 
 import numpy as np
-from dlclive import Processor
+from dlclive import Processor  # type: ignore
 
 LOG = logging.getLogger("dlc_processor_socket")
 LOG.setLevel(logging.INFO)
@@ -42,7 +43,8 @@ class OneEuroFilter:
 
     def __call__(self, t, x):
         t_e = t - self.t_prev
-
+        if t_e <= 0:
+            return x
         a_d = self.smoothing_factor(t_e, self.d_cutoff)
         dx = (x - self.x_prev) / t_e
         dx_hat = self.exponential_smoothing(a_d, dx, self.dx_prev)
@@ -223,6 +225,31 @@ class BaseProcessor_socket(Processor):
             self._vid_recording.set()
             LOG.info("Start video recording command received")
 
+        elif cmd == "set_filter":
+            # Handle filter enable/disable (subclasses override if they support filtering)
+            use_filter = msg.get("use_filter", False)
+            if hasattr(self, 'use_filter'):
+                self.use_filter = bool(use_filter)
+                # Reset filters to reinitialize with new setting
+                if hasattr(self, 'filters'):
+                    self.filters = None
+                LOG.info(f"Filtering {'enabled' if use_filter else 'disabled'}")
+            else:
+                LOG.warning("set_filter command not supported by this processor")
+
+        elif cmd == "set_filter_params":
+            # Handle filter parameter updates (subclasses override if they support filtering)
+            filter_kwargs = msg.get("filter_kwargs", {})
+            if hasattr(self, 'filter_kwargs'):
+                # Update filter parameters
+                self.filter_kwargs.update(filter_kwargs)
+                # Reset filters to reinitialize with new parameters
+                if hasattr(self, 'filters'):
+                    self.filters = None
+                LOG.info(f"Filter parameters updated: {filter_kwargs}")
+            else:
+                LOG.warning("set_filter_params command not supported by this processor")
+
     def _clear_data_queues(self):
         """Clear all data storage queues. Override in subclasses to clear additional queues."""
         self.time_stamp.clear()
@@ -286,17 +313,30 @@ class BaseProcessor_socket(Processor):
 
     def stop(self):
         """Stop the processor and close all connections."""
+        LOG.info("Stopping processor...")
+        
+        # Signal stop to all threads
         self._stop.set()
-        try:
-            self.listener.close()
-        except Exception:
-            pass
+        
+        # Close all client connections first
         for c in list(self.conns):
             try:
                 c.close()
             except Exception:
                 pass
             self.conns.discard(c)
+        
+        # Close the listener socket
+        if hasattr(self, 'listener') and self.listener:
+            try:
+                self.listener.close()
+            except Exception as e:
+                LOG.debug(f"Error closing listener: {e}")
+        
+        # Give the OS time to release the socket on Windows
+        # This prevents WinError 10048 when restarting
+        time.sleep(0.1)
+        
         LOG.info("Processor stopped, all connections closed")
 
     def save(self, file=None):
@@ -306,7 +346,7 @@ class BaseProcessor_socket(Processor):
             LOG.info(f"Saving data to {file}")
             try:
                 save_dict = self.get_data()
-                pickle.dump(save_dict, open(file, "wb"))
+                pickle.dump(save_dict, open(file, "wb"))                              
                 save_code = 1
             except Exception as e:
                 LOG.error(f"Save failed: {e}")
@@ -383,7 +423,7 @@ class MyProcessor_socket(BaseProcessor_socket):
         authkey=b"secret password",
         use_perf_counter=False,
         use_filter=False,
-        filter_kwargs=None,
+        filter_kwargs={},
         save_original=False,
     ):
         """
@@ -412,7 +452,7 @@ class MyProcessor_socket(BaseProcessor_socket):
 
         # Filtering
         self.use_filter = use_filter
-        self.filter_kwargs = filter_kwargs or {"min_cutoff": 1.0, "beta": 0.02, "d_cutoff": 1.0}
+        self.filter_kwargs = filter_kwargs
         self.filters = None  # Will be initialized on first pose
 
     def _clear_data_queues(self):
