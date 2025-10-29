@@ -48,6 +48,10 @@ class GenTLCameraBackend(CameraBackend):
         self._cti_search_paths: Tuple[str, ...] = self._parse_cti_paths(
             props.get("cti_search_paths")
         )
+        # Parse resolution (width, height) with defaults
+        self._resolution: Optional[Tuple[int, int]] = self._parse_resolution(
+            props.get("resolution")
+        )
 
         self._harvester = None
         self._acquirer = None
@@ -232,6 +236,27 @@ class GenTLCameraBackend(CameraBackend):
             return tuple(int(v) for v in crop)
         return None
 
+    def _parse_resolution(self, resolution) -> Optional[Tuple[int, int]]:
+        """Parse resolution setting.
+        
+        Args:
+            resolution: Can be a tuple/list [width, height], or None
+        
+        Returns:
+            Tuple of (width, height) or None if not specified
+            Default is (720, 540) if parsing fails but value is provided
+        """
+        if resolution is None:
+            return (720, 540)  # Default resolution
+        
+        if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
+            try:
+                return (int(resolution[0]), int(resolution[1]))
+            except (ValueError, TypeError):
+                return (720, 540)
+        
+        return (720, 540)
+
     @staticmethod
     def _search_cti_file(patterns: Tuple[str, ...]) -> Optional[str]:
         """Search for a CTI file using the given patterns.
@@ -318,9 +343,59 @@ class GenTLCameraBackend(CameraBackend):
             pass
 
     def _configure_resolution(self, node_map) -> None:
-        # Don't configure width/height - use camera's native resolution
-        # Width and height will be determined from actual frames
-        pass
+        """Configure camera resolution (width and height)."""
+        if self._resolution is None:
+            return
+        
+        width, height = self._resolution
+        
+        # Try to set width
+        for width_attr in ("Width", "WidthMax"):
+            try:
+                node = getattr(node_map, width_attr)
+                if width_attr == "Width":
+                    # Get constraints
+                    try:
+                        min_w = node.min
+                        max_w = node.max
+                        inc_w = getattr(node, 'inc', 1)
+                        # Adjust to valid value
+                        width = self._adjust_to_increment(width, min_w, max_w, inc_w)
+                        node.value = int(width)
+                        break
+                    except Exception:
+                        # Try setting without adjustment
+                        try:
+                            node.value = int(width)
+                            break
+                        except Exception:
+                            continue
+            except AttributeError:
+                continue
+        
+        # Try to set height
+        for height_attr in ("Height", "HeightMax"):
+            try:
+                node = getattr(node_map, height_attr)
+                if height_attr == "Height":
+                    # Get constraints
+                    try:
+                        min_h = node.min
+                        max_h = node.max
+                        inc_h = getattr(node, 'inc', 1)
+                        # Adjust to valid value
+                        height = self._adjust_to_increment(height, min_h, max_h, inc_h)
+                        node.value = int(height)
+                        break
+                    except Exception:
+                        # Try setting without adjustment
+                        try:
+                            node.value = int(height)
+                            break
+                        except Exception:
+                            continue
+            except AttributeError:
+                continue
 
     def _configure_exposure(self, node_map) -> None:
         if self._exposure is None:

@@ -17,6 +17,10 @@ class OpenCVCameraBackend(CameraBackend):
     def __init__(self, settings):
         super().__init__(settings)
         self._capture: cv2.VideoCapture | None = None
+        # Parse resolution with defaults (720x540)
+        self._resolution: Tuple[int, int] = self._parse_resolution(
+            settings.properties.get("resolution")
+        )
 
     def open(self) -> None:
         backend_flag = self._resolve_backend(self.settings.properties.get("api"))
@@ -77,22 +81,49 @@ class OpenCVCameraBackend(CameraBackend):
                 base_name = backend_name
         return f"{base_name} camera #{self.settings.index}"
 
+    def _parse_resolution(self, resolution) -> Tuple[int, int]:
+        """Parse resolution setting.
+        
+        Args:
+            resolution: Can be a tuple/list [width, height], or None
+        
+        Returns:
+            Tuple of (width, height), defaults to (720, 540)
+        """
+        if resolution is None:
+            return (720, 540)  # Default resolution
+        
+        if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
+            try:
+                return (int(resolution[0]), int(resolution[1]))
+            except (ValueError, TypeError):
+                return (720, 540)
+        
+        return (720, 540)
+
     def _configure_capture(self) -> None:
         if self._capture is None:
             return
-        # Don't set width/height - capture at camera's native resolution
-        # Only set FPS if specified
+        
+        # Set resolution (width x height)
+        width, height = self._resolution
+        self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
+        self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+        
+        # Set FPS if specified
         if self.settings.fps:
             self._capture.set(cv2.CAP_PROP_FPS, float(self.settings.fps))
+        
         # Set any additional properties from the properties dict
         for prop, value in self.settings.properties.items():
-            if prop == "api":
+            if prop in ("api", "resolution"):
                 continue
             try:
                 prop_id = int(prop)
             except (TypeError, ValueError):
                 continue
             self._capture.set(prop_id, float(value))
+        
         # Update actual FPS from camera
         actual_fps = self._capture.get(cv2.CAP_PROP_FPS)
         if actual_fps:
