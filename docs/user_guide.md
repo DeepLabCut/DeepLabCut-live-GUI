@@ -239,7 +239,7 @@ Check **"Display pose predictions"** to overlay keypoints on video.
 
 3. **Select format**:
    - **Container**: mp4 (recommended), avi, mov
-   - **Codec**: 
+   - **Codec**:
      - `h264_nvenc` (NVIDIA GPU - fastest)
      - `libx264` (CPU - universal)
      - `hevc_nvenc` (NVIDIA H.265)

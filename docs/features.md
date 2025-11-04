@@ -84,7 +84,7 @@ The GUI intelligently detects available cameras:
 
 Example detection output:
 ```
-[CameraDetection] Available cameras for backend 'gentl': 
+[CameraDetection] Available cameras for backend 'gentl':
   ['0:DMK 37BUX287 (26320523)', '1:Basler acA1920 (40123456)']
 ```
 
@@ -127,7 +127,7 @@ Example detection output:
 - **Purpose**: Visual ROI definition
 - **Configuration**: (x0, y0, x1, y1) coordinates
 - **Color**: Red rectangle overlay
-- **Use Cases**: 
+- **Use Cases**:
   - Crop region preview
   - Analysis area marking
   - Multi-region tracking
@@ -310,21 +310,21 @@ Custom pose processors for real-time analysis and control.
 ```python
 class MyProcessor:
     """Custom processor example."""
-    
+
     def process(self, pose, timestamp):
         """Process pose data in real-time.
-        
+
         Args:
             pose: numpy array (n_keypoints, 3) - x, y, likelihood
             timestamp: float - frame timestamp
         """
         # Extract keypoint positions
         nose_x, nose_y = pose[0, :2]
-        
+
         # Custom logic
         if nose_x > 320:
             self.trigger_event()
-        
+
         # Return results (optional)
         return {"position": (nose_x, nose_y)}
 ```
@@ -353,15 +353,15 @@ class RecordingProcessor:
     def __init__(self):
         self._vid_recording = False
         self.session_name = "default"
-    
+
     @property
     def video_recording(self):
         return self._vid_recording
-    
+
     def start_recording(self, session):
         self.session_name = session
         self._vid_recording = True
-    
+
     def stop_recording(self):
         self._vid_recording = False
 ```
@@ -423,7 +423,7 @@ The GUI monitors `video_recording` property and automatically starts/stops recor
 #### Button States
 - **Disabled**: Gray, not clickable
 - **Enabled**: Default color, clickable
-- **Active**: 
+- **Active**:
   - Preview running: Stop button enabled
   - Inference initializing: Blue "Initializing DLCLive!"
   - Inference ready: Green "DLCLive running!"
@@ -447,7 +447,7 @@ The GUI monitors `video_recording` property and automatically starts/stops recor
 
 #### DLC Metrics
 - **Inference FPS**: Poses processed per second
-- **Latency**: 
+- **Latency**:
   - Last frame latency (ms)
   - Average latency over session (ms)
 - **Queue**: Number of frames waiting
@@ -535,7 +535,7 @@ class MyBackend(CameraBackend):
     def open(self): ...
     def read(self) -> Tuple[np.ndarray, float]: ...
     def close(self): ...
-    
+
     @classmethod
     def get_device_count(cls) -> int: ...
 ```
@@ -554,7 +554,7 @@ class MyProcessor:
     def __init__(self, **kwargs):
         # Initialize
         pass
-    
+
     def process(self, pose, timestamp):
         # Process pose
         pass

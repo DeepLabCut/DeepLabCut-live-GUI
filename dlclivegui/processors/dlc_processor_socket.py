@@ -574,11 +574,224 @@ class MyProcessor_socket(BaseProcessor_socket):
         save_dict["filter_kwargs"] = self.filter_kwargs
 
         return save_dict
+    
+
+class MyProcessorTorchmodels_socket(BaseProcessor_socket):
+    """
+    DLC Processor with pose calculations (center, heading, head angle) and optional filtering.
+
+    Calculates:
+    - center: Weighted average of head keypoints
+    - heading: Body orientation (degrees)
+    - head_angle: Head rotation relative to body (radians)
+
+    Broadcasts: [timestamp, center_x, center_y, heading, head_angle]
+    """
+
+    # Metadata for GUI discovery
+    PROCESSOR_NAME = "Mouse Pose with less keypoints"
+    PROCESSOR_DESCRIPTION = (
+        "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
+    )
+    PROCESSOR_PARAMS = {
+        "bind": {
+            "type": "tuple",
+            "default": ("0.0.0.0", 6000),
+            "description": "Server address (host, port)",
+        },
+        "authkey": {
+            "type": "bytes",
+            "default": b"secret password",
+            "description": "Authentication key for clients",
+        },
+        "use_perf_counter": {
+            "type": "bool",
+            "default": False,
+            "description": "Use time.perf_counter() instead of time.time()",
+        },
+        "use_filter": {
+            "type": "bool",
+            "default": False,
+            "description": "Apply One-Euro filter to calculated values",
+        },
+        "filter_kwargs": {
+            "type": "dict",
+            "default": {"min_cutoff": 1.0, "beta": 0.02, "d_cutoff": 1.0},
+            "description": "One-Euro filter parameters (min_cutoff, beta, d_cutoff)",
+        },
+        "save_original": {
+            "type": "bool",
+            "default": False,
+            "description": "Save raw pose arrays for analysis",
+        },
+    }
+
+    def __init__(
+        self,
+        bind=("0.0.0.0", 6000),
+        authkey=b"secret password",
+        use_perf_counter=False,
+        use_filter=False,
+        filter_kwargs={},
+        save_original=False,
+    ):
+        """
+        DLC Processor with multi-client broadcasting support.
+
+        Args:
+            bind: (host, port) tuple for server binding
+            authkey: Authentication key for client connections
+            use_perf_counter: If True, use time.perf_counter() instead of time.time()
+            use_filter: If True, apply One-Euro filter to pose data
+            filter_kwargs: Dict with OneEuroFilter parameters (min_cutoff, beta, d_cutoff)
+            save_original: If True, save raw pose arrays
+        """
+        super().__init__(
+            bind=bind,
+            authkey=authkey,
+            use_perf_counter=use_perf_counter,
+            save_original=save_original,
+        )
+
+        # Additional data storage for processed values
+        self.center_x = deque()
+        self.center_y = deque()
+        self.heading_direction = deque()
+        self.head_angle = deque()
+
+        # Filtering
+        self.use_filter = use_filter
+        self.filter_kwargs = filter_kwargs
+        self.filters = None  # Will be initialized on first pose
+
+    def _clear_data_queues(self):
+        """Clear all data storage queues including pose-specific ones."""
+        super()._clear_data_queues()
+        self.center_x.clear()
+        self.center_y.clear()
+        self.heading_direction.clear()
+        self.head_angle.clear()
+
+    def _initialize_filters(self, vals):
+        """Initialize One-Euro filters for each output variable."""
+        t0 = self.timing_func()
+        self.filters = {
+            "center_x": OneEuroFilter(t0, vals[0], **self.filter_kwargs),
+            "center_y": OneEuroFilter(t0, vals[1], **self.filter_kwargs),
+            "heading": OneEuroFilter(t0, vals[2], **self.filter_kwargs),
+            "head_angle": OneEuroFilter(t0, vals[3], **self.filter_kwargs),
+        }
+        LOG.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
+
+    def process(self, pose, **kwargs):
+        """
+        Process pose: calculate center/heading/head_angle, optionally filter, and broadcast.
+
+        Args:
+            pose: DLC pose array (N_keypoints x 3) with [x, y, confidence]
+            **kwargs: Additional metadata (frame_time, pose_time, etc.)
+
+        Returns:
+            pose: Unmodified pose array
+        """
+        # Save original pose if requested (from base class)
+        if self.save_original:
+            self.original_pose.append(pose.copy())
+
+        # Extract keypoints and confidence
+        xy = pose[:, :2]
+        conf = pose[:, 2]
+
+        # Calculate weighted center from head keypoints
+        head_xy = xy[[0, 1, 2, 3, 5, 6, 7], :]
+        head_conf = conf[[0, 1, 2, 3, 5, 6, 7]]
+        center = np.average(head_xy, axis=0, weights=head_conf)
+
+        neck = np.average(xy[[2, 3, 6, 7], :], axis=0, weights=conf[[2, 3, 6, 7]])
+
+        # Calculate body axis (tail_base -> neck)
+        body_axis = neck - xy[9]
+        body_axis /= sqrt(np.sum(body_axis**2))
+
+        # Calculate head axis (neck -> nose)
+        head_axis = xy[0] - neck
+        head_axis /= sqrt(np.sum(head_axis**2))
+
+        # Calculate head angle relative to body
+        cross = body_axis[0] * head_axis[1] - head_axis[0] * body_axis[1]
+        sign = copysign(1, cross)  # Positive when looking left
+        try:
+            head_angle = acos(body_axis @ head_axis) * sign
+        except ValueError:
+            head_angle = 0
+
+        # Calculate heading (body orientation)
+        heading = atan2(body_axis[1], body_axis[0])
+        heading = degrees(heading)
+
+        # Raw values (heading unwrapped for filtering)
+        vals = [center[0], center[1], heading, head_angle]
+
+        # Apply filtering if enabled
+        curr_time = self.timing_func()
+        if self.use_filter:
+            if self.filters is None:
+                self._initialize_filters(vals)
+
+            # Filter each value (heading is filtered in unwrapped space)
+            filtered_vals = [
+                self.filters["center_x"](curr_time, vals[0]),
+                self.filters["center_y"](curr_time, vals[1]),
+                self.filters["heading"](curr_time, vals[2]),
+                self.filters["head_angle"](curr_time, vals[3]),
+            ]
+            vals = filtered_vals
+
+        # Wrap heading to [0, 360) after filtering
+        vals[2] = vals[2] % 360
+
+        # Update step counter
+        self.curr_step = self.curr_step + 1
+
+        # Store processed data (only if recording)
+        if self.recording:
+            self.center_x.append(vals[0])
+            self.center_y.append(vals[1])
+            self.heading_direction.append(vals[2])
+            self.head_angle.append(vals[3])
+            self.time_stamp.append(curr_time)
+            self.step.append(self.curr_step)
+            self.frame_time.append(kwargs.get("frame_time", -1))
+            if "pose_time" in kwargs:
+                self.pose_time.append(kwargs["pose_time"])
+
+        # Broadcast processed values to all connected clients
+        payload = [curr_time, vals[0], vals[1], vals[2], vals[3]]
+        self.broadcast(payload)
+
+        return pose
+
+    def get_data(self):
+        """Get logged data including base class data and processed values."""
+        # Get base class data
+        save_dict = super().get_data()
+
+        # Add processed values
+        save_dict["x_pos"] = np.array(self.center_x)
+        save_dict["y_pos"] = np.array(self.center_y)
+        save_dict["heading_direction"] = np.array(self.heading_direction)
+        save_dict["head_angle"] = np.array(self.head_angle)
+        save_dict["use_filter"] = self.use_filter
+        save_dict["filter_kwargs"] = self.filter_kwargs
+
+        return save_dict
+    
 
 
 # Register processors for GUI discovery
 PROCESSOR_REGISTRY["BaseProcessor_socket"] = BaseProcessor_socket
 PROCESSOR_REGISTRY["MyProcessor_socket"] = MyProcessor_socket
+PROCESSOR_REGISTRY["MyProcessorTorchmodels_socket"] = MyProcessorTorchmodels_socket
 
 
 def get_available_processors():

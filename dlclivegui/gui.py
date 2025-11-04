@@ -56,7 +56,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 logging.basicConfig(level=logging.INFO)
 
-PATH2MODELS = "C:\\Users\\User\\Repos\\DeepLabCut-live-GUI\\models"
+PATH2MODELS = "C:\\Users\\User\\Repos\\DeepLabCut-live-GUI\\dlc_training\\dlclive"
 
 
 class MainWindow(QMainWindow):
@@ -266,7 +266,7 @@ class MainWindow(QMainWindow):
         self.model_type_combo = QComboBox()
         self.model_type_combo.addItem("Base (TensorFlow)", "base")
         self.model_type_combo.addItem("PyTorch", "pytorch")
-        self.model_type_combo.setCurrentIndex(0)  # Default to base
+        self.model_type_combo.setCurrentIndex(1)  # Default to PyTorch
         form.addRow("Model type", self.model_type_combo)
 
         # Processor selection
@@ -729,11 +729,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Saved configuration to {path}", 5000)
 
     def _action_browse_model(self) -> None:
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select DLCLive model directory", PATH2MODELS
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select DLCLive model file", PATH2MODELS, "Model files (*.pt *.pb);;All files (*.*)"
         )
-        if directory:
-            self.model_path_edit.setText(directory)
+        if file_path:
+            self.model_path_edit.setText(file_path)
 
     def _action_browse_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(
