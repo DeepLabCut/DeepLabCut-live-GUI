@@ -261,13 +261,7 @@ class MainWindow(QMainWindow):
         self.browse_model_button = QPushButton("Browse…")
         self.browse_model_button.clicked.connect(self._action_browse_model)
         path_layout.addWidget(self.browse_model_button)
-        form.addRow("Model directory", path_layout)
-
-        self.model_type_combo = QComboBox()
-        self.model_type_combo.addItem("Base (TensorFlow)", "base")
-        self.model_type_combo.addItem("PyTorch", "pytorch")
-        self.model_type_combo.setCurrentIndex(1)  # Default to PyTorch
-        form.addRow("Model type", self.model_type_combo)
+        form.addRow("Model file", path_layout)
 
         # Processor selection
         processor_path_layout = QHBoxLayout()
@@ -481,12 +475,6 @@ class MainWindow(QMainWindow):
         dlc = config.dlc
         self.model_path_edit.setText(dlc.model_path)
 
-        # Set model type
-        model_type = dlc.model_type or "base"
-        model_type_index = self.model_type_combo.findData(model_type)
-        if model_type_index >= 0:
-            self.model_type_combo.setCurrentIndex(model_type_index)
-
         self.additional_options_edit.setPlainText(json.dumps(dlc.additional_options, indent=2))
 
         recording = config.recording
@@ -655,13 +643,9 @@ class MainWindow(QMainWindow):
         return json.loads(text)
 
     def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
-        model_type = self.model_type_combo.currentData()
-        if not isinstance(model_type, str):
-            model_type = "base"
-
         return DLCProcessorSettings(
             model_path=self.model_path_edit.text().strip(),
-            model_type=model_type,
+            model_type="pytorch",
             additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
         )
 
@@ -925,7 +909,6 @@ class MainWindow(QMainWindow):
         widgets = [
             self.model_path_edit,
             self.browse_model_button,
-            self.model_type_combo,
             self.processor_folder_edit,
             self.browse_processor_folder_button,
             self.refresh_processors_button,

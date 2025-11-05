@@ -50,7 +50,7 @@ class DLCProcessorSettings:
 
     model_path: str = ""
     additional_options: Dict[str, Any] = field(default_factory=dict)
-    model_type: Optional[str] = "base"
+    model_type: str = "pytorch"  # Only PyTorch models are supported
 
 
 @dataclass
