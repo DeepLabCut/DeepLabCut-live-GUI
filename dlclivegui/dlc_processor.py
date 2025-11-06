@@ -17,6 +17,9 @@ from dlclivegui.config import DLCProcessorSettings
 
 LOGGER = logging.getLogger(__name__)
 
+# Enable profiling
+ENABLE_PROFILING = True
+
 try:  # pragma: no cover - optional dependency
     from dlclive import DLCLive  # type: ignore
 except Exception:  # pragma: no cover - handled gracefully
@@ -40,6 +43,14 @@ class ProcessorStats:
     processing_fps: float = 0.0
     average_latency: float = 0.0
     last_latency: float = 0.0
+    # Profiling metrics
+    avg_queue_wait: float = 0.0
+    avg_inference_time: float = 0.0
+    avg_signal_emit_time: float = 0.0
+    avg_total_process_time: float = 0.0
+    # Separated timing for GPU vs socket processor
+    avg_gpu_inference_time: float = 0.0  # Pure model inference
+    avg_processor_overhead: float = 0.0  # Socket processor overhead
 
 
 _SENTINEL = object()
@@ -69,6 +80,14 @@ class DLCLiveProcessor(QObject):
         self._latencies: deque[float] = deque(maxlen=60)
         self._processing_times: deque[float] = deque(maxlen=60)
         self._stats_lock = threading.Lock()
+        
+        # Profiling metrics
+        self._queue_wait_times: deque[float] = deque(maxlen=60)
+        self._inference_times: deque[float] = deque(maxlen=60)
+        self._signal_emit_times: deque[float] = deque(maxlen=60)
+        self._total_process_times: deque[float] = deque(maxlen=60)
+        self._gpu_inference_times: deque[float] = deque(maxlen=60)
+        self._processor_overhead_times: deque[float] = deque(maxlen=60)
 
     def configure(self, settings: DLCProcessorSettings, processor: Optional[Any] = None) -> None:
         self._settings = settings
@@ -85,6 +104,12 @@ class DLCLiveProcessor(QObject):
             self._frames_dropped = 0
             self._latencies.clear()
             self._processing_times.clear()
+            self._queue_wait_times.clear()
+            self._inference_times.clear()
+            self._signal_emit_times.clear()
+            self._total_process_times.clear()
+            self._gpu_inference_times.clear()
+            self._processor_overhead_times.clear()
 
     def shutdown(self) -> None:
         self._stop_worker()
@@ -128,6 +153,14 @@ class DLCLiveProcessor(QObject):
                 )
             else:
                 processing_fps = 0.0
+            
+            # Profiling metrics
+            avg_queue_wait = sum(self._queue_wait_times) / len(self._queue_wait_times) if self._queue_wait_times else 0.0
+            avg_inference = sum(self._inference_times) / len(self._inference_times) if self._inference_times else 0.0
+            avg_signal_emit = sum(self._signal_emit_times) / len(self._signal_emit_times) if self._signal_emit_times else 0.0
+            avg_total = sum(self._total_process_times) / len(self._total_process_times) if self._total_process_times else 0.0
+            avg_gpu = sum(self._gpu_inference_times) / len(self._gpu_inference_times) if self._gpu_inference_times else 0.0
+            avg_proc_overhead = sum(self._processor_overhead_times) / len(self._processor_overhead_times) if self._processor_overhead_times else 0.0
 
             return ProcessorStats(
                 frames_enqueued=self._frames_enqueued,
@@ -137,13 +170,19 @@ class DLCLiveProcessor(QObject):
                 processing_fps=processing_fps,
                 average_latency=avg_latency,
                 last_latency=last_latency,
+                avg_queue_wait=avg_queue_wait,
+                avg_inference_time=avg_inference,
+                avg_signal_emit_time=avg_signal_emit,
+                avg_total_process_time=avg_total,
+                avg_gpu_inference_time=avg_gpu,
+                avg_processor_overhead=avg_proc_overhead,
             )
 
     def _start_worker(self, init_frame: np.ndarray, init_timestamp: float) -> None:
         if self._worker_thread is not None and self._worker_thread.is_alive():
             return
 
-        self._queue = queue.Queue(maxsize=2)
+        self._queue = queue.Queue(maxsize=1)
         self._stop_event.clear()
         self._worker_thread = threading.Thread(
             target=self._worker_loop,
@@ -179,31 +218,48 @@ class DLCLiveProcessor(QObject):
             if not self._settings.model_path:
                 raise RuntimeError("No DLCLive model path configured.")
 
+            init_start = time.perf_counter()
             options = {
                 "model_path": self._settings.model_path,
                 "model_type": self._settings.model_type,
                 "processor": self._processor,
                 "dynamic": [False, 0.5, 10],
                 "resize": 1.0,
+                "precision": "FP32",
             }
             # todo expose more parameters from settings
             self._dlc = DLCLive(**options)
+            
+            init_inference_start = time.perf_counter()
             self._dlc.init_inference(init_frame)
+            init_inference_time = time.perf_counter() - init_inference_start
+            
             self._initialized = True
             self.initialized.emit(True)
-            LOGGER.info("DLCLive model initialized successfully")
+            
+            total_init_time = time.perf_counter() - init_start
+            LOGGER.info(f"DLCLive model initialized successfully (total: {total_init_time:.3f}s, init_inference: {init_inference_time:.3f}s)")
 
             # Process the initialization frame
             enqueue_time = time.perf_counter()
+            
+            inference_start = time.perf_counter()
             pose = self._dlc.get_pose(init_frame, frame_time=init_timestamp)
+            inference_time = time.perf_counter() - inference_start
+            
+            signal_start = time.perf_counter()
+            self.pose_ready.emit(PoseResult(pose=pose, timestamp=init_timestamp))
+            signal_time = time.perf_counter() - signal_start
+            
             process_time = time.perf_counter()
 
             with self._stats_lock:
                 self._frames_enqueued += 1
                 self._frames_processed += 1
                 self._processing_times.append(process_time)
-
-            self.pose_ready.emit(PoseResult(pose=pose, timestamp=init_timestamp))
+                if ENABLE_PROFILING:
+                    self._inference_times.append(inference_time)
+                    self._signal_emit_times.append(signal_time)
 
         except Exception as exc:
             LOGGER.exception("Failed to initialize DLCLive", exc_info=exc)
@@ -212,29 +268,90 @@ class DLCLiveProcessor(QObject):
             return
 
         # Main processing loop
+        frame_count = 0
         while not self._stop_event.is_set():
+            loop_start = time.perf_counter()
+            
+            # Time spent waiting for queue
+            queue_wait_start = time.perf_counter()
             try:
                 item = self._queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+            queue_wait_time = time.perf_counter() - queue_wait_start
 
             if item is _SENTINEL:
                 break
 
             frame, timestamp, enqueue_time = item
+            
             try:
-                start_process = time.perf_counter()
+                # Time the inference - we need to separate GPU from processor overhead
+                # If processor exists, wrap its process method to time it separately
+                processor_overhead_time = 0.0
+                gpu_inference_time = 0.0
+                
+                if self._processor is not None:
+                    # Wrap processor.process() to time it
+                    original_process = self._processor.process
+                    processor_time_holder = [0.0]  # Use list to allow modification in nested scope
+                    
+                    def timed_process(pose, **kwargs):
+                        proc_start = time.perf_counter()
+                        result = original_process(pose, **kwargs)
+                        processor_time_holder[0] = time.perf_counter() - proc_start
+                        return result
+                    
+                    self._processor.process = timed_process
+                
+                inference_start = time.perf_counter()
                 pose = self._dlc.get_pose(frame, frame_time=timestamp)
-                end_process = time.perf_counter()
+                inference_time = time.perf_counter() - inference_start
+                
+                if self._processor is not None:
+                    # Restore original process method
+                    self._processor.process = original_process
+                    processor_overhead_time = processor_time_holder[0]
+                    gpu_inference_time = inference_time - processor_overhead_time
+                else:
+                    # No processor, all time is GPU inference
+                    gpu_inference_time = inference_time
 
+                # Time the signal emission
+                signal_start = time.perf_counter()
+                self.pose_ready.emit(PoseResult(pose=pose, timestamp=timestamp))
+                signal_time = time.perf_counter() - signal_start
+                
+                end_process = time.perf_counter()
+                total_process_time = end_process - loop_start
                 latency = end_process - enqueue_time
 
                 with self._stats_lock:
                     self._frames_processed += 1
                     self._latencies.append(latency)
                     self._processing_times.append(end_process)
-
-                self.pose_ready.emit(PoseResult(pose=pose, timestamp=timestamp))
+                    
+                    if ENABLE_PROFILING:
+                        self._queue_wait_times.append(queue_wait_time)
+                        self._inference_times.append(inference_time)
+                        self._signal_emit_times.append(signal_time)
+                        self._total_process_times.append(total_process_time)
+                        self._gpu_inference_times.append(gpu_inference_time)
+                        self._processor_overhead_times.append(processor_overhead_time)
+                
+                # Log profiling every 100 frames
+                frame_count += 1
+                if ENABLE_PROFILING and frame_count % 100 == 0:
+                    LOGGER.info(
+                        f"[Profile] Frame {frame_count}: "
+                        f"queue_wait={queue_wait_time*1000:.2f}ms, "
+                        f"inference={inference_time*1000:.2f}ms "
+                        f"(GPU={gpu_inference_time*1000:.2f}ms, processor={processor_overhead_time*1000:.2f}ms), "
+                        f"signal_emit={signal_time*1000:.2f}ms, "
+                        f"total={total_process_time*1000:.2f}ms, "
+                        f"latency={latency*1000:.2f}ms"
+                    )
+                    
             except Exception as exc:
                 LOGGER.exception("Pose inference failed", exc_info=exc)
                 self.error.emit(str(exc))

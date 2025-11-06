@@ -65,8 +65,26 @@ class MainWindow(QMainWindow):
     def __init__(self, config: Optional[ApplicationSettings] = None):
         super().__init__()
         self.setWindowTitle("DeepLabCut Live GUI")
-        self._config = config or DEFAULT_CONFIG
-        self._config_path: Optional[Path] = None
+        
+        # Try to load myconfig.json from the application directory if no config provided
+        if config is None:
+            myconfig_path = Path(__file__).parent.parent / "myconfig.json"
+            if myconfig_path.exists():
+                try:
+                    config = ApplicationSettings.load(str(myconfig_path))
+                    self._config_path = myconfig_path
+                    logging.info(f"Loaded configuration from {myconfig_path}")
+                except Exception as exc:
+                    logging.warning(f"Failed to load myconfig.json: {exc}. Using default config.")
+                    config = DEFAULT_CONFIG
+                    self._config_path = None
+            else:
+                config = DEFAULT_CONFIG
+                self._config_path = None
+        else:
+            self._config_path = None
+        
+        self._config = config
         self._current_frame: Optional[np.ndarray] = None
         self._raw_frame: Optional[np.ndarray] = None
         self._last_pose: Optional[PoseResult] = None
@@ -105,17 +123,67 @@ class MainWindow(QMainWindow):
         self._metrics_timer.timeout.connect(self._update_metrics)
         self._metrics_timer.start()
         self._update_metrics()
+        
+        # Show status message if myconfig.json was loaded
+        if self._config_path and self._config_path.name == "myconfig.json":
+            self.statusBar().showMessage(f"Auto-loaded configuration from {self._config_path}", 5000)
 
     # ------------------------------------------------------------------ UI
     def _setup_ui(self) -> None:
         central = QWidget()
         layout = QHBoxLayout(central)
 
+        # Video panel with display and performance stats
+        video_panel = QWidget()
+        video_layout = QVBoxLayout(video_panel)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        
         # Video display widget
         self.video_label = QLabel("Camera preview not started")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumSize(640, 360)
         self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        video_layout.addWidget(self.video_label)
+        
+        # Stats panel below video with clear labels
+        stats_widget = QWidget()
+        stats_widget.setStyleSheet("padding: 5px;")
+        stats_widget.setMinimumWidth(800)  # Prevent excessive line breaks
+        stats_layout = QVBoxLayout(stats_widget)
+        stats_layout.setContentsMargins(5, 5, 5, 5)
+        stats_layout.setSpacing(3)
+        
+        # Camera throughput stats
+        camera_stats_container = QHBoxLayout()
+        camera_stats_label_title = QLabel("<b>Camera:</b>")
+        camera_stats_container.addWidget(camera_stats_label_title)
+        self.camera_stats_label = QLabel("Camera idle")
+        self.camera_stats_label.setWordWrap(True)
+        camera_stats_container.addWidget(self.camera_stats_label)
+        camera_stats_container.addStretch(1)
+        stats_layout.addLayout(camera_stats_container)
+        
+        # DLC processor stats
+        dlc_stats_container = QHBoxLayout()
+        dlc_stats_label_title = QLabel("<b>DLC Processor:</b>")
+        dlc_stats_container.addWidget(dlc_stats_label_title)
+        self.dlc_stats_label = QLabel("DLC processor idle")
+        self.dlc_stats_label.setWordWrap(True)
+        dlc_stats_container.addWidget(self.dlc_stats_label)
+        dlc_stats_container.addStretch(1)
+        stats_layout.addLayout(dlc_stats_container)
+        
+        # Video recorder stats
+        recorder_stats_container = QHBoxLayout()
+        recorder_stats_label_title = QLabel("<b>Recorder:</b>")
+        recorder_stats_container.addWidget(recorder_stats_label_title)
+        self.recording_stats_label = QLabel("Recorder idle")
+        self.recording_stats_label.setWordWrap(True)
+        recorder_stats_container.addWidget(self.recording_stats_label)
+        recorder_stats_container.addStretch(1)
+        stats_layout.addLayout(recorder_stats_container)
+        
+        video_layout.addWidget(stats_widget)
 
         # Controls panel with fixed width to prevent shifting
         controls_widget = QWidget()
@@ -142,9 +210,9 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(button_bar_widget)
         controls_layout.addStretch(1)
 
-        # Add controls and video to main layout
+        # Add controls and video panel to main layout
         layout.addWidget(controls_widget, stretch=0)
-        layout.addWidget(self.video_label, stretch=1)
+        layout.addWidget(video_panel, stretch=1)
 
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
@@ -245,9 +313,6 @@ class MainWindow(QMainWindow):
         self.rotation_combo.addItem("270°", 270)
         form.addRow("Rotation", self.rotation_combo)
 
-        self.camera_stats_label = QLabel("Camera idle")
-        form.addRow("Throughput", self.camera_stats_label)
-
         return group
 
     def _build_dlc_group(self) -> QGroupBox:
@@ -316,10 +381,6 @@ class MainWindow(QMainWindow):
         self.processor_status_label.setWordWrap(True)
         form.addRow("Processor Status", self.processor_status_label)
 
-        self.dlc_stats_label = QLabel("DLC processor idle")
-        self.dlc_stats_label.setWordWrap(True)
-        form.addRow("Performance", self.dlc_stats_label)
-
         return group
 
     def _build_recording_group(self) -> QGroupBox:
@@ -364,10 +425,6 @@ class MainWindow(QMainWindow):
         self.stop_record_button.setMinimumWidth(150)
         buttons.addWidget(self.stop_record_button)
         form.addRow(recording_button_widget)
-
-        self.recording_stats_label = QLabel(self._last_recorder_summary)
-        self.recording_stats_label.setWordWrap(True)
-        form.addRow("Performance", self.recording_stats_label)
 
         return group
 
@@ -989,10 +1046,31 @@ class MainWindow(QMainWindow):
         enqueue = stats.frames_enqueued
         processed = stats.frames_processed
         dropped = stats.frames_dropped
+        
+        # Add profiling info if available
+        profile_info = ""
+        if stats.avg_inference_time > 0:
+            inf_ms = stats.avg_inference_time * 1000.0
+            queue_ms = stats.avg_queue_wait * 1000.0
+            signal_ms = stats.avg_signal_emit_time * 1000.0
+            total_ms = stats.avg_total_process_time * 1000.0
+            
+            # Add GPU vs processor breakdown if available
+            gpu_breakdown = ""
+            if stats.avg_gpu_inference_time > 0 or stats.avg_processor_overhead > 0:
+                gpu_ms = stats.avg_gpu_inference_time * 1000.0
+                proc_ms = stats.avg_processor_overhead * 1000.0
+                gpu_breakdown = f" (GPU:{gpu_ms:.1f}ms+proc:{proc_ms:.1f}ms)"
+            
+            profile_info = (
+                f"\n[Profile] inf:{inf_ms:.1f}ms{gpu_breakdown} queue:{queue_ms:.1f}ms "
+                f"signal:{signal_ms:.1f}ms total:{total_ms:.1f}ms"
+            )
+        
         return (
             f"{processed}/{enqueue} frames | inference {processing_fps:.1f} fps | "
             f"latency {latency_ms:.1f} ms (avg {avg_ms:.1f} ms) | "
-            f"queue {stats.queue_size} | dropped {dropped}"
+            f"queue {stats.queue_size} | dropped {dropped}{profile_info}"
         )
 
     def _update_metrics(self) -> None:
