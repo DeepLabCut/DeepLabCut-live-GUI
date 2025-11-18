@@ -65,6 +65,21 @@ class BoundingBoxSettings:
 
 
 @dataclass
+class VisualizationSettings:
+    """Configuration for pose visualization."""
+
+    p_cutoff: float = 0.6  # Confidence threshold for displaying keypoints
+    colormap: str = "hot"  # Matplotlib colormap for keypoints
+    bbox_color: tuple[int, int, int] = (0, 0, 255)  # BGR color for bounding box (default: red)
+
+    def get_bbox_color_bgr(self) -> tuple[int, int, int]:
+        """Get bounding box color in BGR format."""
+        if isinstance(self.bbox_color, (list, tuple)) and len(self.bbox_color) == 3:
+            return tuple(int(c) for c in self.bbox_color)
+        return (0, 0, 255)  # Default to red
+
+
+@dataclass
 class RecordingSettings:
     """Configuration for video recording."""
 
@@ -108,6 +123,7 @@ class ApplicationSettings:
     dlc: DLCProcessorSettings = field(default_factory=DLCProcessorSettings)
     recording: RecordingSettings = field(default_factory=RecordingSettings)
     bbox: BoundingBoxSettings = field(default_factory=BoundingBoxSettings)
+    visualization: VisualizationSettings = field(default_factory=VisualizationSettings)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ApplicationSettings":
@@ -123,7 +139,8 @@ class ApplicationSettings:
         recording_data.pop("options", None)
         recording = RecordingSettings(**recording_data)
         bbox = BoundingBoxSettings(**data.get("bbox", {}))
-        return cls(camera=camera, dlc=dlc, recording=recording, bbox=bbox)
+        visualization = VisualizationSettings(**data.get("visualization", {}))
+        return cls(camera=camera, dlc=dlc, recording=recording, bbox=bbox, visualization=visualization)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise the configuration to a dictionary."""
@@ -133,6 +150,7 @@ class ApplicationSettings:
             "dlc": asdict(self.dlc),
             "recording": asdict(self.recording),
             "bbox": asdict(self.bbox),
+            "visualization": asdict(self.visualization),
         }
 
     @classmethod

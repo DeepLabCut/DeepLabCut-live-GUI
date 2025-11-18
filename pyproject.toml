@@ -1,0 +1,112 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deeplabcut-live-gui"
+version = "2.0"
+description = "PyQt-based GUI to run real time DeepLabCut experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GNU Lesser General Public License v3 (LGPLv3)"}
+authors = [
+    {name = "A. & M. Mathis Labs", email = "adim@deeplabcut.org"}
+]
+keywords = ["deeplabcut", "pose estimation", "real-time", "gui", "deep learning"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+    "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "deeplabcut-live",
+    "PyQt6",
+    "numpy",
+    "opencv-python",
+    "vidgear[core]",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+basler = ["pypylon"]
+gentl = ["harvesters"]
+all = ["pypylon", "harvesters"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-mock>=3.10",
+    "pytest-qt>=4.2",
+    "black>=23.0",
+    "flake8>=6.0",
+    "mypy>=1.0",
+]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-mock>=3.10",
+    "pytest-qt>=4.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
+Repository = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
+Documentation = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
+"Bug Tracker" = "https://github.com/DeepLabCut/DeepLabCut-live-GUI/issues"
+
+[project.scripts]
+dlclivegui = "dlclivegui.gui:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dlclivegui*"]
+exclude = ["tests*", "docs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "--cov=dlclivegui",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]
+markers = [
+    "unit: Unit tests for individual components",
+    "integration: Integration tests for component interaction",
+    "functional: Functional tests for end-to-end workflows",
+    "slow: Tests that take a long time to run",
+    "gui: Tests that require GUI interaction",
+]
+
+[tool.coverage.run]
+source = ["dlclivegui"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstract",
+]

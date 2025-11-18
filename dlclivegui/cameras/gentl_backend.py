@@ -13,7 +13,7 @@ import numpy as np
 from .base import CameraBackend
 
 try:  # pragma: no cover - optional dependency
-    from harvesters.core import Harvester
+    from harvesters.core import Harvester # type: ignore
 
     try:
         from harvesters.core import HarvesterTimeoutError  # type: ignore

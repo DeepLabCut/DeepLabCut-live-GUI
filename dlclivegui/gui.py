@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QCloseEvent, QImage, QPixmap
@@ -47,12 +48,13 @@ from dlclivegui.config import (
     CameraSettings,
     DLCProcessorSettings,
     RecordingSettings,
+    VisualizationSettings,
 )
 from dlclivegui.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStats
 from dlclivegui.processors.processor_utils import instantiate_from_scan, scan_processor_folder
 from dlclivegui.video_recorder import RecorderStats, VideoRecorder
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 logging.basicConfig(level=logging.INFO)
 
@@ -108,6 +110,11 @@ class MainWindow(QMainWindow):
         self._bbox_x1 = 0
         self._bbox_y1 = 0
         self._bbox_enabled = False
+        
+        # Visualization settings (will be updated from config)
+        self._p_cutoff = 0.6
+        self._colormap = "hot"
+        self._bbox_color = (0, 0, 255)  # BGR: red
 
         self.camera_controller = CameraController()
         self.dlc_processor = DLCLiveProcessor()
@@ -553,6 +560,12 @@ class MainWindow(QMainWindow):
         self.bbox_y0_spin.setValue(bbox.y0)
         self.bbox_x1_spin.setValue(bbox.x1)
         self.bbox_y1_spin.setValue(bbox.y1)
+        
+        # Set visualization settings from config
+        viz = config.visualization
+        self._p_cutoff = viz.p_cutoff
+        self._colormap = viz.colormap
+        self._bbox_color = viz.get_bbox_color_bgr()
 
     def _current_config(self) -> ApplicationSettings:
         return ApplicationSettings(
@@ -560,6 +573,7 @@ class MainWindow(QMainWindow):
             dlc=self._dlc_settings_from_ui(),
             recording=self._recording_settings_from_ui(),
             bbox=self._bbox_settings_from_ui(),
+            visualization=self._visualization_settings_from_ui(),
         )
 
     def _camera_settings_from_ui(self) -> CameraSettings:
@@ -723,6 +737,13 @@ class MainWindow(QMainWindow):
             y0=self.bbox_y0_spin.value(),
             x1=self.bbox_x1_spin.value(),
             y1=self.bbox_y1_spin.value(),
+        )
+
+    def _visualization_settings_from_ui(self) -> VisualizationSettings:
+        return VisualizationSettings(
+            p_cutoff=self._p_cutoff,
+            colormap=self._colormap,
+            bbox_color=self._bbox_color,
         )
 
     # ------------------------------------------------------------------ actions
@@ -1215,31 +1236,60 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ recording
     def _start_recording(self) -> None:
+        # If recorder already running, nothing to do
         if self._video_recorder and self._video_recorder.is_running:
             return
+
+        # If camera not running, start it automatically so frames will arrive.
+        # This allows starting recording without the user manually pressing "Start Preview".
         if not self.camera_controller.is_running():
-            self._show_error("Start the camera preview before recording.")
-            return
-        if self._current_frame is None:
-            self._show_error("Wait for the first preview frame before recording.")
-            return
+            try:
+                settings = self._camera_settings_from_ui()
+            except ValueError as exc:
+                self._show_error(str(exc))
+                return
+            # Store active settings and start camera preview in background
+            self._active_camera_settings = settings
+            self.camera_controller.start(settings)
+            self.preview_button.setEnabled(False)
+            self.stop_preview_button.setEnabled(True)
+            self._current_frame = None
+            self._raw_frame = None
+            self._last_pose = None
+            self._dlc_active = False
+            self._camera_frame_times.clear()
+            self._last_display_time = 0.0
+            if hasattr(self, "camera_stats_label"):
+                self.camera_stats_label.setText("Camera starting…")
+            self.statusBar().showMessage("Starting camera preview…", 3000)
+            self._update_inference_buttons()
+            self._update_camera_controls_enabled()
         recording = self._recording_settings_from_ui()
         if not recording.enabled:
             self._show_error("Recording is disabled in the configuration.")
             return
+
+        # If we already have a current frame, use its shape to set the recorder stream.
+        # Otherwise start the recorder without a fixed frame_size and configure it
+        # once the first frame arrives (see _on_frame_ready).
         frame = self._current_frame
-        assert frame is not None
-        height, width = frame.shape[:2]
+        if frame is not None:
+            height, width = frame.shape[:2]
+            frame_size = (height, width)
+        else:
+            frame_size = None
+
         frame_rate = (
             self._active_camera_settings.fps
             if self._active_camera_settings is not None
             else self.camera_fps.value()
         )
+
         output_path = recording.output_path()
         self._video_recorder = VideoRecorder(
             output_path,
-            frame_size=(height, width),  # Use numpy convention: (height, width)
-            frame_rate=float(frame_rate),
+            frame_size=frame_size,  # None allowed; will be configured on first frame
+            frame_rate=float(frame_rate) if frame_rate is not None else None,
             codec=recording.codec,
             crf=recording.crf,
         )
@@ -1295,7 +1345,30 @@ class MainWindow(QMainWindow):
         frame = np.ascontiguousarray(frame)
         self._current_frame = frame
         self._track_camera_frame()
+        # If recorder is running but was started without a fixed frame_size, configure
+        # the stream now that we know the actual frame dimensions.
         if self._video_recorder and self._video_recorder.is_running:
+            # Configure stream if recorder was started without a frame_size
+            try:
+                current_frame_size = getattr(self._video_recorder, "_frame_size", None)
+            except Exception:
+                current_frame_size = None
+            if current_frame_size is None:
+                try:
+                    fps_value = (
+                        self._active_camera_settings.fps
+                        if self._active_camera_settings is not None
+                        else self.camera_fps.value()
+                    )
+                except Exception:
+                    fps_value = None
+                h, w = frame.shape[:2]
+                try:
+                    # configure_stream expects (height, width)
+                    self._video_recorder.configure_stream((h, w), float(fps_value) if fps_value is not None else None)
+                except Exception:
+                    # Non-fatal: continue and attempt to write anyway
+                    pass
             try:
                 success = self._video_recorder.write(frame, timestamp=frame_data.timestamp)
                 if not success:
@@ -1421,20 +1494,35 @@ class MainWindow(QMainWindow):
         x1 = max(x0 + 1, min(x1, width))
         y1 = max(y0 + 1, min(y1, height))
 
-        # Draw red rectangle (BGR format: red is (0, 0, 255))
-        cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 255), 2)
+        # Draw rectangle with configured color
+        cv2.rectangle(overlay, (x0, y0), (x1, y1), self._bbox_color, 2)
 
         return overlay
 
     def _draw_pose(self, frame: np.ndarray, pose: np.ndarray) -> np.ndarray:
         overlay = frame.copy()
-        for keypoint in np.asarray(pose):
+        
+        # Get the colormap from config
+        cmap = plt.get_cmap(self._colormap)
+        num_keypoints = len(np.asarray(pose))
+        
+        for idx, keypoint in enumerate(np.asarray(pose)):
             if len(keypoint) < 2:
                 continue
             x, y = keypoint[:2]
+            confidence = keypoint[2] if len(keypoint) > 2 else 1.0
             if np.isnan(x) or np.isnan(y):
                 continue
-            cv2.circle(overlay, (int(x), int(y)), 4, (0, 255, 0), -1)
+            if confidence < self._p_cutoff:
+                continue
+            
+            # Get color from colormap (cycle through 0 to 1)
+            color_normalized = idx / max(num_keypoints - 1, 1)
+            rgba = cmap(color_normalized)
+            # Convert from RGBA [0, 1] to BGR [0, 255] for OpenCV
+            bgr_color = (int(rgba[2] * 255), int(rgba[1] * 255), int(rgba[0] * 255))
+            
+            cv2.circle(overlay, (int(x), int(y)), 4, bgr_color, -1)
         return overlay
 
     def _on_dlc_initialised(self, success: bool) -> None:

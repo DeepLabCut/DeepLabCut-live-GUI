@@ -6,6 +6,7 @@ from collections import deque
 from math import acos, atan2, copysign, degrees, pi, sqrt
 from multiprocessing.connection import Listener
 from threading import Event, Thread
+from pathlib import Path
 
 import numpy as np
 from dlclive import Processor  # type: ignore
@@ -346,7 +347,9 @@ class BaseProcessor_socket(Processor):
             LOG.info(f"Saving data to {file}")
             try:
                 save_dict = self.get_data()
-                pickle.dump(save_dict, open(file, "wb"))                              
+                path2save = Path(__file__).parent.parent.parent / "data" / file
+                LOG.info(f"Path should be {path2save}")
+                pickle.dump(file, open(path2save, "wb"))                              
                 save_code = 1
             except Exception as e:
                 LOG.error(f"Save failed: {e}")
@@ -634,6 +637,7 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
         use_filter=False,
         filter_kwargs={},
         save_original=False,
+        p_cutoff=0.4,
     ):
         """
         DLC Processor with multi-client broadcasting support.
@@ -658,6 +662,8 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
         self.center_y = deque()
         self.heading_direction = deque()
         self.head_angle = deque()
+
+        self.p_cutoff = p_cutoff
 
         # Filtering
         self.use_filter = use_filter
@@ -705,7 +711,13 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
         # Calculate weighted center from head keypoints
         head_xy = xy[[0, 1, 2, 3, 5, 6, 7], :]
         head_conf = conf[[0, 1, 2, 3, 5, 6, 7]]
-        center = np.average(head_xy, axis=0, weights=head_conf)
+        # set low confidence keypoints to zero weight
+        head_conf = np.where(head_conf < self.p_cutoff, 0, head_conf)
+        try:
+            center = np.average(head_xy, axis=0, weights=head_conf)
+        except ZeroDivisionError:
+            # If all keypoints have zero weight, return without processing            
+            return pose
 
         neck = np.average(xy[[2, 3, 6, 7], :], axis=0, weights=conf[[2, 3, 6, 7]])
 
