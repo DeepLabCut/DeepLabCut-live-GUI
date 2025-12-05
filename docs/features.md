@@ -20,7 +20,7 @@
 The GUI supports four different camera backends, each optimized for different use cases:
 
 #### OpenCV Backend
-- **Platform**: Windows, Linux, macOS
+- **Platform**: Windows, Linux
 - **Best For**: Webcams, simple USB cameras
 - **Installation**: Built-in with OpenCV
 - **Limitations**: Limited exposure/gain control
@@ -32,10 +32,9 @@ The GUI supports four different camera backends, each optimized for different us
 - **Features**: Full camera control, smart device detection
 
 #### Aravis Backend
-- **Platform**: Linux (best), macOS
+- **Platform**: Linux (best)
 - **Best For**: GenICam/GigE Vision cameras
 - **Installation**: System packages (`gir1.2-aravis-0.8`)
-- **Features**: Excellent Linux support, native GigE
 
 #### Basler Backend (pypylon)
 - **Platform**: Windows, Linux, macOS
@@ -95,7 +94,6 @@ Example detection output:
 ### DLCLive Integration
 
 #### Model Support
-- **TensorFlow (Base)**: Original DeepLabCut models
 - **PyTorch**: PyTorch-exported models
 - Model selection via dropdown
 - Automatic model validation
@@ -240,63 +238,6 @@ Single JSON file contains all settings:
 - Default values for missing fields
 - Error messages for invalid entries
 - Safe fallback to defaults
-
-### Configuration Sections
-
-#### Camera Settings (`camera`)
-```json
-{
-  "name": "Camera 0",
-  "index": 0,
-  "fps": 60.0,
-  "backend": "gentl",
-  "exposure": 10000,
-  "gain": 5.0,
-  "crop_x0": 0,
-  "crop_y0": 0,
-  "crop_x1": 0,
-  "crop_y1": 0,
-  "max_devices": 3,
-  "properties": {}
-}
-```
-
-#### DLC Settings (`dlc`)
-```json
-{
-  "model_path": "/path/to/model",
-  "model_type": "base",
-  "additional_options": {
-    "resize": 0.5,
-    "processor": "cpu",
-    "pcutoff": 0.6
-  }
-}
-```
-
-#### Recording Settings (`recording`)
-```json
-{
-  "enabled": true,
-  "directory": "~/Videos/dlc",
-  "filename": "session.mp4",
-  "container": "mp4",
-  "codec": "h264_nvenc",
-  "crf": 23
-}
-```
-
-#### Bounding Box Settings (`bbox`)
-```json
-{
-  "enabled": false,
-  "x0": 0,
-  "y0": 0,
-  "x1": 200,
-  "y1": 100
-}
-```
-
 ---
 
 ## Processor System
@@ -462,21 +403,6 @@ The GUI monitors `video_recording` property and automatically starts/stops recor
 - **Dropped**: Encoding failures
 - **Format**: "1500/1502 frames | write 59.8 fps | latency 12.3 ms (avg 12.5 ms) | queue 5 (~83 ms) | dropped 2"
 
-### Performance Optimization
-
-#### Automatic Adjustments
-- Frame display throttling (25 Hz max)
-- Queue backpressure handling
-- Automatic resolution detection
-
-#### User Adjustments
-- Reduce camera FPS
-- Enable ROI cropping
-- Use hardware encoding
-- Increase CRF value
-- Disable pose visualization
-- Adjust buffer counts
-
 ---
 
 ## Advanced Features
@@ -528,38 +454,6 @@ Qt signals/slots ensure thread-safe communication.
 
 ### Extensibility
 
-#### Custom Backends
-Implement `CameraBackend` abstract class:
-```python
-class MyBackend(CameraBackend):
-    def open(self): ...
-    def read(self) -> Tuple[np.ndarray, float]: ...
-    def close(self): ...
-
-    @classmethod
-    def get_device_count(cls) -> int: ...
-```
-
-Register in `factory.py`:
-```python
-_BACKENDS = {
-    "mybackend": ("module.path", "MyBackend")
-}
-```
-
-#### Custom Processors
-Place in `processors/` directory:
-```python
-class MyProcessor:
-    def __init__(self, **kwargs):
-        # Initialize
-        pass
-
-    def process(self, pose, timestamp):
-        # Process pose
-        pass
-```
-
 ### Debugging Features
 
 #### Logging
@@ -567,58 +461,7 @@ class MyProcessor:
 - Frame acquisition logging
 - Performance warnings
 - Connection status
-
-#### Development Mode
-- Syntax validation: `python -m compileall dlclivegui`
-- Type checking: `mypy dlclivegui`
-- Test files included
-
 ---
-
-## Use Case Examples
-
-### High-Speed Behavior Tracking
-
-**Setup**:
-- Camera: GenTL industrial camera @ 120 FPS
-- Codec: h264_nvenc (GPU encoding)
-- Crop: Region of interest only
-- DLC: PyTorch model on GPU
-
-**Settings**:
-```json
-{
-  "camera": {"fps": 120, "crop_x0": 200, "crop_y0": 100, "crop_x1": 800, "crop_y1": 600},
-  "recording": {"codec": "h264_nvenc", "crf": 28},
-  "dlc": {"additional_options": {"processor": "gpu", "resize": 0.5}}
-}
-```
-
-### Event-Triggered Recording
-
-**Setup**:
-- Processor: Socket processor with auto-record
-- Trigger: Remote computer sends START/STOP commands
-- Session naming: Unique per trial
-
-**Workflow**:
-1. Enable "Auto-record video on processor command"
-2. Start preview and inference
-3. Remote system connects via socket
-4. Sends `START_RECORDING:trial_001` → recording starts
-5. Sends `STOP_RECORDING` → recording stops
-6. Files saved as `trial_001.mp4`
-
-### Multi-Camera Synchronization
-
-**Setup**:
-- Multiple GUI instances
-- Shared trigger signal
-- Synchronized filenames
-
-**Configuration**:
-Each instance with different camera index but same settings template.
-
 ---
 
 ## Keyboard Shortcuts
@@ -627,27 +470,4 @@ Each instance with different camera index but same settings template.
 - **Ctrl+S**: Save configuration
 - **Ctrl+Shift+S**: Save configuration as
 - **Ctrl+Q**: Quit application
-
 ---
-
-## Platform-Specific Notes
-
-### Windows
-- Best GenTL support (vendor CTI files)
-- NVENC highly recommended
-- DirectShow backend for webcams
-
-### Linux
-- Best Aravis support (native GigE)
-- V4L2 backend for webcams
-- NVENC available with proprietary drivers
-
-### macOS
-- Limited industrial camera support
-- Aravis via Homebrew
-- Software encoding recommended
-
-### NVIDIA Jetson
-- Optimized for edge deployment
-- Hardware encoding available
-- Some Aravis compatibility issues
