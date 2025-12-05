@@ -1,4 +1,4 @@
-# DLC Processor Plugin System
+# DeepLabCut Processor Plugin System
 
 This folder contains a plugin-style architecture for DLC processors that allows GUI tools to discover and instantiate processors dynamically.
 
