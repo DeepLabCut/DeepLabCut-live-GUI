@@ -67,7 +67,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config: Optional[ApplicationSettings] = None):
         super().__init__()
         self.setWindowTitle("DeepLabCut Live GUI")
-        
+
         # Try to load myconfig.json from the application directory if no config provided
         if config is None:
             myconfig_path = Path(__file__).parent.parent / "myconfig.json"
@@ -85,7 +85,7 @@ class MainWindow(QMainWindow):
                 self._config_path = None
         else:
             self._config_path = None
-        
+
         self._config = config
         self._current_frame: Optional[np.ndarray] = None
         self._raw_frame: Optional[np.ndarray] = None
@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
         self._bbox_x1 = 0
         self._bbox_y1 = 0
         self._bbox_enabled = False
-        
+
         # Visualization settings (will be updated from config)
         self._p_cutoff = 0.6
         self._colormap = "hot"
@@ -130,10 +130,12 @@ class MainWindow(QMainWindow):
         self._metrics_timer.timeout.connect(self._update_metrics)
         self._metrics_timer.start()
         self._update_metrics()
-        
+
         # Show status message if myconfig.json was loaded
         if self._config_path and self._config_path.name == "myconfig.json":
-            self.statusBar().showMessage(f"Auto-loaded configuration from {self._config_path}", 5000)
+            self.statusBar().showMessage(
+                f"Auto-loaded configuration from {self._config_path}", 5000
+            )
 
     # ------------------------------------------------------------------ UI
     def _setup_ui(self) -> None:
@@ -144,14 +146,14 @@ class MainWindow(QMainWindow):
         video_panel = QWidget()
         video_layout = QVBoxLayout(video_panel)
         video_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # Video display widget
         self.video_label = QLabel("Camera preview not started")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumSize(640, 360)
         self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         video_layout.addWidget(self.video_label)
-        
+
         # Stats panel below video with clear labels
         stats_widget = QWidget()
         stats_widget.setStyleSheet("padding: 5px;")
@@ -159,7 +161,7 @@ class MainWindow(QMainWindow):
         stats_layout = QVBoxLayout(stats_widget)
         stats_layout.setContentsMargins(5, 5, 5, 5)
         stats_layout.setSpacing(3)
-        
+
         # Camera throughput stats
         camera_stats_container = QHBoxLayout()
         camera_stats_label_title = QLabel("<b>Camera:</b>")
@@ -169,7 +171,7 @@ class MainWindow(QMainWindow):
         camera_stats_container.addWidget(self.camera_stats_label)
         camera_stats_container.addStretch(1)
         stats_layout.addLayout(camera_stats_container)
-        
+
         # DLC processor stats
         dlc_stats_container = QHBoxLayout()
         dlc_stats_label_title = QLabel("<b>DLC Processor:</b>")
@@ -179,7 +181,7 @@ class MainWindow(QMainWindow):
         dlc_stats_container.addWidget(self.dlc_stats_label)
         dlc_stats_container.addStretch(1)
         stats_layout.addLayout(dlc_stats_container)
-        
+
         # Video recorder stats
         recorder_stats_container = QHBoxLayout()
         recorder_stats_label_title = QLabel("<b>Recorder:</b>")
@@ -189,7 +191,7 @@ class MainWindow(QMainWindow):
         recorder_stats_container.addWidget(self.recording_stats_label)
         recorder_stats_container.addStretch(1)
         stats_layout.addLayout(recorder_stats_container)
-        
+
         video_layout.addWidget(stats_widget)
 
         # Controls panel with fixed width to prevent shifting
@@ -560,7 +562,7 @@ class MainWindow(QMainWindow):
         self.bbox_y0_spin.setValue(bbox.y0)
         self.bbox_x1_spin.setValue(bbox.x1)
         self.bbox_y1_spin.setValue(bbox.y1)
-        
+
         # Set visualization settings from config
         viz = config.visualization
         self._p_cutoff = viz.p_cutoff
@@ -792,7 +794,10 @@ class MainWindow(QMainWindow):
 
     def _action_browse_model(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select DLCLive model file", PATH2MODELS, "Model files (*.pt *.pb);;All files (*.*)"
+            self,
+            "Select DLCLive model file",
+            PATH2MODELS,
+            "Model files (*.pt *.pb);;All files (*.*)",
         )
         if file_path:
             self.model_path_edit.setText(file_path)
@@ -1067,7 +1072,7 @@ class MainWindow(QMainWindow):
         enqueue = stats.frames_enqueued
         processed = stats.frames_processed
         dropped = stats.frames_dropped
-        
+
         # Add profiling info if available
         profile_info = ""
         if stats.avg_inference_time > 0:
@@ -1075,19 +1080,19 @@ class MainWindow(QMainWindow):
             queue_ms = stats.avg_queue_wait * 1000.0
             signal_ms = stats.avg_signal_emit_time * 1000.0
             total_ms = stats.avg_total_process_time * 1000.0
-            
+
             # Add GPU vs processor breakdown if available
             gpu_breakdown = ""
             if stats.avg_gpu_inference_time > 0 or stats.avg_processor_overhead > 0:
                 gpu_ms = stats.avg_gpu_inference_time * 1000.0
                 proc_ms = stats.avg_processor_overhead * 1000.0
                 gpu_breakdown = f" (GPU:{gpu_ms:.1f}ms+proc:{proc_ms:.1f}ms)"
-            
+
             profile_info = (
                 f"\n[Profile] inf:{inf_ms:.1f}ms{gpu_breakdown} queue:{queue_ms:.1f}ms "
                 f"signal:{signal_ms:.1f}ms total:{total_ms:.1f}ms"
             )
-        
+
         return (
             f"{processed}/{enqueue} frames | inference {processing_fps:.1f} fps | "
             f"latency {latency_ms:.1f} ms (avg {avg_ms:.1f} ms) | "
@@ -1365,7 +1370,9 @@ class MainWindow(QMainWindow):
                 h, w = frame.shape[:2]
                 try:
                     # configure_stream expects (height, width)
-                    self._video_recorder.configure_stream((h, w), float(fps_value) if fps_value is not None else None)
+                    self._video_recorder.configure_stream(
+                        (h, w), float(fps_value) if fps_value is not None else None
+                    )
                 except Exception:
                     # Non-fatal: continue and attempt to write anyway
                     pass
@@ -1501,11 +1508,11 @@ class MainWindow(QMainWindow):
 
     def _draw_pose(self, frame: np.ndarray, pose: np.ndarray) -> np.ndarray:
         overlay = frame.copy()
-        
+
         # Get the colormap from config
         cmap = plt.get_cmap(self._colormap)
         num_keypoints = len(np.asarray(pose))
-        
+
         for idx, keypoint in enumerate(np.asarray(pose)):
             if len(keypoint) < 2:
                 continue
@@ -1515,13 +1522,13 @@ class MainWindow(QMainWindow):
                 continue
             if confidence < self._p_cutoff:
                 continue
-            
+
             # Get color from colormap (cycle through 0 to 1)
             color_normalized = idx / max(num_keypoints - 1, 1)
             rgba = cmap(color_normalized)
             # Convert from RGBA [0, 1] to BGR [0, 255] for OpenCV
             bgr_color = (int(rgba[2] * 255), int(rgba[1] * 255), int(rgba[0] * 255))
-            
+
             cv2.circle(overlay, (int(x), int(y)), 4, bgr_color, -1)
         return overlay
 

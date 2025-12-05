@@ -13,7 +13,7 @@ import numpy as np
 from .base import CameraBackend
 
 try:  # pragma: no cover - optional dependency
-    from harvesters.core import Harvester # type: ignore
+    from harvesters.core import Harvester  # type: ignore
 
     try:
         from harvesters.core import HarvesterTimeoutError  # type: ignore
@@ -238,23 +238,23 @@ class GenTLCameraBackend(CameraBackend):
 
     def _parse_resolution(self, resolution) -> Optional[Tuple[int, int]]:
         """Parse resolution setting.
-        
+
         Args:
             resolution: Can be a tuple/list [width, height], or None
-        
+
         Returns:
             Tuple of (width, height) or None if not specified
             Default is (720, 540) if parsing fails but value is provided
         """
         if resolution is None:
             return (720, 540)  # Default resolution
-        
+
         if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
             try:
                 return (int(resolution[0]), int(resolution[1]))
             except (ValueError, TypeError):
                 return (720, 540)
-        
+
         return (720, 540)
 
     @staticmethod
@@ -346,9 +346,9 @@ class GenTLCameraBackend(CameraBackend):
         """Configure camera resolution (width and height)."""
         if self._resolution is None:
             return
-        
+
         width, height = self._resolution
-        
+
         # Try to set width
         for width_attr in ("Width", "WidthMax"):
             try:
@@ -358,7 +358,7 @@ class GenTLCameraBackend(CameraBackend):
                     try:
                         min_w = node.min
                         max_w = node.max
-                        inc_w = getattr(node, 'inc', 1)
+                        inc_w = getattr(node, "inc", 1)
                         # Adjust to valid value
                         width = self._adjust_to_increment(width, min_w, max_w, inc_w)
                         node.value = int(width)
@@ -372,7 +372,7 @@ class GenTLCameraBackend(CameraBackend):
                             continue
             except AttributeError:
                 continue
-        
+
         # Try to set height
         for height_attr in ("Height", "HeightMax"):
             try:
@@ -382,7 +382,7 @@ class GenTLCameraBackend(CameraBackend):
                     try:
                         min_h = node.min
                         max_h = node.max
-                        inc_h = getattr(node, 'inc', 1)
+                        inc_h = getattr(node, "inc", 1)
                         # Adjust to valid value
                         height = self._adjust_to_increment(height, min_h, max_h, inc_h)
                         node.value = int(height)

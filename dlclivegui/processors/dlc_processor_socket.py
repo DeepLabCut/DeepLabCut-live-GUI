@@ -5,8 +5,8 @@ import time
 from collections import deque
 from math import acos, atan2, copysign, degrees, pi, sqrt
 from multiprocessing.connection import Listener
-from threading import Event, Thread
 from pathlib import Path
+from threading import Event, Thread
 
 import numpy as np
 from dlclive import Processor  # type: ignore
@@ -229,10 +229,10 @@ class BaseProcessor_socket(Processor):
         elif cmd == "set_filter":
             # Handle filter enable/disable (subclasses override if they support filtering)
             use_filter = msg.get("use_filter", False)
-            if hasattr(self, 'use_filter'):
+            if hasattr(self, "use_filter"):
                 self.use_filter = bool(use_filter)
                 # Reset filters to reinitialize with new setting
-                if hasattr(self, 'filters'):
+                if hasattr(self, "filters"):
                     self.filters = None
                 LOG.info(f"Filtering {'enabled' if use_filter else 'disabled'}")
             else:
@@ -241,11 +241,11 @@ class BaseProcessor_socket(Processor):
         elif cmd == "set_filter_params":
             # Handle filter parameter updates (subclasses override if they support filtering)
             filter_kwargs = msg.get("filter_kwargs", {})
-            if hasattr(self, 'filter_kwargs'):
+            if hasattr(self, "filter_kwargs"):
                 # Update filter parameters
                 self.filter_kwargs.update(filter_kwargs)
                 # Reset filters to reinitialize with new parameters
-                if hasattr(self, 'filters'):
+                if hasattr(self, "filters"):
                     self.filters = None
                 LOG.info(f"Filter parameters updated: {filter_kwargs}")
             else:
@@ -315,10 +315,10 @@ class BaseProcessor_socket(Processor):
     def stop(self):
         """Stop the processor and close all connections."""
         LOG.info("Stopping processor...")
-        
+
         # Signal stop to all threads
         self._stop.set()
-        
+
         # Close all client connections first
         for c in list(self.conns):
             try:
@@ -326,18 +326,18 @@ class BaseProcessor_socket(Processor):
             except Exception:
                 pass
             self.conns.discard(c)
-        
+
         # Close the listener socket
-        if hasattr(self, 'listener') and self.listener:
+        if hasattr(self, "listener") and self.listener:
             try:
                 self.listener.close()
             except Exception as e:
                 LOG.debug(f"Error closing listener: {e}")
-        
+
         # Give the OS time to release the socket on Windows
         # This prevents WinError 10048 when restarting
         time.sleep(0.1)
-        
+
         LOG.info("Processor stopped, all connections closed")
 
     def save(self, file=None):
@@ -349,7 +349,7 @@ class BaseProcessor_socket(Processor):
                 save_dict = self.get_data()
                 path2save = Path(__file__).parent.parent.parent / "data" / file
                 LOG.info(f"Path should be {path2save}")
-                pickle.dump(save_dict, open(path2save, "wb"))                              
+                pickle.dump(save_dict, open(path2save, "wb"))
                 save_code = 1
             except Exception as e:
                 LOG.error(f"Save failed: {e}")
@@ -577,7 +577,7 @@ class MyProcessor_socket(BaseProcessor_socket):
         save_dict["filter_kwargs"] = self.filter_kwargs
 
         return save_dict
-    
+
 
 class MyProcessorTorchmodels_socket(BaseProcessor_socket):
     """
@@ -716,7 +716,7 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
         try:
             center = np.average(head_xy, axis=0, weights=head_conf)
         except ZeroDivisionError:
-            # If all keypoints have zero weight, return without processing            
+            # If all keypoints have zero weight, return without processing
             return pose
 
         neck = np.average(xy[[2, 3, 6, 7], :], axis=0, weights=conf[[2, 3, 6, 7]])
@@ -797,7 +797,6 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
         save_dict["filter_kwargs"] = self.filter_kwargs
 
         return save_dict
-    
 
 
 # Register processors for GUI discovery

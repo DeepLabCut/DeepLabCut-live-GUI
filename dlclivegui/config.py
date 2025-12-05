@@ -140,7 +140,9 @@ class ApplicationSettings:
         recording = RecordingSettings(**recording_data)
         bbox = BoundingBoxSettings(**data.get("bbox", {}))
         visualization = VisualizationSettings(**data.get("visualization", {}))
-        return cls(camera=camera, dlc=dlc, recording=recording, bbox=bbox, visualization=visualization)
+        return cls(
+            camera=camera, dlc=dlc, recording=recording, bbox=bbox, visualization=visualization
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise the configuration to a dictionary."""

@@ -83,37 +83,37 @@ class OpenCVCameraBackend(CameraBackend):
 
     def _parse_resolution(self, resolution) -> Tuple[int, int]:
         """Parse resolution setting.
-        
+
         Args:
             resolution: Can be a tuple/list [width, height], or None
-        
+
         Returns:
             Tuple of (width, height), defaults to (720, 540)
         """
         if resolution is None:
             return (720, 540)  # Default resolution
-        
+
         if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
             try:
                 return (int(resolution[0]), int(resolution[1]))
             except (ValueError, TypeError):
                 return (720, 540)
-        
+
         return (720, 540)
 
     def _configure_capture(self) -> None:
         if self._capture is None:
             return
-        
+
         # Set resolution (width x height)
         width, height = self._resolution
         self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
         self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
-        
+
         # Set FPS if specified
         if self.settings.fps:
             self._capture.set(cv2.CAP_PROP_FPS, float(self.settings.fps))
-        
+
         # Set any additional properties from the properties dict
         for prop, value in self.settings.properties.items():
             if prop in ("api", "resolution"):
@@ -123,7 +123,7 @@ class OpenCVCameraBackend(CameraBackend):
             except (TypeError, ValueError):
                 continue
             self._capture.set(prop_id, float(value))
-        
+
         # Update actual FPS from camera
         actual_fps = self._capture.get(cv2.CAP_PROP_FPS)
         if actual_fps:

@@ -80,7 +80,7 @@ class DLCLiveProcessor(QObject):
         self._latencies: deque[float] = deque(maxlen=60)
         self._processing_times: deque[float] = deque(maxlen=60)
         self._stats_lock = threading.Lock()
-        
+
         # Profiling metrics
         self._queue_wait_times: deque[float] = deque(maxlen=60)
         self._inference_times: deque[float] = deque(maxlen=60)
@@ -153,14 +153,38 @@ class DLCLiveProcessor(QObject):
                 )
             else:
                 processing_fps = 0.0
-            
+
             # Profiling metrics
-            avg_queue_wait = sum(self._queue_wait_times) / len(self._queue_wait_times) if self._queue_wait_times else 0.0
-            avg_inference = sum(self._inference_times) / len(self._inference_times) if self._inference_times else 0.0
-            avg_signal_emit = sum(self._signal_emit_times) / len(self._signal_emit_times) if self._signal_emit_times else 0.0
-            avg_total = sum(self._total_process_times) / len(self._total_process_times) if self._total_process_times else 0.0
-            avg_gpu = sum(self._gpu_inference_times) / len(self._gpu_inference_times) if self._gpu_inference_times else 0.0
-            avg_proc_overhead = sum(self._processor_overhead_times) / len(self._processor_overhead_times) if self._processor_overhead_times else 0.0
+            avg_queue_wait = (
+                sum(self._queue_wait_times) / len(self._queue_wait_times)
+                if self._queue_wait_times
+                else 0.0
+            )
+            avg_inference = (
+                sum(self._inference_times) / len(self._inference_times)
+                if self._inference_times
+                else 0.0
+            )
+            avg_signal_emit = (
+                sum(self._signal_emit_times) / len(self._signal_emit_times)
+                if self._signal_emit_times
+                else 0.0
+            )
+            avg_total = (
+                sum(self._total_process_times) / len(self._total_process_times)
+                if self._total_process_times
+                else 0.0
+            )
+            avg_gpu = (
+                sum(self._gpu_inference_times) / len(self._gpu_inference_times)
+                if self._gpu_inference_times
+                else 0.0
+            )
+            avg_proc_overhead = (
+                sum(self._processor_overhead_times) / len(self._processor_overhead_times)
+                if self._processor_overhead_times
+                else 0.0
+            )
 
             return ProcessorStats(
                 frames_enqueued=self._frames_enqueued,
@@ -229,28 +253,30 @@ class DLCLiveProcessor(QObject):
             }
             # todo expose more parameters from settings
             self._dlc = DLCLive(**options)
-            
+
             init_inference_start = time.perf_counter()
             self._dlc.init_inference(init_frame)
             init_inference_time = time.perf_counter() - init_inference_start
-            
+
             self._initialized = True
             self.initialized.emit(True)
-            
+
             total_init_time = time.perf_counter() - init_start
-            LOGGER.info(f"DLCLive model initialized successfully (total: {total_init_time:.3f}s, init_inference: {init_inference_time:.3f}s)")
+            LOGGER.info(
+                f"DLCLive model initialized successfully (total: {total_init_time:.3f}s, init_inference: {init_inference_time:.3f}s)"
+            )
 
             # Process the initialization frame
             enqueue_time = time.perf_counter()
-            
+
             inference_start = time.perf_counter()
             pose = self._dlc.get_pose(init_frame, frame_time=init_timestamp)
             inference_time = time.perf_counter() - inference_start
-            
+
             signal_start = time.perf_counter()
             self.pose_ready.emit(PoseResult(pose=pose, timestamp=init_timestamp))
             signal_time = time.perf_counter() - signal_start
-            
+
             process_time = time.perf_counter()
 
             with self._stats_lock:
@@ -271,7 +297,7 @@ class DLCLiveProcessor(QObject):
         frame_count = 0
         while not self._stop_event.is_set():
             loop_start = time.perf_counter()
-            
+
             # Time spent waiting for queue
             queue_wait_start = time.perf_counter()
             try:
@@ -284,30 +310,30 @@ class DLCLiveProcessor(QObject):
                 break
 
             frame, timestamp, enqueue_time = item
-            
+
             try:
                 # Time the inference - we need to separate GPU from processor overhead
                 # If processor exists, wrap its process method to time it separately
                 processor_overhead_time = 0.0
                 gpu_inference_time = 0.0
-                
+
                 if self._processor is not None:
                     # Wrap processor.process() to time it
                     original_process = self._processor.process
                     processor_time_holder = [0.0]  # Use list to allow modification in nested scope
-                    
+
                     def timed_process(pose, **kwargs):
                         proc_start = time.perf_counter()
                         result = original_process(pose, **kwargs)
                         processor_time_holder[0] = time.perf_counter() - proc_start
                         return result
-                    
+
                     self._processor.process = timed_process
-                
+
                 inference_start = time.perf_counter()
                 pose = self._dlc.get_pose(frame, frame_time=timestamp)
                 inference_time = time.perf_counter() - inference_start
-                
+
                 if self._processor is not None:
                     # Restore original process method
                     self._processor.process = original_process
@@ -321,7 +347,7 @@ class DLCLiveProcessor(QObject):
                 signal_start = time.perf_counter()
                 self.pose_ready.emit(PoseResult(pose=pose, timestamp=timestamp))
                 signal_time = time.perf_counter() - signal_start
-                
+
                 end_process = time.perf_counter()
                 total_process_time = end_process - loop_start
                 latency = end_process - enqueue_time
@@ -330,7 +356,7 @@ class DLCLiveProcessor(QObject):
                     self._frames_processed += 1
                     self._latencies.append(latency)
                     self._processing_times.append(end_process)
-                    
+
                     if ENABLE_PROFILING:
                         self._queue_wait_times.append(queue_wait_time)
                         self._inference_times.append(inference_time)
@@ -338,7 +364,7 @@ class DLCLiveProcessor(QObject):
                         self._total_process_times.append(total_process_time)
                         self._gpu_inference_times.append(gpu_inference_time)
                         self._processor_overhead_times.append(processor_overhead_time)
-                
+
                 # Log profiling every 100 frames
                 frame_count += 1
                 if ENABLE_PROFILING and frame_count % 100 == 0:
@@ -351,7 +377,7 @@ class DLCLiveProcessor(QObject):
                         f"total={total_process_time*1000:.2f}ms, "
                         f"latency={latency*1000:.2f}ms"
                     )
-                    
+
             except Exception as exc:
                 LOGGER.exception("Pose inference failed", exc_info=exc)
                 self.error.emit(str(exc))
