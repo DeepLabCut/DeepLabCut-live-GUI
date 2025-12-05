@@ -686,29 +686,6 @@ class MainWindow(QMainWindow):
                 self.camera_index.setEditText("")
         self.camera_index.blockSignals(False)
 
-    def _select_camera_by_index(self, index: int, fallback_text: Optional[str] = None) -> None:
-        self.camera_index.blockSignals(True)
-        for row in range(self.camera_index.count()):
-            if self.camera_index.itemData(row) == index:
-                self.camera_index.setCurrentIndex(row)
-                break
-        else:
-            text = fallback_text if fallback_text is not None else str(index)
-            self.camera_index.setEditText(text)
-        self.camera_index.blockSignals(False)
-
-    def _current_camera_index_value(self) -> Optional[int]:
-        data = self.camera_index.currentData()
-        if isinstance(data, int):
-            return data
-        text = self.camera_index.currentText().strip()
-        if not text:
-            return None
-        try:
-            return int(text)
-        except ValueError:
-            return None
-
     def _parse_json(self, value: str) -> dict:
         text = value.strip()
         if not text:
