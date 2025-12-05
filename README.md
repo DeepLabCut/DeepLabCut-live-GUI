@@ -22,7 +22,7 @@ A modern PyQt6 GUI for running [DeepLabCut-live](https://github.com/DeepLabCut/D
 - **Live Preview**: Real-time camera feed with rotation support (0°, 90°, 180°, 270°)
 
 ### DLCLive Features
-- **Model Support**: TensorFlow (base) and PyTorch models
+- **Model Support**: Only PyTorch models! (in theory also tensorflow models work)
 - **Processor System**: Plugin architecture for custom pose processing
 - **Auto-Recording**: Automatic video recording triggered by processor commands
 - **Performance Metrics**: Real-time FPS, latency, and queue monitoring
@@ -141,11 +141,7 @@ The GUI uses a single JSON configuration file containing all experiment settings
   },
   "dlc": {
     "model_path": "/path/to/exported-model",
-    "model_type": "base",
-    "additional_options": {
-      "resize": 0.5,
-      "processor": "cpu"
-    }
+    "model_type": "pytorch",
   },
   "recording": {
     "enabled": true,
@@ -206,34 +202,11 @@ All GUI fields are automatically synchronized with the configuration file.
     "index": 0,
     "fps": 60.0,
     "exposure": 15000,
-    "gain": 8.0,
-    "properties": {
-      "cti_file": "C:\\Path\\To\\Producer.cti",
-      "serial_number": "12345678",
-      "pixel_format": "Mono8"
-    }
+    "gain": 8.0,    
   }
 }
 ```
 
-#### Aravis
-```json
-{
-  "camera": {
-    "backend": "aravis",
-    "index": 0,
-    "fps": 60.0,
-    "exposure": 10000,
-    "gain": 5.0,
-    "properties": {
-      "camera_id": "TheImagingSource-12345678",
-      "pixel_format": "Mono8",
-      "n_buffers": 10,
-      "timeout": 2000000
-    }
-  }
-}
-```
 
 See [Camera Backend Documentation](docs/camera_support.md) for detailed setup instructions.
 
@@ -241,10 +214,9 @@ See [Camera Backend Documentation](docs/camera_support.md) for detailed setup in
 
 ### Model Types
 
-The GUI supports both TensorFlow and PyTorch DLCLive models:
+The GUI supports PyTorch DLCLive models:
 
-1. **Base (TensorFlow)**: Original DLC models exported for live inference
-2. **PyTorch**: PyTorch-based models (requires PyTorch installation)
+1. **PyTorch**: PyTorch-based models (requires PyTorch installation)
 
 Select the model type from the dropdown before starting inference.
 
@@ -284,15 +256,6 @@ Enable "Auto-record video on processor command" to automatically start/stop reco
 4. **Disable Visualization**: Uncheck "Display pose predictions" during recording
 5. **Crop Region**: Use cropping to reduce frame size before inference
 
-### Recommended Settings by FPS
-
-| FPS Range | Codec | CRF | Buffers | Notes |
-|-----------|-------|-----|---------|-------|
-| 30-60 | libx264 | 23 | 10 | Standard quality |
-| 60-120 | h264_nvenc | 23 | 15 | GPU encoding |
-| 120-200 | h264_nvenc | 28 | 20 | Higher compression |
-| 200+ | h264_nvenc | 30 | 30 | Max performance |
-
 ### Project Structure
 
 ```
@@ -314,26 +277,6 @@ dlclivegui/
     ├── processor_utils.py
     └── dlc_processor_socket.py
 ```
-
-### Running Tests
-
-```bash
-# Syntax check
-python -m compileall dlclivegui
-
-# Type checking (optional)
-mypy dlclivegui
-
-```
-
-### Adding New Camera Backends
-
-1. Create new backend inheriting from `CameraBackend`
-2. Implement required methods: `open()`, `read()`, `close()`
-3. Optional: Implement `get_device_count()` for smart detection
-4. Register in `cameras/factory.py`
-
-See [Camera Backend Development](docs/camera_support.md) for detailed instructions.
 
 
 ## Documentation
