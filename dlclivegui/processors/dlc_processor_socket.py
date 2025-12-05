@@ -349,7 +349,7 @@ class BaseProcessor_socket(Processor):
                 save_dict = self.get_data()
                 path2save = Path(__file__).parent.parent.parent / "data" / file
                 LOG.info(f"Path should be {path2save}")
-                pickle.dump(file, open(path2save, "wb"))                              
+                pickle.dump(save_dict, open(path2save, "wb"))                              
                 save_code = 1
             except Exception as e:
                 LOG.error(f"Save failed: {e}")

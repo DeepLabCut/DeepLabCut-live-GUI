@@ -27,14 +27,14 @@ logger = logging.getLogger(__name__)
 class RecorderStats:
     """Snapshot of recorder throughput metrics."""
 
-    frames_enqueued: int
-    frames_written: int
-    dropped_frames: int
-    queue_size: int
-    average_latency: float
-    last_latency: float
-    write_fps: float
-    buffer_seconds: float
+    frames_enqueued: int = 0
+    frames_written: int = 0
+    dropped_frames: int = 0
+    queue_size: int = 0
+    average_latency: float = 0.0
+    last_latency: float = 0.0
+    write_fps: float = 0.0
+    buffer_seconds: float = 0.0
 
 
 _SENTINEL = object()
