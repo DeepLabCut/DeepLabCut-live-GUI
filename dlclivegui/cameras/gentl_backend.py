@@ -42,8 +42,11 @@ class GenTLCameraBackend(CameraBackend):
         self._pixel_format: str = props.get("pixel_format", "Mono8")
         self._rotate: int = int(props.get("rotate", 0)) % 360
         self._crop: Optional[Tuple[int, int, int, int]] = self._parse_crop(props.get("crop"))
-        self._exposure: Optional[float] = props.get("exposure")
-        self._gain: Optional[float] = props.get("gain")
+        # Check settings first (from config), then properties (for backward compatibility)
+        self._exposure: Optional[float] = (
+            settings.exposure if settings.exposure else props.get("exposure")
+        )
+        self._gain: Optional[float] = settings.gain if settings.gain else props.get("gain")
         self._timeout: float = float(props.get("timeout", 2.0))
         self._cti_search_paths: Tuple[str, ...] = self._parse_cti_paths(
             props.get("cti_search_paths")
