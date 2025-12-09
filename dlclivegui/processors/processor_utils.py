@@ -10,7 +10,7 @@ def load_processors_from_file(file_path):
     Args:
         file_path: Path to Python file containing processors
 
-    Returns:/home/as153/work_geneva/mice_ar_tasks/mouse_ar/ctrl/dlc_processors/GUI_INTEGRATION.md
+    Returns:
         dict: Dictionary of available processors
     """
     # Load module from file
