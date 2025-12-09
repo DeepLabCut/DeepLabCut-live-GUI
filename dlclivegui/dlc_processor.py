@@ -247,11 +247,13 @@ class DLCLiveProcessor(QObject):
                 "model_path": self._settings.model_path,
                 "model_type": self._settings.model_type,
                 "processor": self._processor,
-                "dynamic": [False, 0.5, 10],
-                "resize": 1.0,
-                "precision": "FP32",
+                "dynamic": list(self._settings.dynamic),
+                "resize": self._settings.resize,
+                "precision": self._settings.precision,
             }
-            # todo expose more parameters from settings
+            # Add device if specified in settings
+            if self._settings.device is not None:
+                options["device"] = self._settings.device
             self._dlc = DLCLive(**options)
 
             init_inference_start = time.perf_counter()

@@ -202,7 +202,7 @@ All GUI fields are automatically synchronized with the configuration file.
     "index": 0,
     "fps": 60.0,
     "exposure": 15000,
-    "gain": 8.0,    
+    "gain": 8.0,
   }
 }
 ```

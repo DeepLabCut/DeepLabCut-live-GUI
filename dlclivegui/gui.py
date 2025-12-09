@@ -54,11 +54,7 @@ from dlclivegui.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStat
 from dlclivegui.processors.processor_utils import instantiate_from_scan, scan_processor_folder
 from dlclivegui.video_recorder import RecorderStats, VideoRecorder
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-
 logging.basicConfig(level=logging.INFO)
-
-PATH2MODELS = "C:\\Users\\User\\Repos\\DeepLabCut-live-GUI\\dlc_training\\dlclive"
 
 
 class MainWindow(QMainWindow):
@@ -695,6 +691,11 @@ class MainWindow(QMainWindow):
     def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
         return DLCProcessorSettings(
             model_path=self.model_path_edit.text().strip(),
+            model_directory=self._config.dlc.model_directory,  # Preserve from config
+            device=self._config.dlc.device,  # Preserve from config
+            dynamic=self._config.dlc.dynamic,  # Preserve from config
+            resize=self._config.dlc.resize,  # Preserve from config
+            precision=self._config.dlc.precision,  # Preserve from config
             model_type="pytorch",
             additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
         )
@@ -770,10 +771,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Saved configuration to {path}", 5000)
 
     def _action_browse_model(self) -> None:
+        # Use model_directory from config, default to current directory
+        start_dir = self._config.dlc.model_directory or "."
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select DLCLive model file",
-            PATH2MODELS,
+            start_dir,
             "Model files (*.pt *.pb);;All files (*.*)",
         )
         if file_path:

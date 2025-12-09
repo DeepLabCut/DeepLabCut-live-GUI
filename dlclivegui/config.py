@@ -49,6 +49,11 @@ class DLCProcessorSettings:
     """Configuration for DLCLive processing."""
 
     model_path: str = ""
+    model_directory: str = "."  # Default directory for model browser (current dir if not set)
+    device: Optional[str] = None  # Device for inference (e.g., "cuda:0", "cpu"). None = auto
+    dynamic: tuple = (False, 0.5, 10)  # Dynamic cropping: (enabled, margin, max_missing_frames)
+    resize: float = 1.0  # Resize factor for input frames
+    precision: str = "FP32"  # Inference precision ("FP32", "FP16")
     additional_options: Dict[str, Any] = field(default_factory=dict)
     model_type: str = "pytorch"  # Only PyTorch models are supported
 
@@ -131,8 +136,19 @@ class ApplicationSettings:
 
         camera = CameraSettings(**data.get("camera", {})).apply_defaults()
         dlc_data = dict(data.get("dlc", {}))
+        # Parse dynamic parameter - can be list or tuple in JSON
+        dynamic_raw = dlc_data.get("dynamic", [False, 0.5, 10])
+        if isinstance(dynamic_raw, (list, tuple)) and len(dynamic_raw) == 3:
+            dynamic = tuple(dynamic_raw)
+        else:
+            dynamic = (False, 0.5, 10)
         dlc = DLCProcessorSettings(
             model_path=str(dlc_data.get("model_path", "")),
+            model_directory=str(dlc_data.get("model_directory", ".")),
+            device=dlc_data.get("device"),  # None if not specified
+            dynamic=dynamic,
+            resize=float(dlc_data.get("resize", 1.0)),
+            precision=str(dlc_data.get("precision", "FP32")),
             additional_options=dict(dlc_data.get("additional_options", {})),
         )
         recording_data = dict(data.get("recording", {}))
