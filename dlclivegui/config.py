@@ -50,7 +50,7 @@ class DLCProcessorSettings:
 
     model_path: str = ""
     model_directory: str = "."  # Default directory for model browser (current dir if not set)
-    device: Optional[str] = None  # Device for inference (e.g., "cuda:0", "cpu"). None = auto
+    device: Optional[str] = "auto"  # Device for inference (e.g., "cuda:0", "cpu"). None should be auto, but might default to cpu
     dynamic: tuple = (False, 0.5, 10)  # Dynamic cropping: (enabled, margin, max_missing_frames)
     resize: float = 1.0  # Resize factor for input frames
     precision: str = "FP32"  # Inference precision ("FP32", "FP16")

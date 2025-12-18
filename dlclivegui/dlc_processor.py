@@ -251,6 +251,7 @@ class DLCLiveProcessor(QObject):
                 "dynamic": list(self._settings.dynamic),
                 "resize": self._settings.resize,
                 "precision": self._settings.precision,
+                "single_animal": self._settings.single_animal,
             }
             # Add device if specified in settings
             if self._settings.device is not None:
