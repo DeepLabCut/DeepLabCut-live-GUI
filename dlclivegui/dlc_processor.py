@@ -22,7 +22,8 @@ ENABLE_PROFILING = True
 
 try:  # pragma: no cover - optional dependency
     from dlclive import DLCLive  # type: ignore
-except Exception:  # pragma: no cover - handled gracefully
+except Exception as e:  # pragma: no cover - handled gracefully
+    LOGGER.error(f"dlclive package could not be imported: {e}")
     DLCLive = None  # type: ignore[assignment]
 
 

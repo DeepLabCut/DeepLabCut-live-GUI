@@ -56,6 +56,7 @@ class DLCProcessorSettings:
     precision: str = "FP32"  # Inference precision ("FP32", "FP16")
     additional_options: Dict[str, Any] = field(default_factory=dict)
     model_type: str = "pytorch"  # Only PyTorch models are supported
+    single_animal: bool = True  # Only single-animal models are supported
 
 
 @dataclass

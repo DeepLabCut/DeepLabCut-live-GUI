@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Optional, Tuple
 
@@ -9,6 +10,8 @@ import cv2
 import numpy as np
 
 from .base import CameraBackend
+
+LOG = logging.getLogger(__name__)
 
 try:  # pragma: no cover - optional dependency
     import gi
@@ -231,12 +234,13 @@ class AravisCameraBackend(CameraBackend):
 
             if self._pixel_format in format_map:
                 self._camera.set_pixel_format(format_map[self._pixel_format])
+                LOG.info(f"Pixel format set to '{self._pixel_format}'")
             else:
                 # Try setting as string
                 self._camera.set_pixel_format_from_string(self._pixel_format)
-        except Exception:
-            # If pixel format setting fails, continue with default
-            pass
+                LOG.info(f"Pixel format set to '{self._pixel_format}' (from string)")
+        except Exception as e:
+            LOG.warning(f"Failed to set pixel format '{self._pixel_format}': {e}")
 
     def _configure_exposure(self) -> None:
         """Configure camera exposure time."""
@@ -255,13 +259,19 @@ class AravisCameraBackend(CameraBackend):
             # Disable auto exposure
             try:
                 self._camera.set_exposure_time_auto(Aravis.Auto.OFF)
-            except Exception:
-                pass
+                LOG.info("Auto exposure disabled")
+            except Exception as e:
+                LOG.warning(f"Failed to disable auto exposure: {e}")
 
             # Set exposure time (in microseconds)
             self._camera.set_exposure_time(exposure)
-        except Exception:
-            pass
+            actual = self._camera.get_exposure_time()
+            if abs(actual - exposure) > 1.0:  # Allow 1μs tolerance
+                LOG.warning(f"Exposure mismatch: requested {exposure}μs, got {actual}μs")
+            else:
+                LOG.info(f"Exposure set to {actual}μs")
+        except Exception as e:
+            LOG.warning(f"Failed to set exposure to {exposure}μs: {e}")
 
     def _configure_gain(self) -> None:
         """Configure camera gain."""
@@ -280,13 +290,19 @@ class AravisCameraBackend(CameraBackend):
             # Disable auto gain
             try:
                 self._camera.set_gain_auto(Aravis.Auto.OFF)
-            except Exception:
-                pass
+                LOG.info("Auto gain disabled")
+            except Exception as e:
+                LOG.warning(f"Failed to disable auto gain: {e}")
 
             # Set gain value
             self._camera.set_gain(gain)
-        except Exception:
-            pass
+            actual = self._camera.get_gain()
+            if abs(actual - gain) > 0.1:  # Allow 0.1 tolerance
+                LOG.warning(f"Gain mismatch: requested {gain}, got {actual}")
+            else:
+                LOG.info(f"Gain set to {actual}")
+        except Exception as e:
+            LOG.warning(f"Failed to set gain to {gain}: {e}")
 
     def _configure_frame_rate(self) -> None:
         """Configure camera frame rate."""
@@ -296,8 +312,13 @@ class AravisCameraBackend(CameraBackend):
         try:
             target_fps = float(self.settings.fps)
             self._camera.set_frame_rate(target_fps)
-        except Exception:
-            pass
+            actual_fps = self._camera.get_frame_rate()
+            if abs(actual_fps - target_fps) > 0.1:
+                LOG.warning(f"FPS mismatch: requested {target_fps:.2f}, got {actual_fps:.2f}")
+            else:
+                LOG.info(f"Frame rate set to {actual_fps:.2f} FPS")
+        except Exception as e:
+            LOG.warning(f"Failed to set frame rate to {self.settings.fps}: {e}")
 
     def _resolve_device_label(self) -> Optional[str]:
         """Get a human-readable device label."""

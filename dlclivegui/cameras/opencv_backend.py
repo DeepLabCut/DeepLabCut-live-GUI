@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Tuple
 
@@ -9,6 +10,8 @@ import cv2
 import numpy as np
 
 from .base import CameraBackend
+
+LOG = logging.getLogger(__name__)
 
 
 class OpenCVCameraBackend(CameraBackend):
@@ -107,12 +110,25 @@ class OpenCVCameraBackend(CameraBackend):
 
         # Set resolution (width x height)
         width, height = self._resolution
-        self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
-        self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+        if not self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(width)):
+            LOG.warning(f"Failed to set frame width to {width}")
+        if not self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height)):
+            LOG.warning(f"Failed to set frame height to {height}")
+
+        # Verify resolution was set correctly
+        actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if actual_width != width or actual_height != height:
+            LOG.warning(
+                f"Resolution mismatch: requested {width}x{height}, "
+                f"got {actual_width}x{actual_height}"
+            )
 
         # Set FPS if specified
-        if self.settings.fps:
-            self._capture.set(cv2.CAP_PROP_FPS, float(self.settings.fps))
+        requested_fps = self.settings.fps
+        if requested_fps:
+            if not self._capture.set(cv2.CAP_PROP_FPS, float(requested_fps)):
+                LOG.warning(f"Failed to set FPS to {requested_fps}")
 
         # Set any additional properties from the properties dict
         for prop, value in self.settings.properties.items():
@@ -120,14 +136,19 @@ class OpenCVCameraBackend(CameraBackend):
                 continue
             try:
                 prop_id = int(prop)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as e:
+                LOG.warning(f"Could not parse property ID: {prop} ({e})")
                 continue
-            self._capture.set(prop_id, float(value))
+            if not self._capture.set(prop_id, float(value)):
+                LOG.warning(f"Failed to set property {prop_id} to {value}")
 
-        # Update actual FPS from camera
+        # Update actual FPS from camera and warn if different from requested
         actual_fps = self._capture.get(cv2.CAP_PROP_FPS)
         if actual_fps:
+            if requested_fps and abs(actual_fps - requested_fps) > 0.1:
+                LOG.warning(f"FPS mismatch: requested {requested_fps:.2f}, got {actual_fps:.2f}")
             self.settings.fps = float(actual_fps)
+            LOG.info(f"Camera configured with FPS: {actual_fps:.2f}")
 
     def _resolve_backend(self, backend: str | None) -> int:
         if backend is None:

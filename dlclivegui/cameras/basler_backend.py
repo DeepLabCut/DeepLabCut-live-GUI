@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Optional, Tuple
 
 import numpy as np
 
 from .base import CameraBackend
+
+LOG = logging.getLogger(__name__)
 
 try:  # pragma: no cover - optional dependency
     from pypylon import pylon
@@ -37,29 +40,70 @@ class BaslerCameraBackend(CameraBackend):
         self._camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateDevice(device))
         self._camera.Open()
 
+        # Configure exposure
         exposure = self._settings_value("exposure", self.settings.properties)
         if exposure is not None:
-            self._camera.ExposureTime.SetValue(float(exposure))
+            try:
+                self._camera.ExposureTime.SetValue(float(exposure))
+                actual = self._camera.ExposureTime.GetValue()
+                if abs(actual - float(exposure)) > 1.0:  # Allow 1μs tolerance
+                    LOG.warning(f"Exposure mismatch: requested {exposure}μs, got {actual}μs")
+                else:
+                    LOG.info(f"Exposure set to {actual}μs")
+            except Exception as e:
+                LOG.warning(f"Failed to set exposure to {exposure}μs: {e}")
+
+        # Configure gain
         gain = self._settings_value("gain", self.settings.properties)
         if gain is not None:
-            self._camera.Gain.SetValue(float(gain))
-        width = int(self.settings.properties.get("width", self.settings.width))
-        height = int(self.settings.properties.get("height", self.settings.height))
-        self._camera.Width.SetValue(width)
-        self._camera.Height.SetValue(height)
+            try:
+                self._camera.Gain.SetValue(float(gain))
+                actual = self._camera.Gain.GetValue()
+                if abs(actual - float(gain)) > 0.1:  # Allow 0.1 tolerance
+                    LOG.warning(f"Gain mismatch: requested {gain}, got {actual}")
+                else:
+                    LOG.info(f"Gain set to {actual}")
+            except Exception as e:
+                LOG.warning(f"Failed to set gain to {gain}: {e}")
+
+        # Configure resolution
+        requested_width = int(self.settings.properties.get("width", self.settings.width))
+        requested_height = int(self.settings.properties.get("height", self.settings.height))
+        try:
+            self._camera.Width.SetValue(requested_width)
+            self._camera.Height.SetValue(requested_height)
+            actual_width = self._camera.Width.GetValue()
+            actual_height = self._camera.Height.GetValue()
+            if actual_width != requested_width or actual_height != requested_height:
+                LOG.warning(
+                    f"Resolution mismatch: requested {requested_width}x{requested_height}, "
+                    f"got {actual_width}x{actual_height}"
+                )
+            else:
+                LOG.info(f"Resolution set to {actual_width}x{actual_height}")
+        except Exception as e:
+            LOG.warning(f"Failed to set resolution to {requested_width}x{requested_height}: {e}")
+
+        # Configure frame rate
         fps = self._settings_value("fps", self.settings.properties, fallback=self.settings.fps)
         if fps is not None:
             try:
                 self._camera.AcquisitionFrameRateEnable.SetValue(True)
                 self._camera.AcquisitionFrameRate.SetValue(float(fps))
-            except Exception:
-                # Some cameras expose different frame-rate features; ignore errors.
-                pass
+                actual_fps = self._camera.AcquisitionFrameRate.GetValue()
+                if abs(actual_fps - float(fps)) > 0.1:
+                    LOG.warning(f"FPS mismatch: requested {fps:.2f}, got {actual_fps:.2f}")
+                else:
+                    LOG.info(f"Frame rate set to {actual_fps:.2f} FPS")
+            except Exception as e:
+                LOG.warning(f"Failed to set frame rate to {fps}: {e}")
 
         self._camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
         self._converter = pylon.ImageFormatConverter()
         self._converter.OutputPixelFormat = pylon.PixelType_BGR8packed
         self._converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+
+        # Read back final settings
         try:
             self.settings.width = int(self._camera.Width.GetValue())
             self.settings.height = int(self._camera.Height.GetValue())
@@ -67,6 +111,7 @@ class BaslerCameraBackend(CameraBackend):
             pass
         try:
             self.settings.fps = float(self._camera.ResultingFrameRateAbs.GetValue())
+            LOG.info(f"Camera configured with resulting FPS: {self.settings.fps:.2f}")
         except Exception:
             pass
 

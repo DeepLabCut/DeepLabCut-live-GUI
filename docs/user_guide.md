@@ -147,7 +147,7 @@ Select if camera is mounted at an angle:
 
 ### Prerequisites
 
-1. Exported DLCLive model (see DLC documentation)
+1. Exported DLCLive model (see [DLC documentation](https://github.com/DeepLabCut/DeepLabCut/blob/main/docs/HelperFunctions.md#model-export-function))
 2. DeepLabCut-live installed (`pip install deeplabcut-live`)
 3. Camera preview running
 

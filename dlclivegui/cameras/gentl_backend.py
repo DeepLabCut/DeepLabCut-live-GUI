@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import glob
+import logging
 import os
 import time
 from typing import Iterable, List, Optional, Tuple
@@ -11,6 +12,8 @@ import cv2
 import numpy as np
 
 from .base import CameraBackend
+
+LOG = logging.getLogger(__name__)
 
 try:  # pragma: no cover - optional dependency
     from harvesters.core import Harvester  # type: ignore
@@ -342,15 +345,28 @@ class GenTLCameraBackend(CameraBackend):
         try:
             if self._pixel_format in node_map.PixelFormat.symbolics:
                 node_map.PixelFormat.value = self._pixel_format
-        except Exception:
-            pass
+                actual = node_map.PixelFormat.value
+                if actual != self._pixel_format:
+                    LOG.warning(
+                        f"Pixel format mismatch: requested '{self._pixel_format}', got '{actual}'"
+                    )
+                else:
+                    LOG.info(f"Pixel format set to '{actual}'")
+            else:
+                LOG.warning(
+                    f"Pixel format '{self._pixel_format}' not in available formats: "
+                    f"{node_map.PixelFormat.symbolics}"
+                )
+        except Exception as e:
+            LOG.warning(f"Failed to set pixel format '{self._pixel_format}': {e}")
 
     def _configure_resolution(self, node_map) -> None:
         """Configure camera resolution (width and height)."""
         if self._resolution is None:
             return
 
-        width, height = self._resolution
+        requested_width, requested_height = self._resolution
+        actual_width, actual_height = None, None
 
         # Try to set width
         for width_attr in ("Width", "WidthMax"):
@@ -363,15 +379,23 @@ class GenTLCameraBackend(CameraBackend):
                         max_w = node.max
                         inc_w = getattr(node, "inc", 1)
                         # Adjust to valid value
-                        width = self._adjust_to_increment(width, min_w, max_w, inc_w)
+                        width = self._adjust_to_increment(requested_width, min_w, max_w, inc_w)
+                        if width != requested_width:
+                            LOG.info(
+                                f"Width adjusted from {requested_width} to {width} "
+                                f"(min={min_w}, max={max_w}, inc={inc_w})"
+                            )
                         node.value = int(width)
+                        actual_width = node.value
                         break
-                    except Exception:
+                    except Exception as e:
                         # Try setting without adjustment
                         try:
-                            node.value = int(width)
+                            node.value = int(requested_width)
+                            actual_width = node.value
                             break
                         except Exception:
+                            LOG.warning(f"Failed to set width via {width_attr}: {e}")
                             continue
             except AttributeError:
                 continue
@@ -387,64 +411,130 @@ class GenTLCameraBackend(CameraBackend):
                         max_h = node.max
                         inc_h = getattr(node, "inc", 1)
                         # Adjust to valid value
-                        height = self._adjust_to_increment(height, min_h, max_h, inc_h)
+                        height = self._adjust_to_increment(requested_height, min_h, max_h, inc_h)
+                        if height != requested_height:
+                            LOG.info(
+                                f"Height adjusted from {requested_height} to {height} "
+                                f"(min={min_h}, max={max_h}, inc={inc_h})"
+                            )
                         node.value = int(height)
+                        actual_height = node.value
                         break
-                    except Exception:
+                    except Exception as e:
                         # Try setting without adjustment
                         try:
-                            node.value = int(height)
+                            node.value = int(requested_height)
+                            actual_height = node.value
                             break
                         except Exception:
+                            LOG.warning(f"Failed to set height via {height_attr}: {e}")
                             continue
             except AttributeError:
                 continue
 
+        # Log final resolution
+        if actual_width is not None and actual_height is not None:
+            if actual_width != requested_width or actual_height != requested_height:
+                LOG.warning(
+                    f"Resolution mismatch: requested {requested_width}x{requested_height}, "
+                    f"got {actual_width}x{actual_height}"
+                )
+            else:
+                LOG.info(f"Resolution set to {actual_width}x{actual_height}")
+        else:
+            LOG.warning(
+                f"Could not verify resolution setting "
+                f"(width={actual_width}, height={actual_height})"
+            )
+
     def _configure_exposure(self, node_map) -> None:
         if self._exposure is None:
             return
-        for attr in ("ExposureAuto", "ExposureTime", "Exposure"):
+
+        # Try to disable auto exposure first
+        for attr in ("ExposureAuto",):
+            try:
+                node = getattr(node_map, attr)
+                node.value = "Off"
+                LOG.info("Auto exposure disabled")
+                break
+            except AttributeError:
+                continue
+            except Exception as e:
+                LOG.warning(f"Failed to disable auto exposure: {e}")
+
+        # Set exposure value
+        for attr in ("ExposureTime", "Exposure"):
             try:
                 node = getattr(node_map, attr)
             except AttributeError:
                 continue
             try:
-                if attr == "ExposureAuto":
-                    node.value = "Off"
+                node.value = float(self._exposure)
+                actual = node.value
+                if abs(actual - self._exposure) > 1.0:  # Allow 1μs tolerance
+                    LOG.warning(f"Exposure mismatch: requested {self._exposure}μs, got {actual}μs")
                 else:
-                    node.value = float(self._exposure)
-                    return
-            except Exception:
+                    LOG.info(f"Exposure set to {actual}μs")
+                return
+            except Exception as e:
+                LOG.warning(f"Failed to set exposure via {attr}: {e}")
                 continue
+
+        LOG.warning(f"Could not set exposure to {self._exposure}μs (no compatible attribute found)")
 
     def _configure_gain(self, node_map) -> None:
         if self._gain is None:
             return
-        for attr in ("GainAuto", "Gain"):
+
+        # Try to disable auto gain first
+        for attr in ("GainAuto",):
+            try:
+                node = getattr(node_map, attr)
+                node.value = "Off"
+                LOG.info("Auto gain disabled")
+                break
+            except AttributeError:
+                continue
+            except Exception as e:
+                LOG.warning(f"Failed to disable auto gain: {e}")
+
+        # Set gain value
+        for attr in ("Gain",):
             try:
                 node = getattr(node_map, attr)
             except AttributeError:
                 continue
             try:
-                if attr == "GainAuto":
-                    node.value = "Off"
+                node.value = float(self._gain)
+                actual = node.value
+                if abs(actual - self._gain) > 0.1:  # Allow 0.1 tolerance
+                    LOG.warning(f"Gain mismatch: requested {self._gain}, got {actual}")
                 else:
-                    node.value = float(self._gain)
-                    return
-            except Exception:
+                    LOG.info(f"Gain set to {actual}")
+                return
+            except Exception as e:
+                LOG.warning(f"Failed to set gain via {attr}: {e}")
                 continue
+
+        LOG.warning(f"Could not set gain to {self._gain} (no compatible attribute found)")
 
     def _configure_frame_rate(self, node_map) -> None:
         if not self.settings.fps:
             return
 
         target = float(self.settings.fps)
+
+        # Try to enable frame rate control
         for attr in ("AcquisitionFrameRateEnable", "AcquisitionFrameRateControlEnable"):
             try:
                 getattr(node_map, attr).value = True
+                LOG.info(f"Frame rate control enabled via {attr}")
+                break
             except Exception:
                 continue
 
+        # Set frame rate value
         for attr in ("AcquisitionFrameRate", "ResultingFrameRate", "AcquisitionFrameRateAbs"):
             try:
                 node = getattr(node_map, attr)
@@ -452,9 +542,17 @@ class GenTLCameraBackend(CameraBackend):
                 continue
             try:
                 node.value = target
+                actual = node.value
+                if abs(actual - target) > 0.1:
+                    LOG.warning(f"FPS mismatch: requested {target:.2f}, got {actual:.2f}")
+                else:
+                    LOG.info(f"Frame rate set to {actual:.2f} FPS")
                 return
-            except Exception:
+            except Exception as e:
+                LOG.warning(f"Failed to set frame rate via {attr}: {e}")
                 continue
+
+        LOG.warning(f"Could not set frame rate to {target} FPS (no compatible attribute found)")
 
     def _convert_frame(self, frame: np.ndarray) -> np.ndarray:
         if frame.dtype != np.uint8:
