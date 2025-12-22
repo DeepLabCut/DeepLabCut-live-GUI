@@ -117,6 +117,12 @@ class MainWindow(QMainWindow):
         self._multi_camera_mode = False
         self._multi_camera_recorders: dict[str, VideoRecorder] = {}
         self._multi_camera_frames: dict[str, np.ndarray] = {}
+        # DLC pose rendering info for tiled view
+        self._dlc_tile_offset: tuple[int, int] = (0, 0)  # (x, y) offset in tiled frame
+        self._dlc_tile_scale: tuple[float, float] = (1.0, 1.0)  # (scale_x, scale_y)
+        # Pending frame for display (decoupled from frame capture for performance)
+        self._pending_display_frame: Optional[np.ndarray] = None
+        self._display_dirty: bool = False
 
         self._setup_ui()
         self._connect_signals()
@@ -129,6 +135,12 @@ class MainWindow(QMainWindow):
         self._metrics_timer.timeout.connect(self._update_metrics)
         self._metrics_timer.start()
         self._update_metrics()
+
+        # Display timer - decoupled from frame capture for performance
+        self._display_timer = QTimer(self)
+        self._display_timer.setInterval(33)  # ~30 fps display rate
+        self._display_timer.timeout.connect(self._update_display_from_pending)
+        self._display_timer.start()
 
         # Show status message if myconfig.json was loaded
         if self._config_path and self._config_path.name == "myconfig.json":
@@ -703,16 +715,33 @@ class MainWindow(QMainWindow):
             self.active_cameras_label.setText(f"{len(active_cams)} cameras: {', '.join(cam_names)}")
 
     def _on_multi_frame_ready(self, frame_data: MultiFrameData) -> None:
-        """Handle frames from multiple cameras."""
+        """Handle frames from multiple cameras.
+
+        Priority order for performance:
+        1. DLC processing (highest priority - enqueue immediately)
+        2. Recording (queued writes, non-blocking)
+        3. Display (lowest priority - updated on separate timer)
+        """
         self._multi_camera_frames = frame_data.frames
         self._track_camera_frame()  # Track FPS
 
-        # For single camera mode, also set raw_frame for DLC processing
-        if len(frame_data.frames) == 1:
-            cam_id = next(iter(frame_data.frames.keys()))
-            self._raw_frame = frame_data.frames[cam_id]
+        # Always update tile info for pose/bbox rendering (needed even without DLC)
+        active_cams = self._config.multi_camera.get_active_cameras()
+        dlc_cam_id = None
+        if active_cams and frame_data.frames:
+            dlc_cam_id = get_camera_id(active_cams[0])
+            if dlc_cam_id in frame_data.frames:
+                frame = frame_data.frames[dlc_cam_id]
+                self._raw_frame = frame
+                self._update_dlc_tile_info(dlc_cam_id, frame, frame_data)
 
-        # Record individual camera feeds if recording is active
+        # PRIORITY 1: DLC processing - do this first!
+        if self._dlc_active and dlc_cam_id and dlc_cam_id in frame_data.frames:
+            frame = frame_data.frames[dlc_cam_id]
+            timestamp = frame_data.timestamps.get(dlc_cam_id, time.time())
+            self.dlc_processor.enqueue_frame(frame, timestamp)
+
+        # PRIORITY 2: Recording (queued, non-blocking)
         if self._multi_camera_recorders:
             for cam_id, frame in frame_data.frames.items():
                 if cam_id in self._multi_camera_recorders:
@@ -724,17 +753,60 @@ class MainWindow(QMainWindow):
                         except Exception as exc:
                             logging.warning(f"Failed to write frame for camera {cam_id}: {exc}")
 
-        # Display tiled frame (or single frame for 1 camera)
+        # PRIORITY 3: Store frame for display (updated on separate timer)
         if frame_data.tiled_frame is not None:
             self._current_frame = frame_data.tiled_frame
-            self._display_frame(frame_data.tiled_frame)
+            self._pending_display_frame = frame_data.tiled_frame
+            self._display_dirty = True
 
-        # For DLC processing, use single frame if only one camera
-        if self._dlc_active and len(frame_data.frames) == 1:
-            cam_id = next(iter(frame_data.frames.keys()))
-            frame = frame_data.frames[cam_id]
-            timestamp = frame_data.timestamps.get(cam_id, time.time())
-            self.dlc_processor.enqueue_frame(frame, timestamp)
+    def _update_dlc_tile_info(
+        self, dlc_cam_id: str, original_frame: np.ndarray, frame_data: MultiFrameData
+    ) -> None:
+        """Calculate tile offset and scale for drawing DLC poses on tiled frame."""
+        if frame_data.tiled_frame is None:
+            self._dlc_tile_offset = (0, 0)
+            self._dlc_tile_scale = (1.0, 1.0)
+            return
+
+        num_cameras = len(frame_data.frames)
+
+        # Get original frame dimensions
+        orig_h, orig_w = original_frame.shape[:2]
+
+        # Calculate grid layout (must match _create_tiled_frame logic)
+        if num_cameras == 1:
+            rows, cols = 1, 1
+        elif num_cameras == 2:
+            rows, cols = 1, 2
+        else:
+            rows, cols = 2, 2
+
+        # Calculate tile dimensions from tiled frame
+        tiled_h, tiled_w = frame_data.tiled_frame.shape[:2]
+        tile_w = tiled_w // cols
+        tile_h = tiled_h // rows
+
+        # Find the position of the DLC camera in the sorted camera list
+        sorted_cam_ids = sorted(frame_data.frames.keys())
+        try:
+            dlc_cam_idx = sorted_cam_ids.index(dlc_cam_id)
+        except ValueError:
+            dlc_cam_idx = 0
+
+        # Calculate grid position
+        row = dlc_cam_idx // cols
+        col = dlc_cam_idx % cols
+
+        # Calculate offset (top-left corner of the tile)
+        offset_x = col * tile_w
+        offset_y = row * tile_h
+
+        # Calculate scale factors (always calculate, even for single camera)
+        scale_x = tile_w / orig_w if orig_w > 0 else 1.0
+        scale_y = tile_h / orig_h if orig_h > 0 else 1.0
+
+        self._dlc_tile_offset = (offset_x, offset_y)
+        self._dlc_tile_scale = (scale_x, scale_y)
 
     def _on_multi_camera_started(self) -> None:
         """Handle all cameras started event."""
@@ -969,6 +1041,12 @@ class MainWindow(QMainWindow):
             return
         self._last_display_time = now
         self._update_video_display(frame)
+
+    def _update_display_from_pending(self) -> None:
+        """Update display from pending frame (called by display timer)."""
+        if self._display_dirty and self._pending_display_frame is not None:
+            self._display_dirty = False
+            self._update_video_display(self._pending_display_frame)
 
     def _compute_fps(self, times: deque[float]) -> float:
         if len(times) < 2:
@@ -1271,8 +1349,14 @@ class MainWindow(QMainWindow):
             self._display_frame(self._current_frame, force=True)
 
     def _draw_bbox(self, frame: np.ndarray) -> np.ndarray:
-        """Draw bounding box on frame with red lines."""
+        """Draw bounding box on frame (on first camera tile, scaled like pose)."""
         overlay = frame.copy()
+
+        # Get tile offset and scale (same as pose rendering)
+        offset_x, offset_y = self._dlc_tile_offset
+        scale_x, scale_y = self._dlc_tile_scale
+
+        # Get bbox coordinates in camera pixel space
         x0 = self._bbox_x0
         y0 = self._bbox_y0
         x1 = self._bbox_x1
@@ -1282,23 +1366,38 @@ class MainWindow(QMainWindow):
         if x0 >= x1 or y0 >= y1:
             return overlay
 
+        # Scale and offset to display coordinates
+        x0_scaled = int(x0 * scale_x + offset_x)
+        y0_scaled = int(y0 * scale_y + offset_y)
+        x1_scaled = int(x1 * scale_x + offset_x)
+        y1_scaled = int(y1 * scale_y + offset_y)
+
+        # Clamp to frame boundaries
         height, width = frame.shape[:2]
-        x0 = max(0, min(x0, width - 1))
-        y0 = max(0, min(y0, height - 1))
-        x1 = max(x0 + 1, min(x1, width))
-        y1 = max(y0 + 1, min(y1, height))
+        x0_scaled = max(0, min(x0_scaled, width - 1))
+        y0_scaled = max(0, min(y0_scaled, height - 1))
+        x1_scaled = max(x0_scaled + 1, min(x1_scaled, width))
+        y1_scaled = max(y0_scaled + 1, min(y1_scaled, height))
 
         # Draw rectangle with configured color
-        cv2.rectangle(overlay, (x0, y0), (x1, y1), self._bbox_color, 2)
+        cv2.rectangle(overlay, (x0_scaled, y0_scaled), (x1_scaled, y1_scaled), self._bbox_color, 2)
 
         return overlay
 
     def _draw_pose(self, frame: np.ndarray, pose: np.ndarray) -> np.ndarray:
         overlay = frame.copy()
 
+        # Get tile offset and scale for multi-camera mode
+        offset_x, offset_y = self._dlc_tile_offset
+        scale_x, scale_y = self._dlc_tile_scale
+
         # Get the colormap from config
         cmap = plt.get_cmap(self._colormap)
         num_keypoints = len(np.asarray(pose))
+
+        # Calculate scaled radius for the keypoint circles
+        base_radius = 4
+        scaled_radius = max(2, int(base_radius * min(scale_x, scale_y)))
 
         for idx, keypoint in enumerate(np.asarray(pose)):
             if len(keypoint) < 2:
@@ -1310,13 +1409,17 @@ class MainWindow(QMainWindow):
             if confidence < self._p_cutoff:
                 continue
 
+            # Apply scale and offset for tiled view
+            x_scaled = int(x * scale_x + offset_x)
+            y_scaled = int(y * scale_y + offset_y)
+
             # Get color from colormap (cycle through 0 to 1)
             color_normalized = idx / max(num_keypoints - 1, 1)
             rgba = cmap(color_normalized)
             # Convert from RGBA [0, 1] to BGR [0, 255] for OpenCV
             bgr_color = (int(rgba[2] * 255), int(rgba[1] * 255), int(rgba[0] * 255))
 
-            cv2.circle(overlay, (int(x), int(y)), 4, bgr_color, -1)
+            cv2.circle(overlay, (x_scaled, y_scaled), scaled_radius, bgr_color, -1)
         return overlay
 
     def _on_dlc_initialised(self, success: bool) -> None:
