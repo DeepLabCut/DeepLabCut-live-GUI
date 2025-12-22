@@ -25,7 +25,8 @@ class MultiFrameData:
 
     frames: Dict[str, np.ndarray]  # camera_id -> frame
     timestamps: Dict[str, float]  # camera_id -> timestamp
-    tiled_frame: Optional[np.ndarray] = None  # Combined tiled frame
+    source_camera_id: str = ""  # ID of camera that triggered this emission
+    tiled_frame: Optional[np.ndarray] = None  # Combined tiled frame (deprecated, done in GUI)
 
 
 class SingleCameraWorker(QObject):
@@ -225,14 +226,13 @@ class MultiCameraController(QObject):
             self._frames[camera_id] = frame
             self._timestamps[camera_id] = timestamp
 
-            # Create tiled frame whenever we have at least one frame
-            # This ensures smoother updates even if cameras have different frame rates
+            # Emit frame data without tiling (tiling done in GUI for performance)
             if self._frames:
-                tiled = self._create_tiled_frame()
                 frame_data = MultiFrameData(
                     frames=dict(self._frames),
                     timestamps=dict(self._timestamps),
-                    tiled_frame=tiled,
+                    source_camera_id=camera_id,  # Track which camera triggered this
+                    tiled_frame=None,
                 )
                 self.frame_ready.emit(frame_data)
 

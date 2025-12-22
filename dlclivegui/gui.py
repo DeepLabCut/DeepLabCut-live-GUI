@@ -120,8 +120,7 @@ class MainWindow(QMainWindow):
         # DLC pose rendering info for tiled view
         self._dlc_tile_offset: tuple[int, int] = (0, 0)  # (x, y) offset in tiled frame
         self._dlc_tile_scale: tuple[float, float] = (1.0, 1.0)  # (scale_x, scale_y)
-        # Pending frame for display (decoupled from frame capture for performance)
-        self._pending_display_frame: Optional[np.ndarray] = None
+        # Display flag (decoupled from frame capture for performance)
         self._display_dirty: bool = False
 
         self._setup_ui()
@@ -718,25 +717,28 @@ class MainWindow(QMainWindow):
         """Handle frames from multiple cameras.
 
         Priority order for performance:
-        1. DLC processing (highest priority - enqueue immediately)
+        1. DLC processing (highest priority - enqueue immediately, only for DLC camera)
         2. Recording (queued writes, non-blocking)
-        3. Display (lowest priority - updated on separate timer)
+        3. Display (lowest priority - tiled and updated on separate timer)
         """
         self._multi_camera_frames = frame_data.frames
         self._track_camera_frame()  # Track FPS
 
-        # Always update tile info for pose/bbox rendering (needed even without DLC)
+        # Determine DLC camera (first active camera)
         active_cams = self._config.multi_camera.get_active_cameras()
-        dlc_cam_id = None
-        if active_cams and frame_data.frames:
-            dlc_cam_id = get_camera_id(active_cams[0])
-            if dlc_cam_id in frame_data.frames:
-                frame = frame_data.frames[dlc_cam_id]
-                self._raw_frame = frame
-                self._update_dlc_tile_info(dlc_cam_id, frame, frame_data)
+        dlc_cam_id = get_camera_id(active_cams[0]) if active_cams else None
 
-        # PRIORITY 1: DLC processing - do this first!
-        if self._dlc_active and dlc_cam_id and dlc_cam_id in frame_data.frames:
+        # Check if this frame is from the DLC camera
+        is_dlc_camera_frame = frame_data.source_camera_id == dlc_cam_id
+
+        # Update tile info and raw frame only when DLC camera frame arrives
+        if is_dlc_camera_frame and dlc_cam_id in frame_data.frames:
+            frame = frame_data.frames[dlc_cam_id]
+            self._raw_frame = frame
+            self._update_dlc_tile_info(dlc_cam_id, frame, frame_data.frames)
+
+        # PRIORITY 1: DLC processing - only enqueue when DLC camera frame arrives!
+        if self._dlc_active and is_dlc_camera_frame and dlc_cam_id in frame_data.frames:
             frame = frame_data.frames[dlc_cam_id]
             timestamp = frame_data.timestamps.get(dlc_cam_id, time.time())
             self.dlc_processor.enqueue_frame(frame, timestamp)
@@ -753,22 +755,18 @@ class MainWindow(QMainWindow):
                         except Exception as exc:
                             logging.warning(f"Failed to write frame for camera {cam_id}: {exc}")
 
-        # PRIORITY 3: Store frame for display (updated on separate timer)
-        if frame_data.tiled_frame is not None:
-            self._current_frame = frame_data.tiled_frame
-            self._pending_display_frame = frame_data.tiled_frame
-            self._display_dirty = True
+        # PRIORITY 3: Mark display dirty (tiling done in display timer)
+        self._display_dirty = True
 
     def _update_dlc_tile_info(
-        self, dlc_cam_id: str, original_frame: np.ndarray, frame_data: MultiFrameData
+        self, dlc_cam_id: str, original_frame: np.ndarray, frames: dict[str, np.ndarray]
     ) -> None:
         """Calculate tile offset and scale for drawing DLC poses on tiled frame."""
-        if frame_data.tiled_frame is None:
+        num_cameras = len(frames)
+        if num_cameras == 0:
             self._dlc_tile_offset = (0, 0)
             self._dlc_tile_scale = (1.0, 1.0)
             return
-
-        num_cameras = len(frame_data.frames)
 
         # Get original frame dimensions
         orig_h, orig_w = original_frame.shape[:2]
@@ -781,13 +779,25 @@ class MainWindow(QMainWindow):
         else:
             rows, cols = 2, 2
 
-        # Calculate tile dimensions from tiled frame
-        tiled_h, tiled_w = frame_data.tiled_frame.shape[:2]
-        tile_w = tiled_w // cols
-        tile_h = tiled_h // rows
+        # Calculate tile dimensions using same logic as _create_tiled_frame
+        max_canvas_width = 1200
+        max_canvas_height = 800
+        frame_aspect = orig_w / orig_h if orig_h > 0 else 1.0
+
+        tile_w = max_canvas_width // cols
+        tile_h = max_canvas_height // rows
+        tile_aspect = tile_w / tile_h if tile_h > 0 else 1.0
+
+        if frame_aspect > tile_aspect:
+            tile_h = int(tile_w / frame_aspect)
+        else:
+            tile_w = int(tile_h * frame_aspect)
+
+        tile_w = max(160, tile_w)
+        tile_h = max(120, tile_h)
 
         # Find the position of the DLC camera in the sorted camera list
-        sorted_cam_ids = sorted(frame_data.frames.keys())
+        sorted_cam_ids = sorted(frames.keys())
         try:
             dlc_cam_idx = sorted_cam_ids.index(dlc_cam_id)
         except ValueError:
@@ -1043,10 +1053,96 @@ class MainWindow(QMainWindow):
         self._update_video_display(frame)
 
     def _update_display_from_pending(self) -> None:
-        """Update display from pending frame (called by display timer)."""
-        if self._display_dirty and self._pending_display_frame is not None:
-            self._display_dirty = False
-            self._update_video_display(self._pending_display_frame)
+        """Update display from pending frames (called by display timer)."""
+        if not self._display_dirty:
+            return
+        if not self._multi_camera_frames:
+            return
+
+        self._display_dirty = False
+
+        # Create tiled frame on demand (moved from camera thread for performance)
+        tiled = self._create_tiled_frame(self._multi_camera_frames)
+        if tiled is not None:
+            self._current_frame = tiled
+            self._update_video_display(tiled)
+
+    def _create_tiled_frame(self, frames: dict[str, np.ndarray]) -> np.ndarray:
+        """Create a tiled frame from camera frames for display."""
+        if not frames:
+            return np.zeros((480, 640, 3), dtype=np.uint8)
+
+        cam_ids = sorted(frames.keys())
+        frames_list = [frames[cam_id] for cam_id in cam_ids]
+        num_frames = len(frames_list)
+
+        if num_frames == 0:
+            return np.zeros((480, 640, 3), dtype=np.uint8)
+
+        # Determine grid layout
+        if num_frames == 1:
+            rows, cols = 1, 1
+        elif num_frames == 2:
+            rows, cols = 1, 2
+        else:
+            rows, cols = 2, 2
+
+        # Maximum canvas size
+        max_canvas_width = 1200
+        max_canvas_height = 800
+
+        # Calculate tile size based on first frame aspect ratio
+        first_frame = frames_list[0]
+        frame_h, frame_w = first_frame.shape[:2]
+        frame_aspect = frame_w / frame_h if frame_h > 0 else 1.0
+
+        tile_w = max_canvas_width // cols
+        tile_h = max_canvas_height // rows
+        tile_aspect = tile_w / tile_h if tile_h > 0 else 1.0
+
+        if frame_aspect > tile_aspect:
+            tile_h = int(tile_w / frame_aspect)
+        else:
+            tile_w = int(tile_h * frame_aspect)
+
+        tile_w = max(160, tile_w)
+        tile_h = max(120, tile_h)
+
+        # Create canvas
+        canvas = np.zeros((rows * tile_h, cols * tile_w, 3), dtype=np.uint8)
+
+        # Place each frame in the grid
+        for idx, frame in enumerate(frames_list[: rows * cols]):
+            row = idx // cols
+            col = idx % cols
+
+            # Ensure frame is 3-channel
+            if frame.ndim == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            elif frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+            # Resize to tile size
+            resized = cv2.resize(frame, (tile_w, tile_h))
+
+            # Add camera ID label
+            if idx < len(cam_ids):
+                cv2.putText(
+                    resized,
+                    cam_ids[idx],
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                )
+
+            # Place in canvas
+            y_start = row * tile_h
+            x_start = col * tile_w
+            canvas[y_start : y_start + tile_h, x_start : x_start + tile_w] = resized
+
+        return canvas
 
     def _compute_fps(self, times: deque[float]) -> float:
         if len(times) < 2:
