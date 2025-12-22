@@ -38,19 +38,19 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from dlclivegui.camera_controller import CameraController, FrameData
-from dlclivegui.cameras import CameraFactory
-from dlclivegui.cameras.factory import DetectedCamera
+from dlclivegui.camera_config_dialog import CameraConfigDialog
 from dlclivegui.config import (
     DEFAULT_CONFIG,
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
     DLCProcessorSettings,
+    MultiCameraSettings,
     RecordingSettings,
     VisualizationSettings,
 )
 from dlclivegui.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStats
+from dlclivegui.multi_camera_controller import MultiCameraController, MultiFrameData
 from dlclivegui.processors.processor_utils import instantiate_from_scan, scan_processor_folder
 from dlclivegui.video_recorder import RecorderStats, VideoRecorder
 
@@ -87,9 +87,6 @@ class MainWindow(QMainWindow):
         self._raw_frame: Optional[np.ndarray] = None
         self._last_pose: Optional[PoseResult] = None
         self._dlc_active: bool = False
-        self._video_recorder: Optional[VideoRecorder] = None
-        self._rotation_degrees: int = 0
-        self._detected_cameras: list[DetectedCamera] = []
         self._active_camera_settings: Optional[CameraSettings] = None
         self._camera_frame_times: deque[float] = deque(maxlen=240)
         self._last_drop_warning = 0.0
@@ -112,8 +109,13 @@ class MainWindow(QMainWindow):
         self._colormap = "hot"
         self._bbox_color = (0, 0, 255)  # BGR: red
 
-        self.camera_controller = CameraController()
+        self.multi_camera_controller = MultiCameraController()
         self.dlc_processor = DLCLiveProcessor()
+
+        # Multi-camera state
+        self._multi_camera_mode = False
+        self._multi_camera_recorders: dict[int, VideoRecorder] = {}
+        self._multi_camera_frames: dict[int, np.ndarray] = {}
 
         self._setup_ui()
         self._connect_signals()
@@ -247,76 +249,17 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Camera settings")
         form = QFormLayout(group)
 
-        self.camera_backend = QComboBox()
-        availability = CameraFactory.available_backends()
-        for backend in CameraFactory.backend_names():
-            label = backend
-            if not availability.get(backend, True):
-                label = f"{backend} (unavailable)"
-            self.camera_backend.addItem(label, backend)
-        form.addRow("Backend", self.camera_backend)
+        # Camera config button - opens dialog for all camera configuration
+        config_layout = QHBoxLayout()
+        self.config_cameras_button = QPushButton("Configure Cameras...")
+        self.config_cameras_button.setToolTip("Configure camera settings (single or multi-camera)")
+        config_layout.addWidget(self.config_cameras_button)
+        form.addRow(config_layout)
 
-        index_layout = QHBoxLayout()
-        self.camera_index = QComboBox()
-        self.camera_index.setEditable(True)
-        index_layout.addWidget(self.camera_index)
-        self.refresh_cameras_button = QPushButton("Refresh")
-        index_layout.addWidget(self.refresh_cameras_button)
-        form.addRow("Camera", index_layout)
-
-        self.camera_fps = QDoubleSpinBox()
-        self.camera_fps.setRange(1.0, 240.0)
-        self.camera_fps.setDecimals(2)
-        form.addRow("Frame rate", self.camera_fps)
-
-        self.camera_exposure = QSpinBox()
-        self.camera_exposure.setRange(0, 1000000)
-        self.camera_exposure.setValue(0)
-        self.camera_exposure.setSpecialValueText("Auto")
-        self.camera_exposure.setSuffix(" μs")
-        form.addRow("Exposure", self.camera_exposure)
-
-        self.camera_gain = QDoubleSpinBox()
-        self.camera_gain.setRange(0.0, 100.0)
-        self.camera_gain.setValue(0.0)
-        self.camera_gain.setSpecialValueText("Auto")
-        self.camera_gain.setDecimals(2)
-        form.addRow("Gain", self.camera_gain)
-
-        # Crop settings
-        crop_layout = QHBoxLayout()
-        self.crop_x0 = QSpinBox()
-        self.crop_x0.setRange(0, 7680)
-        self.crop_x0.setPrefix("x0:")
-        self.crop_x0.setSpecialValueText("x0:None")
-        crop_layout.addWidget(self.crop_x0)
-
-        self.crop_y0 = QSpinBox()
-        self.crop_y0.setRange(0, 4320)
-        self.crop_y0.setPrefix("y0:")
-        self.crop_y0.setSpecialValueText("y0:None")
-        crop_layout.addWidget(self.crop_y0)
-
-        self.crop_x1 = QSpinBox()
-        self.crop_x1.setRange(0, 7680)
-        self.crop_x1.setPrefix("x1:")
-        self.crop_x1.setSpecialValueText("x1:None")
-        crop_layout.addWidget(self.crop_x1)
-
-        self.crop_y1 = QSpinBox()
-        self.crop_y1.setRange(0, 4320)
-        self.crop_y1.setPrefix("y1:")
-        self.crop_y1.setSpecialValueText("y1:None")
-        crop_layout.addWidget(self.crop_y1)
-
-        form.addRow("Crop (x0,y0,x1,y1)", crop_layout)
-
-        self.rotation_combo = QComboBox()
-        self.rotation_combo.addItem("0° (default)", 0)
-        self.rotation_combo.addItem("90°", 90)
-        self.rotation_combo.addItem("180°", 180)
-        self.rotation_combo.addItem("270°", 270)
-        form.addRow("Rotation", self.rotation_combo)
+        # Active cameras display label
+        self.active_cameras_label = QLabel("No cameras configured")
+        self.active_cameras_label.setWordWrap(True)
+        form.addRow("Active:", self.active_cameras_label)
 
         return group
 
@@ -409,8 +352,11 @@ class MainWindow(QMainWindow):
         form.addRow("Container", self.container_combo)
 
         self.codec_combo = QComboBox()
-        self.codec_combo.addItems(["h264_nvenc", "libx264"])
-        self.codec_combo.setCurrentText("h264_nvenc")
+        if os.sys.platform == "darwin":
+            self.codec_combo.addItems(["h264_videotoolbox", "libx264", "hevc_videotoolbox"])
+        else:
+            self.codec_combo.addItems(["h264_nvenc", "libx264", "hevc_nvenc"])
+        self.codec_combo.setCurrentText("libx264")
         form.addRow("Codec", self.codec_combo)
 
         self.crf_spin = QSpinBox()
@@ -478,15 +424,12 @@ class MainWindow(QMainWindow):
         self.stop_preview_button.clicked.connect(self._stop_preview)
         self.start_record_button.clicked.connect(self._start_recording)
         self.stop_record_button.clicked.connect(self._stop_recording)
-        self.refresh_cameras_button.clicked.connect(
-            lambda: self._refresh_camera_indices(keep_current=True)
-        )
-        self.camera_backend.currentIndexChanged.connect(self._on_backend_changed)
-        self.camera_backend.currentIndexChanged.connect(self._update_backend_specific_controls)
-        self.rotation_combo.currentIndexChanged.connect(self._on_rotation_changed)
         self.start_inference_button.clicked.connect(self._start_inference)
         self.stop_inference_button.clicked.connect(lambda: self._stop_inference())
         self.show_predictions_checkbox.stateChanged.connect(self._on_show_predictions_changed)
+
+        # Camera config dialog
+        self.config_cameras_button.clicked.connect(self._open_camera_config_dialog)
 
         # Connect bounding box controls
         self.bbox_enabled_checkbox.stateChanged.connect(self._on_bbox_changed)
@@ -495,11 +438,11 @@ class MainWindow(QMainWindow):
         self.bbox_x1_spin.valueChanged.connect(self._on_bbox_changed)
         self.bbox_y1_spin.valueChanged.connect(self._on_bbox_changed)
 
-        self.camera_controller.frame_ready.connect(self._on_frame_ready)
-        self.camera_controller.started.connect(self._on_camera_started)
-        self.camera_controller.error.connect(self._show_error)
-        self.camera_controller.warning.connect(self._show_warning)
-        self.camera_controller.stopped.connect(self._on_camera_stopped)
+        # Multi-camera controller signals (used for both single and multi-camera modes)
+        self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_ready)
+        self.multi_camera_controller.all_started.connect(self._on_multi_camera_started)
+        self.multi_camera_controller.all_stopped.connect(self._on_multi_camera_stopped)
+        self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
 
         self.dlc_processor.pose_ready.connect(self._on_pose_ready)
         self.dlc_processor.error.connect(self._on_dlc_error)
@@ -507,32 +450,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ config
     def _apply_config(self, config: ApplicationSettings) -> None:
-        camera = config.camera
-        self.camera_fps.setValue(float(camera.fps))
-
-        # Set exposure and gain from config
-        self.camera_exposure.setValue(int(camera.exposure))
-        self.camera_gain.setValue(float(camera.gain))
-
-        # Set crop settings from config
-        self.crop_x0.setValue(int(camera.crop_x0) if hasattr(camera, "crop_x0") else 0)
-        self.crop_y0.setValue(int(camera.crop_y0) if hasattr(camera, "crop_y0") else 0)
-        self.crop_x1.setValue(int(camera.crop_x1) if hasattr(camera, "crop_x1") else 0)
-        self.crop_y1.setValue(int(camera.crop_y1) if hasattr(camera, "crop_y1") else 0)
-
-        backend_name = camera.backend or "opencv"
-        self.camera_backend.blockSignals(True)
-        index = self.camera_backend.findData(backend_name)
-        if index >= 0:
-            self.camera_backend.setCurrentIndex(index)
-        else:
-            self.camera_backend.setEditText(backend_name)
-        self.camera_backend.blockSignals(False)
-        self._refresh_camera_indices(keep_current=False)
-        self._select_camera_by_index(camera.index, fallback_text=camera.name or str(camera.index))
-
-        self._active_camera_settings = None
-        self._update_backend_specific_controls()
+        # Update active cameras label
+        self._update_active_cameras_label()
 
         dlc = config.dlc
         self.model_path_edit.setText(dlc.model_path)
@@ -566,121 +485,18 @@ class MainWindow(QMainWindow):
         self._bbox_color = viz.get_bbox_color_bgr()
 
     def _current_config(self) -> ApplicationSettings:
+        # Get the first camera from multi-camera config for backward compatibility
+        active_cameras = self._config.multi_camera.get_active_cameras()
+        camera = active_cameras[0] if active_cameras else CameraSettings()
+
         return ApplicationSettings(
-            camera=self._camera_settings_from_ui(),
+            camera=camera,
+            multi_camera=self._config.multi_camera,
             dlc=self._dlc_settings_from_ui(),
             recording=self._recording_settings_from_ui(),
             bbox=self._bbox_settings_from_ui(),
             visualization=self._visualization_settings_from_ui(),
         )
-
-    def _camera_settings_from_ui(self) -> CameraSettings:
-        index = self._current_camera_index_value()
-        if index is None:
-            raise ValueError("Camera selection must provide a numeric index")
-        backend_text = self._current_backend_name()
-
-        # Get exposure and gain from explicit UI fields
-        exposure = self.camera_exposure.value()
-        gain = self.camera_gain.value()
-
-        # Get crop settings from UI
-        crop_x0 = self.crop_x0.value()
-        crop_y0 = self.crop_y0.value()
-        crop_x1 = self.crop_x1.value()
-        crop_y1 = self.crop_y1.value()
-
-        name_text = self.camera_index.currentText().strip()
-        settings = CameraSettings(
-            name=name_text or f"Camera {index}",
-            index=index,
-            fps=self.camera_fps.value(),
-            backend=backend_text or "opencv",
-            exposure=exposure,
-            gain=gain,
-            crop_x0=crop_x0,
-            crop_y0=crop_y0,
-            crop_x1=crop_x1,
-            crop_y1=crop_y1,
-            properties={},
-        )
-        return settings.apply_defaults()
-
-    def _current_backend_name(self) -> str:
-        backend_data = self.camera_backend.currentData()
-        if isinstance(backend_data, str) and backend_data:
-            return backend_data
-        text = self.camera_backend.currentText().strip()
-        return text or "opencv"
-
-    def _refresh_camera_indices(self, *_args: object, keep_current: bool = True) -> None:
-        backend = self._current_backend_name()
-        # Get max_devices from config, default to 3
-        max_devices = (
-            self._config.camera.max_devices if hasattr(self._config.camera, "max_devices") else 3
-        )
-        detected = CameraFactory.detect_cameras(backend, max_devices=max_devices)
-        debug_info = [f"{camera.index}:{camera.label}" for camera in detected]
-        logging.info(f"[CameraDetection] Available cameras for backend '{backend}': {debug_info}")
-        self._detected_cameras = detected
-        previous_index = self._current_camera_index_value()
-        previous_text = self.camera_index.currentText()
-        self.camera_index.blockSignals(True)
-        self.camera_index.clear()
-        for camera in detected:
-            self.camera_index.addItem(camera.label, camera.index)
-        if keep_current and previous_index is not None:
-            self._select_camera_by_index(previous_index, fallback_text=previous_text)
-        elif detected:
-            self.camera_index.setCurrentIndex(0)
-        else:
-            if keep_current and previous_text:
-                self.camera_index.setEditText(previous_text)
-            else:
-                self.camera_index.setEditText("")
-        self.camera_index.blockSignals(False)
-
-    def _select_camera_by_index(self, index: int, fallback_text: Optional[str] = None) -> None:
-        self.camera_index.blockSignals(True)
-        for row in range(self.camera_index.count()):
-            if self.camera_index.itemData(row) == index:
-                self.camera_index.setCurrentIndex(row)
-                break
-        else:
-            text = fallback_text if fallback_text is not None else str(index)
-            self.camera_index.setEditText(text)
-        self.camera_index.blockSignals(False)
-
-    def _current_camera_index_value(self) -> Optional[int]:
-        data = self.camera_index.currentData()
-        if isinstance(data, int):
-            return data
-        text = self.camera_index.currentText().strip()
-        if not text:
-            return None
-        try:
-            return int(text)
-        except ValueError:
-            return None
-        debug_info = [f"{camera.index}:{camera.label}" for camera in detected]
-        logging.info(f"[CameraDetection] Available cameras for backend '{backend}': {debug_info}")
-        self._detected_cameras = detected
-        previous_index = self._current_camera_index_value()
-        previous_text = self.camera_index.currentText()
-        self.camera_index.blockSignals(True)
-        self.camera_index.clear()
-        for camera in detected:
-            self.camera_index.addItem(camera.label, camera.index)
-        if keep_current and previous_index is not None:
-            self._select_camera_by_index(previous_index, fallback_text=previous_text)
-        elif detected:
-            self.camera_index.setCurrentIndex(0)
-        else:
-            if keep_current and previous_text:
-                self.camera_index.setEditText(previous_text)
-            else:
-                self.camera_index.setEditText("")
-        self.camera_index.blockSignals(False)
 
     def _parse_json(self, value: str) -> dict:
         text = value.strip()
@@ -826,110 +642,221 @@ class MainWindow(QMainWindow):
             self._scanned_processors = {}
             self._processor_keys = []
 
-    def _on_backend_changed(self, *_args: object) -> None:
-        self._refresh_camera_indices(keep_current=False)
+    # ------------------------------------------------------------------ multi-camera
+    def _open_camera_config_dialog(self) -> None:
+        """Open the camera configuration dialog."""
+        dialog = CameraConfigDialog(self, self._config.multi_camera)
+        dialog.settings_changed.connect(self._on_multi_camera_settings_changed)
+        dialog.exec()
 
-    def _update_backend_specific_controls(self) -> None:
-        """Enable/disable controls based on selected backend."""
-        backend = self._current_backend_name()
-        is_opencv = backend.lower() == "opencv"
+    def _on_multi_camera_settings_changed(self, settings: MultiCameraSettings) -> None:
+        """Handle changes to multi-camera settings."""
+        self._config.multi_camera = settings
+        self._update_active_cameras_label()
+        active_count = len(settings.get_active_cameras())
+        self.statusBar().showMessage(
+            f"Camera configuration updated: {active_count} active camera(s)", 3000
+        )
 
-        # Disable exposure and gain controls for OpenCV backend
-        self.camera_exposure.setEnabled(not is_opencv)
-        self.camera_gain.setEnabled(not is_opencv)
-
-        # Set tooltip to explain why controls are disabled
-        if is_opencv:
-            tooltip = "Exposure and gain control not supported with OpenCV backend"
-            self.camera_exposure.setToolTip(tooltip)
-            self.camera_gain.setToolTip(tooltip)
+    def _update_active_cameras_label(self) -> None:
+        """Update the label showing active cameras."""
+        active_cams = self._config.multi_camera.get_active_cameras()
+        if not active_cams:
+            self.active_cameras_label.setText("No cameras configured")
+        elif len(active_cams) == 1:
+            cam = active_cams[0]
+            self.active_cameras_label.setText(
+                f"{cam.name} [{cam.backend}:{cam.index}] @ {cam.fps:.1f} fps"
+            )
         else:
-            self.camera_exposure.setToolTip("")
-            self.camera_gain.setToolTip("")
+            cam_names = [f"{c.name}" for c in active_cams]
+            self.active_cameras_label.setText(f"{len(active_cams)} cameras: {', '.join(cam_names)}")
 
-    def _on_rotation_changed(self, _index: int) -> None:
-        data = self.rotation_combo.currentData()
-        self._rotation_degrees = int(data) if isinstance(data, int) else 0
-        if self._raw_frame is not None:
-            rotated = self._apply_rotation(self._raw_frame)
-            self._current_frame = rotated
-            self._last_pose = None
-            self._display_frame(rotated, force=False)
+    def _on_multi_frame_ready(self, frame_data: MultiFrameData) -> None:
+        """Handle frames from multiple cameras."""
+        self._multi_camera_frames = frame_data.frames
+        self._track_camera_frame()  # Track FPS
+
+        # For single camera mode, also set raw_frame for DLC processing
+        if len(frame_data.frames) == 1:
+            cam_idx = next(iter(frame_data.frames.keys()))
+            self._raw_frame = frame_data.frames[cam_idx]
+
+        # Record individual camera feeds if recording is active
+        if self._multi_camera_recorders:
+            for cam_idx, frame in frame_data.frames.items():
+                if cam_idx in self._multi_camera_recorders:
+                    recorder = self._multi_camera_recorders[cam_idx]
+                    if recorder.is_running:
+                        timestamp = frame_data.timestamps.get(cam_idx, time.time())
+                        try:
+                            recorder.write(frame, timestamp=timestamp)
+                        except Exception as exc:
+                            logging.warning(f"Failed to write frame for camera {cam_idx}: {exc}")
+
+        # Display tiled frame (or single frame for 1 camera)
+        if frame_data.tiled_frame is not None:
+            self._current_frame = frame_data.tiled_frame
+            self._display_frame(frame_data.tiled_frame)
+
+        # For DLC processing, use single frame if only one camera
+        if self._dlc_active and len(frame_data.frames) == 1:
+            cam_idx = next(iter(frame_data.frames.keys()))
+            frame = frame_data.frames[cam_idx]
+            timestamp = frame_data.timestamps.get(cam_idx, time.time())
+            self.dlc_processor.enqueue_frame(frame, timestamp)
+
+    def _on_multi_camera_started(self) -> None:
+        """Handle all cameras started event."""
+        self.preview_button.setEnabled(False)
+        self.stop_preview_button.setEnabled(True)
+        active_count = self.multi_camera_controller.get_active_count()
+        self.statusBar().showMessage(
+            f"Multi-camera preview started: {active_count} camera(s)", 5000
+        )
+        self._update_inference_buttons()
+        self._update_camera_controls_enabled()
+
+    def _on_multi_camera_stopped(self) -> None:
+        """Handle all cameras stopped event."""
+        # Stop all multi-camera recorders
+        self._stop_multi_camera_recording()
+
+        self.preview_button.setEnabled(True)
+        self.stop_preview_button.setEnabled(False)
+        self._current_frame = None
+        self._multi_camera_frames.clear()
+        self.video_label.setPixmap(QPixmap())
+        self.video_label.setText("Camera preview not started")
+        self.statusBar().showMessage("Multi-camera preview stopped", 3000)
+        self._update_inference_buttons()
+        self._update_camera_controls_enabled()
+
+    def _on_multi_camera_error(self, camera_index: int, message: str) -> None:
+        """Handle error from a camera in multi-camera mode."""
+        self._show_warning(f"Camera {camera_index} error: {message}")
+
+    def _start_multi_camera_recording(self) -> None:
+        """Start recording from all active cameras."""
+        if self._multi_camera_recorders:
+            return  # Already recording
+
+        recording = self._recording_settings_from_ui()
+        if not recording.enabled:
+            self._show_error("Recording is disabled in the configuration.")
+            return
+
+        active_cams = self._config.multi_camera.get_active_cameras()
+        if not active_cams:
+            self._show_error("No active cameras configured.")
+            return
+
+        base_path = recording.output_path()
+        base_stem = base_path.stem
+
+        for cam in active_cams:
+            cam_idx = cam.index
+            # Create unique filename for each camera
+            cam_filename = f"{base_stem}_cam{cam_idx}{base_path.suffix}"
+            cam_path = base_path.parent / cam_filename
+
+            # Get frame from current frames if available
+            frame = self._multi_camera_frames.get(cam_idx)
+            frame_size = (frame.shape[0], frame.shape[1]) if frame is not None else None
+
+            recorder = VideoRecorder(
+                cam_path,
+                frame_size=frame_size,
+                frame_rate=float(cam.fps),
+                codec=recording.codec,
+                crf=recording.crf,
+            )
+
+            try:
+                recorder.start()
+                self._multi_camera_recorders[cam_idx] = recorder
+                logging.info(f"Started recording camera {cam_idx} to {cam_path}")
+            except Exception as exc:
+                self._show_error(f"Failed to start recording for camera {cam_idx}: {exc}")
+
+        if self._multi_camera_recorders:
+            self.start_record_button.setEnabled(False)
+            self.stop_record_button.setEnabled(True)
+            self.statusBar().showMessage(
+                f"Recording {len(self._multi_camera_recorders)} camera(s) to {recording.directory}",
+                5000,
+            )
+            self._update_camera_controls_enabled()
+
+    def _stop_multi_camera_recording(self) -> None:
+        """Stop recording from all cameras."""
+        if not self._multi_camera_recorders:
+            return
+
+        for cam_idx, recorder in self._multi_camera_recorders.items():
+            try:
+                recorder.stop()
+                logging.info(f"Stopped recording camera {cam_idx}")
+            except Exception as exc:
+                logging.warning(f"Error stopping recorder for camera {cam_idx}: {exc}")
+
+        self._multi_camera_recorders.clear()
+        self.start_record_button.setEnabled(True)
+        self.stop_record_button.setEnabled(False)
+        self.statusBar().showMessage("Multi-camera recording stopped", 3000)
+        self._update_camera_controls_enabled()
 
     # ------------------------------------------------------------------ camera control
     def _start_preview(self) -> None:
-        try:
-            settings = self._camera_settings_from_ui()
-        except ValueError as exc:
-            self._show_error(str(exc))
+        """Start camera preview - uses multi-camera controller for all configurations."""
+        active_cams = self._config.multi_camera.get_active_cameras()
+        if not active_cams:
+            self._show_error("No cameras configured. Use 'Configure Cameras...' to add cameras.")
             return
-        self._active_camera_settings = settings
-        self.camera_controller.start(settings)
+
+        # Determine if we're in single or multi-camera mode
+        self._multi_camera_mode = len(active_cams) > 1
+
         self.preview_button.setEnabled(False)
         self.stop_preview_button.setEnabled(True)
         self._current_frame = None
         self._raw_frame = None
         self._last_pose = None
-        self._dlc_active = False
+        self._multi_camera_frames.clear()
         self._camera_frame_times.clear()
         self._last_display_time = 0.0
+
         if hasattr(self, "camera_stats_label"):
-            self.camera_stats_label.setText("Camera starting…")
-        self.statusBar().showMessage("Starting camera preview…", 3000)
+            self.camera_stats_label.setText(f"Starting {len(active_cams)} camera(s)…")
+        self.statusBar().showMessage(f"Starting preview ({len(active_cams)} camera(s))…", 3000)
+
+        # Store active settings for single camera mode (for DLC, recording frame rate, etc.)
+        self._active_camera_settings = active_cams[0] if active_cams else None
+
+        self.multi_camera_controller.start(active_cams)
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
 
     def _stop_preview(self) -> None:
-        if not self.camera_controller.is_running():
+        """Stop camera preview."""
+        if not self.multi_camera_controller.is_running():
             return
+
         self.preview_button.setEnabled(False)
         self.stop_preview_button.setEnabled(False)
         self.start_inference_button.setEnabled(False)
         self.stop_inference_button.setEnabled(False)
-        self.statusBar().showMessage("Stopping camera preview…", 3000)
-        self.camera_controller.stop()
+        self.statusBar().showMessage("Stopping preview…", 3000)
+
+        # Stop any active recording first
+        self._stop_multi_camera_recording()
+
+        self.multi_camera_controller.stop()
         self._stop_inference(show_message=False)
         self._camera_frame_times.clear()
         self._last_display_time = 0.0
         if hasattr(self, "camera_stats_label"):
             self.camera_stats_label.setText("Camera idle")
-
-    def _on_camera_started(self, settings: CameraSettings) -> None:
-        self._active_camera_settings = settings
-        self.preview_button.setEnabled(False)
-        self.stop_preview_button.setEnabled(True)
-        if getattr(settings, "fps", None):
-            self.camera_fps.blockSignals(True)
-            self.camera_fps.setValue(float(settings.fps))
-            self.camera_fps.blockSignals(False)
-        # Resolution will be determined from actual camera frames
-        if getattr(settings, "fps", None):
-            fps_text = f"{float(settings.fps):.2f} FPS"
-        else:
-            fps_text = "unknown FPS"
-        self.statusBar().showMessage(f"Camera preview started @ {fps_text}", 5000)
-        self._update_inference_buttons()
-        self._update_camera_controls_enabled()
-
-    def _on_camera_stopped(self) -> None:
-        if self._video_recorder and self._video_recorder.is_running:
-            self._stop_recording()
-        self.preview_button.setEnabled(True)
-        self.stop_preview_button.setEnabled(False)
-        self._stop_inference(show_message=False)
-        self._current_frame = None
-        self._raw_frame = None
-        self._last_pose = None
-        self._active_camera_settings = None
-        self.video_label.setPixmap(QPixmap())
-        self.video_label.setText("Camera preview not started")
-        self.statusBar().showMessage("Camera preview stopped", 3000)
-        self._camera_frame_times.clear()
-        self._last_display_time = 0.0
-        if hasattr(self, "camera_stats_label"):
-            self.camera_stats_label.setText("Camera idle")
-        self._update_inference_buttons()
-        self._update_camera_controls_enabled()
 
     def _configure_dlc(self) -> bool:
         try:
@@ -962,7 +889,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _update_inference_buttons(self) -> None:
-        preview_running = self.camera_controller.is_running()
+        preview_running = self.multi_camera_controller.is_running()
         self.start_inference_button.setEnabled(preview_running and not self._dlc_active)
         self.stop_inference_button.setEnabled(preview_running and self._dlc_active)
 
@@ -982,29 +909,20 @@ class MainWindow(QMainWindow):
             widget.setEnabled(allow_changes)
 
     def _update_camera_controls_enabled(self) -> None:
-        recording_active = self._video_recorder is not None and self._video_recorder.is_running
-        allow_changes = (
-            not self.camera_controller.is_running()
-            and not self._dlc_active
-            and not recording_active
-        )
-        widgets = [
-            self.camera_backend,
-            self.camera_index,
-            self.refresh_cameras_button,
-            self.camera_fps,
-            self.camera_exposure,
-            self.camera_gain,
-            self.crop_x0,
-            self.crop_y0,
-            self.crop_x1,
-            self.crop_y1,
-            self.rotation_combo,
-            self.codec_combo,
-            self.crf_spin,
-        ]
-        for widget in widgets:
-            widget.setEnabled(allow_changes)
+        multi_cam_recording = bool(self._multi_camera_recorders)
+
+        # Check if preview is running
+        preview_running = self.multi_camera_controller.is_running()
+
+        allow_changes = not preview_running and not self._dlc_active and not multi_cam_recording
+
+        # Recording settings (codec, crf) should be editable when not recording
+        recording_editable = not multi_cam_recording
+        self.codec_combo.setEnabled(recording_editable)
+        self.crf_spin.setEnabled(recording_editable)
+
+        # Config cameras button should be available when not in preview/recording
+        self.config_cameras_button.setEnabled(allow_changes)
 
     def _track_camera_frame(self) -> None:
         now = time.perf_counter()
@@ -1081,12 +999,23 @@ class MainWindow(QMainWindow):
 
     def _update_metrics(self) -> None:
         if hasattr(self, "camera_stats_label"):
-            if self.camera_controller.is_running():
+            running = self.multi_camera_controller.is_running()
+
+            if running:
+                active_count = self.multi_camera_controller.get_active_count()
                 fps = self._compute_fps(self._camera_frame_times)
                 if fps > 0:
-                    self.camera_stats_label.setText(f"{fps:.1f} fps (last 5 s)")
+                    if active_count > 1:
+                        self.camera_stats_label.setText(
+                            f"{active_count} cameras | {fps:.1f} fps (last 5 s)"
+                        )
+                    else:
+                        self.camera_stats_label.setText(f"{fps:.1f} fps (last 5 s)")
                 else:
-                    self.camera_stats_label.setText("Measuring…")
+                    if active_count > 1:
+                        self.camera_stats_label.setText(f"{active_count} cameras | Measuring…")
+                    else:
+                        self.camera_stats_label.setText("Measuring…")
             else:
                 self.camera_stats_label.setText("Camera idle")
 
@@ -1103,15 +1032,40 @@ class MainWindow(QMainWindow):
             self._update_processor_status()
 
         if hasattr(self, "recording_stats_label"):
-            if self._video_recorder is not None:
-                stats = self._video_recorder.get_stats()
-                if stats is not None:
-                    summary = self._format_recorder_stats(stats)
-                    self._last_recorder_summary = summary
-                    self.recording_stats_label.setText(summary)
-                elif not self._video_recorder.is_running:
-                    self._last_recorder_summary = "Recorder idle"
-                    self.recording_stats_label.setText(self._last_recorder_summary)
+            # Handle multi-camera recording stats
+            if self._multi_camera_recorders:
+                num_recorders = len(self._multi_camera_recorders)
+                if num_recorders == 1:
+                    # Single camera - show detailed stats
+                    recorder = next(iter(self._multi_camera_recorders.values()))
+                    stats = recorder.get_stats()
+                    if stats:
+                        summary = self._format_recorder_stats(stats)
+                    else:
+                        summary = "Recording..."
+                else:
+                    # Multiple cameras - show aggregated stats with per-camera details
+                    total_written = 0
+                    total_dropped = 0
+                    total_queue = 0
+                    max_latency = 0.0
+                    avg_latencies = []
+                    for recorder in self._multi_camera_recorders.values():
+                        stats = recorder.get_stats()
+                        if stats:
+                            total_written += stats.frames_written
+                            total_dropped += stats.dropped_frames
+                            total_queue += stats.queue_size
+                            max_latency = max(max_latency, stats.last_latency)
+                            avg_latencies.append(stats.average_latency)
+                    avg_latency = sum(avg_latencies) / len(avg_latencies) if avg_latencies else 0.0
+                    summary = (
+                        f"{num_recorders} cams | {total_written} frames | "
+                        f"latency {max_latency*1000:.1f}ms (avg {avg_latency*1000:.1f}ms) | "
+                        f"queue {total_queue} | dropped {total_dropped}"
+                    )
+                self._last_recorder_summary = summary
+                self.recording_stats_label.setText(summary)
             else:
                 self.recording_stats_label.setText(self._last_recorder_summary)
 
@@ -1150,7 +1104,7 @@ class MainWindow(QMainWindow):
             if current_vid_recording != self._last_processor_vid_recording:
                 if current_vid_recording:
                     # Start video recording
-                    if not self._video_recorder or not self._video_recorder.is_running:
+                    if not self._multi_camera_recorders:
                         # Get session name from processor
                         session_name = getattr(processor, "session_name", "auto_session")
                         self._auto_record_session_name = session_name
@@ -1166,7 +1120,7 @@ class MainWindow(QMainWindow):
                         logging.info(f"Auto-recording started for session: {session_name}")
                 else:
                     # Stop video recording
-                    if self._video_recorder and self._video_recorder.is_running:
+                    if self._multi_camera_recorders:
                         self._stop_recording()
                         self.statusBar().showMessage("Auto-stopped recording", 3000)
                         logging.info("Auto-recording stopped")
@@ -1177,7 +1131,7 @@ class MainWindow(QMainWindow):
         if self._dlc_active:
             self.statusBar().showMessage("Pose inference already running", 3000)
             return
-        if not self.camera_controller.is_running():
+        if not self.multi_camera_controller.is_running():
             self._show_error("Start the camera preview before running pose inference.")
             return
         if not self._configure_dlc():
@@ -1221,166 +1175,23 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ recording
     def _start_recording(self) -> None:
-        # If recorder already running, nothing to do
-        if self._video_recorder and self._video_recorder.is_running:
+        """Start recording from all active cameras."""
+        # Auto-start preview if not running
+        if not self.multi_camera_controller.is_running():
+            self._start_preview()
+            # Wait a moment for cameras to initialize before recording
+            # The recording will start after preview is confirmed running
+            self.statusBar().showMessage("Starting preview before recording...", 3000)
+            # Use a single-shot timer to start recording after preview starts
+            QTimer.singleShot(500, self._start_multi_camera_recording)
             return
 
-        # If camera not running, start it automatically so frames will arrive.
-        # This allows starting recording without the user manually pressing "Start Preview".
-        if not self.camera_controller.is_running():
-            try:
-                settings = self._camera_settings_from_ui()
-            except ValueError as exc:
-                self._show_error(str(exc))
-                return
-            # Store active settings and start camera preview in background
-            self._active_camera_settings = settings
-            self.camera_controller.start(settings)
-            self.preview_button.setEnabled(False)
-            self.stop_preview_button.setEnabled(True)
-            self._current_frame = None
-            self._raw_frame = None
-            self._last_pose = None
-            self._dlc_active = False
-            self._camera_frame_times.clear()
-            self._last_display_time = 0.0
-            if hasattr(self, "camera_stats_label"):
-                self.camera_stats_label.setText("Camera starting…")
-            self.statusBar().showMessage("Starting camera preview…", 3000)
-            self._update_inference_buttons()
-            self._update_camera_controls_enabled()
-        recording = self._recording_settings_from_ui()
-        if not recording.enabled:
-            self._show_error("Recording is disabled in the configuration.")
-            return
-
-        # If we already have a current frame, use its shape to set the recorder stream.
-        # Otherwise start the recorder without a fixed frame_size and configure it
-        # once the first frame arrives (see _on_frame_ready).
-        frame = self._current_frame
-        if frame is not None:
-            height, width = frame.shape[:2]
-            frame_size = (height, width)
-        else:
-            frame_size = None
-
-        frame_rate = (
-            self._active_camera_settings.fps
-            if self._active_camera_settings is not None
-            else self.camera_fps.value()
-        )
-
-        output_path = recording.output_path()
-        self._video_recorder = VideoRecorder(
-            output_path,
-            frame_size=frame_size,  # None allowed; will be configured on first frame
-            frame_rate=float(frame_rate) if frame_rate is not None else None,
-            codec=recording.codec,
-            crf=recording.crf,
-        )
-        self._last_drop_warning = 0.0
-        try:
-            self._video_recorder.start()
-        except Exception as exc:  # pragma: no cover - runtime error
-            self._show_error(str(exc))
-            self._video_recorder = None
-            return
-        self.start_record_button.setEnabled(False)
-        self.stop_record_button.setEnabled(True)
-        if hasattr(self, "recording_stats_label"):
-            self._last_recorder_summary = "Recorder running…"
-            self.recording_stats_label.setText(self._last_recorder_summary)
-        self.statusBar().showMessage(f"Recording to {output_path}", 5000)
-        self._update_camera_controls_enabled()
+        # Preview already running, start recording immediately
+        self._start_multi_camera_recording()
 
     def _stop_recording(self) -> None:
-        if not self._video_recorder:
-            return
-        recorder = self._video_recorder
-        recorder.stop()
-        stats = recorder.get_stats() if recorder is not None else None
-        self._video_recorder = None
-        self.start_record_button.setEnabled(True)
-        self.stop_record_button.setEnabled(False)
-        if hasattr(self, "recording_stats_label"):
-            if stats is not None:
-                summary = self._format_recorder_stats(stats)
-            else:
-                summary = "Recorder idle"
-            self._last_recorder_summary = summary
-            self.recording_stats_label.setText(summary)
-        else:
-            self._last_recorder_summary = (
-                self._format_recorder_stats(stats) if stats is not None else "Recorder idle"
-            )
-        self._last_drop_warning = 0.0
-        self.statusBar().showMessage("Recording stopped", 3000)
-        self._update_camera_controls_enabled()
-
-    # ------------------------------------------------------------------ frame handling
-    def _on_frame_ready(self, frame_data: FrameData) -> None:
-        raw_frame = frame_data.image
-        self._raw_frame = raw_frame
-
-        # Apply cropping before rotation
-        frame = self._apply_crop(raw_frame)
-
-        # Apply rotation
-        frame = self._apply_rotation(frame)
-        frame = np.ascontiguousarray(frame)
-        self._current_frame = frame
-        self._track_camera_frame()
-        # If recorder is running but was started without a fixed frame_size, configure
-        # the stream now that we know the actual frame dimensions.
-        if self._video_recorder and self._video_recorder.is_running:
-            # Configure stream if recorder was started without a frame_size
-            try:
-                current_frame_size = getattr(self._video_recorder, "_frame_size", None)
-            except Exception:
-                current_frame_size = None
-            if current_frame_size is None:
-                try:
-                    fps_value = (
-                        self._active_camera_settings.fps
-                        if self._active_camera_settings is not None
-                        else self.camera_fps.value()
-                    )
-                except Exception:
-                    fps_value = None
-                h, w = frame.shape[:2]
-                try:
-                    # configure_stream expects (height, width)
-                    self._video_recorder.configure_stream(
-                        (h, w), float(fps_value) if fps_value is not None else None
-                    )
-                except Exception:
-                    # Non-fatal: continue and attempt to write anyway
-                    pass
-            try:
-                success = self._video_recorder.write(frame, timestamp=frame_data.timestamp)
-                if not success:
-                    now = time.perf_counter()
-                    if now - self._last_drop_warning > 1.0:
-                        self.statusBar().showMessage("Recorder backlog full; dropping frames", 2000)
-                        self._last_drop_warning = now
-            except RuntimeError as exc:
-                # Check if it's a frame size error
-                if "Frame size changed" in str(exc):
-                    self._show_warning(f"Camera resolution changed - restarting recording: {exc}")
-                    was_recording = self._video_recorder and self._video_recorder.is_running
-                    self._stop_recording()
-                    # Restart recording with new resolution if it was already running
-                    if was_recording:
-                        try:
-                            self._start_recording()
-                        except Exception as restart_exc:
-                            self._show_error(f"Failed to restart recording: {restart_exc}")
-                else:
-                    self._show_error(str(exc))
-                    self._stop_recording()
-        if self._dlc_active:
-            self.dlc_processor.enqueue_frame(frame, frame_data.timestamp)
-        self._display_frame(frame)
+        """Stop recording from all cameras."""
+        self._stop_multi_camera_recording()
 
     def _on_pose_ready(self, result: PoseResult) -> None:
         if not self._dlc_active:
@@ -1412,40 +1223,6 @@ class MainWindow(QMainWindow):
         bytes_per_line = ch * w
         image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         self.video_label.setPixmap(QPixmap.fromImage(image))
-
-    def _apply_crop(self, frame: np.ndarray) -> np.ndarray:
-        """Apply cropping to the frame based on settings."""
-        if self._active_camera_settings is None:
-            return frame
-
-        crop_region = self._active_camera_settings.get_crop_region()
-        if crop_region is None:
-            return frame
-
-        x0, y0, x1, y1 = crop_region
-        height, width = frame.shape[:2]
-
-        # Validate and constrain crop coordinates
-        x0 = max(0, min(x0, width))
-        y0 = max(0, min(y0, height))
-        x1 = max(x0, min(x1, width)) if x1 > 0 else width
-        y1 = max(y0, min(y1, height)) if y1 > 0 else height
-
-        # Apply crop
-        if x0 < x1 and y0 < y1:
-            return frame[y0:y1, x0:x1]
-        else:
-            # Invalid crop region, return original frame
-            return frame
-
-    def _apply_rotation(self, frame: np.ndarray) -> np.ndarray:
-        if self._rotation_degrees == 90:
-            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        if self._rotation_degrees == 180:
-            return cv2.rotate(frame, cv2.ROTATE_180)
-        if self._rotation_degrees == 270:
-            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        return frame
 
     def _on_show_predictions_changed(self, _state: int) -> None:
         if self._current_frame is not None:
@@ -1539,10 +1316,13 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ Qt overrides
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour
-        if self.camera_controller.is_running():
-            self.camera_controller.stop(wait=True)
-        if self._video_recorder and self._video_recorder.is_running:
-            self._video_recorder.stop()
+        if self.multi_camera_controller.is_running():
+            self.multi_camera_controller.stop(wait=True)
+        # Stop all multi-camera recorders
+        for recorder in self._multi_camera_recorders.values():
+            if recorder.is_running:
+                recorder.stop()
+        self._multi_camera_recorders.clear()
         self.dlc_processor.shutdown()
         if hasattr(self, "_metrics_timer"):
             self._metrics_timer.stop()

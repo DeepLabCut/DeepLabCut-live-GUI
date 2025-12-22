@@ -23,6 +23,8 @@ class CameraSettings:
     crop_x1: int = 0  # Right edge of crop region (0 = no crop)
     crop_y1: int = 0  # Bottom edge of crop region (0 = no crop)
     max_devices: int = 3  # Maximum number of devices to probe during detection
+    rotation: int = 0  # Rotation degrees (0, 90, 180, 270)
+    enabled: bool = True  # Whether this camera is active in multi-camera mode
     properties: Dict[str, Any] = field(default_factory=dict)
 
     def apply_defaults(self) -> "CameraSettings":
@@ -43,6 +45,74 @@ class CameraSettings:
             return None
         return (self.crop_x0, self.crop_y0, self.crop_x1, self.crop_y1)
 
+    def copy(self) -> "CameraSettings":
+        """Create a copy of this settings object."""
+        return CameraSettings(
+            name=self.name,
+            index=self.index,
+            fps=self.fps,
+            backend=self.backend,
+            exposure=self.exposure,
+            gain=self.gain,
+            crop_x0=self.crop_x0,
+            crop_y0=self.crop_y0,
+            crop_x1=self.crop_x1,
+            crop_y1=self.crop_y1,
+            max_devices=self.max_devices,
+            rotation=self.rotation,
+            enabled=self.enabled,
+            properties=dict(self.properties),
+        )
+
+
+@dataclass
+class MultiCameraSettings:
+    """Configuration for multiple cameras."""
+
+    cameras: list = field(default_factory=list)  # List of CameraSettings
+    max_cameras: int = 4  # Maximum number of cameras that can be active
+    tile_layout: str = "auto"  # "auto", "2x2", "1x4", "4x1"
+
+    def get_active_cameras(self) -> list:
+        """Get list of enabled cameras."""
+        return [cam for cam in self.cameras if cam.enabled]
+
+    def add_camera(self, settings: CameraSettings) -> bool:
+        """Add a camera to the configuration. Returns True if successful."""
+        if len(self.get_active_cameras()) >= self.max_cameras and settings.enabled:
+            return False
+        self.cameras.append(settings)
+        return True
+
+    def remove_camera(self, index: int) -> bool:
+        """Remove camera at the given list index."""
+        if 0 <= index < len(self.cameras):
+            del self.cameras[index]
+            return True
+        return False
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MultiCameraSettings":
+        """Create MultiCameraSettings from a dictionary."""
+        cameras = []
+        for cam_data in data.get("cameras", []):
+            cam = CameraSettings(**cam_data)
+            cam.apply_defaults()
+            cameras.append(cam)
+        return cls(
+            cameras=cameras,
+            max_cameras=data.get("max_cameras", 4),
+            tile_layout=data.get("tile_layout", "auto"),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "cameras": [asdict(cam) for cam in self.cameras],
+            "max_cameras": self.max_cameras,
+            "tile_layout": self.tile_layout,
+        }
+
 
 @dataclass
 class DLCProcessorSettings:
@@ -50,7 +120,9 @@ class DLCProcessorSettings:
 
     model_path: str = ""
     model_directory: str = "."  # Default directory for model browser (current dir if not set)
-    device: Optional[str] = "auto"  # Device for inference (e.g., "cuda:0", "cpu"). None should be auto, but might default to cpu
+    device: Optional[str] = (
+        "auto"  # Device for inference (e.g., "cuda:0", "cpu"). None should be auto, but might default to cpu
+    )
     dynamic: tuple = (False, 0.5, 10)  # Dynamic cropping: (enabled, margin, max_missing_frames)
     resize: float = 1.0  # Resize factor for input frames
     precision: str = "FP32"  # Inference precision ("FP32", "FP16")
@@ -126,6 +198,7 @@ class ApplicationSettings:
     """Top level application configuration."""
 
     camera: CameraSettings = field(default_factory=CameraSettings)
+    multi_camera: MultiCameraSettings = field(default_factory=MultiCameraSettings)
     dlc: DLCProcessorSettings = field(default_factory=DLCProcessorSettings)
     recording: RecordingSettings = field(default_factory=RecordingSettings)
     bbox: BoundingBoxSettings = field(default_factory=BoundingBoxSettings)
@@ -136,6 +209,14 @@ class ApplicationSettings:
         """Create an :class:`ApplicationSettings` from a dictionary."""
 
         camera = CameraSettings(**data.get("camera", {})).apply_defaults()
+
+        # Parse multi-camera settings
+        multi_camera_data = data.get("multi_camera", {})
+        if multi_camera_data:
+            multi_camera = MultiCameraSettings.from_dict(multi_camera_data)
+        else:
+            multi_camera = MultiCameraSettings()
+
         dlc_data = dict(data.get("dlc", {}))
         # Parse dynamic parameter - can be list or tuple in JSON
         dynamic_raw = dlc_data.get("dynamic", [False, 0.5, 10])
@@ -158,7 +239,12 @@ class ApplicationSettings:
         bbox = BoundingBoxSettings(**data.get("bbox", {}))
         visualization = VisualizationSettings(**data.get("visualization", {}))
         return cls(
-            camera=camera, dlc=dlc, recording=recording, bbox=bbox, visualization=visualization
+            camera=camera,
+            multi_camera=multi_camera,
+            dlc=dlc,
+            recording=recording,
+            bbox=bbox,
+            visualization=visualization,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -166,6 +252,7 @@ class ApplicationSettings:
 
         return {
             "camera": asdict(self.camera),
+            "multi_camera": self.multi_camera.to_dict(),
             "dlc": asdict(self.dlc),
             "recording": asdict(self.recording),
             "bbox": asdict(self.bbox),
