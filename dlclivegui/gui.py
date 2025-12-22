@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QStatusBar,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -50,7 +51,7 @@ from dlclivegui.config import (
     VisualizationSettings,
 )
 from dlclivegui.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStats
-from dlclivegui.multi_camera_controller import MultiCameraController, MultiFrameData
+from dlclivegui.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
 from dlclivegui.processors.processor_utils import instantiate_from_scan, scan_processor_folder
 from dlclivegui.video_recorder import RecorderStats, VideoRecorder
 
@@ -114,8 +115,8 @@ class MainWindow(QMainWindow):
 
         # Multi-camera state
         self._multi_camera_mode = False
-        self._multi_camera_recorders: dict[int, VideoRecorder] = {}
-        self._multi_camera_frames: dict[int, np.ndarray] = {}
+        self._multi_camera_recorders: dict[str, VideoRecorder] = {}
+        self._multi_camera_frames: dict[str, np.ndarray] = {}
 
         self._setup_ui()
         self._connect_signals()
@@ -208,8 +209,12 @@ class MainWindow(QMainWindow):
         button_bar = QHBoxLayout(button_bar_widget)
         button_bar.setContentsMargins(0, 5, 0, 5)
         self.preview_button = QPushButton("Start Preview")
+        self.preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.preview_button.setMinimumWidth(150)
         self.stop_preview_button = QPushButton("Stop Preview")
+        self.stop_preview_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+        )
         self.stop_preview_button.setEnabled(False)
         self.stop_preview_button.setMinimumWidth(150)
         button_bar.addWidget(self.preview_button)
@@ -252,6 +257,9 @@ class MainWindow(QMainWindow):
         # Camera config button - opens dialog for all camera configuration
         config_layout = QHBoxLayout()
         self.config_cameras_button = QPushButton("Configure Cameras...")
+        self.config_cameras_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        )
         self.config_cameras_button.setToolTip("Configure camera settings (single or multi-camera)")
         config_layout.addWidget(self.config_cameras_button)
         form.addRow(config_layout)
@@ -272,6 +280,9 @@ class MainWindow(QMainWindow):
         self.model_path_edit.setPlaceholderText("/path/to/exported/model")
         path_layout.addWidget(self.model_path_edit)
         self.browse_model_button = QPushButton("Browse…")
+        self.browse_model_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
+        )
         self.browse_model_button.clicked.connect(self._action_browse_model)
         path_layout.addWidget(self.browse_model_button)
         form.addRow("Model file", path_layout)
@@ -283,10 +294,16 @@ class MainWindow(QMainWindow):
         processor_path_layout.addWidget(self.processor_folder_edit)
 
         self.browse_processor_folder_button = QPushButton("Browse...")
+        self.browse_processor_folder_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
+        )
         self.browse_processor_folder_button.clicked.connect(self._action_browse_processor_folder)
         processor_path_layout.addWidget(self.browse_processor_folder_button)
 
         self.refresh_processors_button = QPushButton("Refresh")
+        self.refresh_processors_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        )
         self.refresh_processors_button.clicked.connect(self._refresh_processors)
         processor_path_layout.addWidget(self.refresh_processors_button)
         form.addRow("Processor folder", processor_path_layout)
@@ -305,10 +322,16 @@ class MainWindow(QMainWindow):
         inference_buttons = QHBoxLayout(inference_button_widget)
         inference_buttons.setContentsMargins(0, 0, 0, 0)
         self.start_inference_button = QPushButton("Start pose inference")
+        self.start_inference_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
+        )
         self.start_inference_button.setEnabled(False)
         self.start_inference_button.setMinimumWidth(150)
         inference_buttons.addWidget(self.start_inference_button)
         self.stop_inference_button = QPushButton("Stop pose inference")
+        self.stop_inference_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserStop)
+        )
         self.stop_inference_button.setEnabled(False)
         self.stop_inference_button.setMinimumWidth(150)
         inference_buttons.addWidget(self.stop_inference_button)
@@ -339,6 +362,7 @@ class MainWindow(QMainWindow):
         self.output_directory_edit = QLineEdit()
         dir_layout.addWidget(self.output_directory_edit)
         browse_dir = QPushButton("Browse…")
+        browse_dir.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         browse_dir.clicked.connect(self._action_browse_directory)
         dir_layout.addWidget(browse_dir)
         form.addRow("Output directory", dir_layout)
@@ -369,9 +393,15 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout(recording_button_widget)
         buttons.setContentsMargins(0, 0, 0, 0)
         self.start_record_button = QPushButton("Start recording")
+        self.start_record_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton)
+        )
         self.start_record_button.setMinimumWidth(150)
         buttons.addWidget(self.start_record_button)
         self.stop_record_button = QPushButton("Stop recording")
+        self.stop_record_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogNoButton)
+        )
         self.stop_record_button.setEnabled(False)
         self.stop_record_button.setMinimumWidth(150)
         buttons.addWidget(self.stop_record_button)
@@ -679,20 +709,20 @@ class MainWindow(QMainWindow):
 
         # For single camera mode, also set raw_frame for DLC processing
         if len(frame_data.frames) == 1:
-            cam_idx = next(iter(frame_data.frames.keys()))
-            self._raw_frame = frame_data.frames[cam_idx]
+            cam_id = next(iter(frame_data.frames.keys()))
+            self._raw_frame = frame_data.frames[cam_id]
 
         # Record individual camera feeds if recording is active
         if self._multi_camera_recorders:
-            for cam_idx, frame in frame_data.frames.items():
-                if cam_idx in self._multi_camera_recorders:
-                    recorder = self._multi_camera_recorders[cam_idx]
+            for cam_id, frame in frame_data.frames.items():
+                if cam_id in self._multi_camera_recorders:
+                    recorder = self._multi_camera_recorders[cam_id]
                     if recorder.is_running:
-                        timestamp = frame_data.timestamps.get(cam_idx, time.time())
+                        timestamp = frame_data.timestamps.get(cam_id, time.time())
                         try:
                             recorder.write(frame, timestamp=timestamp)
                         except Exception as exc:
-                            logging.warning(f"Failed to write frame for camera {cam_idx}: {exc}")
+                            logging.warning(f"Failed to write frame for camera {cam_id}: {exc}")
 
         # Display tiled frame (or single frame for 1 camera)
         if frame_data.tiled_frame is not None:
@@ -701,9 +731,9 @@ class MainWindow(QMainWindow):
 
         # For DLC processing, use single frame if only one camera
         if self._dlc_active and len(frame_data.frames) == 1:
-            cam_idx = next(iter(frame_data.frames.keys()))
-            frame = frame_data.frames[cam_idx]
-            timestamp = frame_data.timestamps.get(cam_idx, time.time())
+            cam_id = next(iter(frame_data.frames.keys()))
+            frame = frame_data.frames[cam_id]
+            timestamp = frame_data.timestamps.get(cam_id, time.time())
             self.dlc_processor.enqueue_frame(frame, timestamp)
 
     def _on_multi_camera_started(self) -> None:
@@ -732,9 +762,9 @@ class MainWindow(QMainWindow):
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
 
-    def _on_multi_camera_error(self, camera_index: int, message: str) -> None:
+    def _on_multi_camera_error(self, camera_id: str, message: str) -> None:
         """Handle error from a camera in multi-camera mode."""
-        self._show_warning(f"Camera {camera_index} error: {message}")
+        self._show_warning(f"Camera {camera_id} error: {message}")
 
     def _start_multi_camera_recording(self) -> None:
         """Start recording from all active cameras."""
@@ -755,13 +785,13 @@ class MainWindow(QMainWindow):
         base_stem = base_path.stem
 
         for cam in active_cams:
-            cam_idx = cam.index
+            cam_id = get_camera_id(cam)
             # Create unique filename for each camera
-            cam_filename = f"{base_stem}_cam{cam_idx}{base_path.suffix}"
+            cam_filename = f"{base_stem}_{cam.backend}_cam{cam.index}{base_path.suffix}"
             cam_path = base_path.parent / cam_filename
 
             # Get frame from current frames if available
-            frame = self._multi_camera_frames.get(cam_idx)
+            frame = self._multi_camera_frames.get(cam_id)
             frame_size = (frame.shape[0], frame.shape[1]) if frame is not None else None
 
             recorder = VideoRecorder(
@@ -774,10 +804,10 @@ class MainWindow(QMainWindow):
 
             try:
                 recorder.start()
-                self._multi_camera_recorders[cam_idx] = recorder
-                logging.info(f"Started recording camera {cam_idx} to {cam_path}")
+                self._multi_camera_recorders[cam_id] = recorder
+                logging.info(f"Started recording camera {cam_id} to {cam_path}")
             except Exception as exc:
-                self._show_error(f"Failed to start recording for camera {cam_idx}: {exc}")
+                self._show_error(f"Failed to start recording for camera {cam_id}: {exc}")
 
         if self._multi_camera_recorders:
             self.start_record_button.setEnabled(False)
@@ -793,12 +823,12 @@ class MainWindow(QMainWindow):
         if not self._multi_camera_recorders:
             return
 
-        for cam_idx, recorder in self._multi_camera_recorders.items():
+        for cam_id, recorder in self._multi_camera_recorders.items():
             try:
                 recorder.stop()
-                logging.info(f"Stopped recording camera {cam_idx}")
+                logging.info(f"Stopped recording camera {cam_id}")
             except Exception as exc:
-                logging.warning(f"Error stopping recorder for camera {cam_idx}: {exc}")
+                logging.warning(f"Error stopping recorder for camera {cam_id}: {exc}")
 
         self._multi_camera_recorders.clear()
         self.start_record_button.setEnabled(True)

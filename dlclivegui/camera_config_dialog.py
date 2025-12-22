@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -78,10 +79,15 @@ class CameraConfigDialog(QDialog):
         # Buttons for managing active cameras
         list_buttons = QHBoxLayout()
         self.remove_camera_btn = QPushButton("Remove")
+        self.remove_camera_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        )
         self.remove_camera_btn.setEnabled(False)
         self.move_up_btn = QPushButton("↑")
+        self.move_up_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
         self.move_up_btn.setEnabled(False)
         self.move_down_btn = QPushButton("↓")
+        self.move_down_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
         self.move_down_btn.setEnabled(False)
         list_buttons.addWidget(self.remove_camera_btn)
         list_buttons.addWidget(self.move_up_btn)
@@ -106,6 +112,7 @@ class CameraConfigDialog(QDialog):
             self.backend_combo.addItem(label, backend)
         backend_layout.addWidget(self.backend_combo)
         self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         backend_layout.addWidget(self.refresh_btn)
         available_layout.addLayout(backend_layout)
 
@@ -113,6 +120,7 @@ class CameraConfigDialog(QDialog):
         available_layout.addWidget(self.available_cameras_list)
 
         self.add_camera_btn = QPushButton("Add Selected Camera →")
+        self.add_camera_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight))
         self.add_camera_btn.setEnabled(False)
         available_layout.addWidget(self.add_camera_btn)
 
@@ -199,6 +207,9 @@ class CameraConfigDialog(QDialog):
         self.settings_form.addRow("Crop (x0,y0,x1,y1):", crop_widget)
 
         self.apply_settings_btn = QPushButton("Apply Settings")
+        self.apply_settings_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+        )
         self.apply_settings_btn.setEnabled(False)
         self.settings_form.addRow(self.apply_settings_btn)
 
@@ -208,7 +219,11 @@ class CameraConfigDialog(QDialog):
         # Dialog buttons
         button_layout = QHBoxLayout()
         self.ok_btn = QPushButton("OK")
+        self.ok_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOkButton))
         self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton)
+        )
         button_layout.addStretch(1)
         button_layout.addWidget(self.ok_btn)
         button_layout.addWidget(self.cancel_btn)
@@ -351,6 +366,17 @@ class CameraConfigDialog(QDialog):
         item = self.available_cameras_list.item(row)
         detected = item.data(Qt.ItemDataRole.UserRole)
         backend = self.backend_combo.currentData() or "opencv"
+
+        # Check if this camera (same backend + index) is already added
+        for i in range(self.active_cameras_list.count()):
+            existing_cam = self.active_cameras_list.item(i).data(Qt.ItemDataRole.UserRole)
+            if existing_cam.backend == backend and existing_cam.index == detected.index:
+                QMessageBox.warning(
+                    self,
+                    "Duplicate Camera",
+                    f"Camera '{backend}:{detected.index}' is already in the active list.",
+                )
+                return
 
         # Create new camera settings
         new_cam = CameraSettings(

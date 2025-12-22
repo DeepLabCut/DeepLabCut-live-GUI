@@ -25,6 +25,10 @@ class BaslerCameraBackend(CameraBackend):
         super().__init__(settings)
         self._camera: Optional["pylon.InstantCamera"] = None
         self._converter: Optional["pylon.ImageFormatConverter"] = None
+        # Parse resolution with defaults (720x540)
+        self._resolution: Tuple[int, int] = self._parse_resolution(
+            settings.properties.get("resolution")
+        )
 
     @classmethod
     def is_available(cls) -> bool:
@@ -67,8 +71,7 @@ class BaslerCameraBackend(CameraBackend):
                 LOG.warning(f"Failed to set gain to {gain}: {e}")
 
         # Configure resolution
-        requested_width = int(self.settings.properties.get("width", self.settings.width))
-        requested_height = int(self.settings.properties.get("height", self.settings.height))
+        requested_width, requested_height = self._resolution
         try:
             self._camera.Width.SetValue(requested_width)
             self._camera.Height.SetValue(requested_height)
@@ -180,6 +183,26 @@ class BaslerCameraBackend(CameraBackend):
                 "Rotation requested for Basler camera but imutils is not installed"
             ) from exc
         return rotate_bound(frame, angle)
+
+    def _parse_resolution(self, resolution) -> Tuple[int, int]:
+        """Parse resolution setting.
+
+        Args:
+            resolution: Can be a tuple/list [width, height], or None
+
+        Returns:
+            Tuple of (width, height), defaults to (720, 540)
+        """
+        if resolution is None:
+            return (720, 540)  # Default resolution
+
+        if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
+            try:
+                return (int(resolution[0]), int(resolution[1]))
+            except (ValueError, TypeError):
+                return (720, 540)
+
+        return (720, 540)
 
     @staticmethod
     def _settings_value(key: str, source: dict, fallback: Optional[float] = None):
