@@ -3,11 +3,28 @@
 from __future__ import annotations
 
 import importlib
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Tuple, Type
+from typing import Dict, Generator, Iterable, List, Tuple, Type
 
 from ..config import CameraSettings
 from .base import CameraBackend
+
+
+@contextmanager
+def _suppress_opencv_logging() -> Generator[None, None, None]:
+    """Temporarily suppress OpenCV logging during camera probing."""
+    try:
+        import cv2
+
+        old_level = cv2.getLogLevel()
+        cv2.setLogLevel(0)  # LOG_LEVEL_SILENT
+        try:
+            yield
+        finally:
+            cv2.setLogLevel(old_level)
+    except ImportError:
+        yield
 
 
 @dataclass
@@ -85,29 +102,31 @@ class CameraFactory:
                 pass
 
         detected: List[DetectedCamera] = []
-        for index in range(num_devices):
-            settings = CameraSettings(
-                name=f"Probe {index}",
-                index=index,
-                fps=30.0,
-                backend=backend,
-                properties={},
-            )
-            backend_instance = backend_cls(settings)
-            try:
-                backend_instance.open()
-            except Exception:
-                continue
-            else:
-                label = backend_instance.device_name()
-                if not label:
-                    label = f"{backend.title()} #{index}"
-                detected.append(DetectedCamera(index=index, label=label))
-            finally:
+        # Suppress OpenCV warnings/errors during probing (e.g., "can't open camera by index")
+        with _suppress_opencv_logging():
+            for index in range(num_devices):
+                settings = CameraSettings(
+                    name=f"Probe {index}",
+                    index=index,
+                    fps=30.0,
+                    backend=backend,
+                    properties={},
+                )
+                backend_instance = backend_cls(settings)
                 try:
-                    backend_instance.close()
+                    backend_instance.open()
                 except Exception:
-                    pass
+                    continue
+                else:
+                    label = backend_instance.device_name()
+                    if not label:
+                        label = f"{backend.title()} #{index}"
+                    detected.append(DetectedCamera(index=index, label=label))
+                finally:
+                    try:
+                        backend_instance.close()
+                    except Exception:
+                        pass
         detected.sort(key=lambda camera: camera.index)
         return detected
 

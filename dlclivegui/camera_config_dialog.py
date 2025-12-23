@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, Signal
+import cv2
+import numpy as np
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -26,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from dlclivegui.cameras import CameraFactory
+from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import DetectedCamera
 from dlclivegui.config import CameraSettings, MultiCameraSettings
 
@@ -45,13 +49,16 @@ class CameraConfigDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Configure Cameras")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(960, 720)
 
         self._multi_camera_settings = (
             multi_camera_settings if multi_camera_settings else MultiCameraSettings()
         )
         self._detected_cameras: List[DetectedCamera] = []
         self._current_edit_index: Optional[int] = None
+        self._preview_backend: Optional[CameraBackend] = None
+        self._preview_timer: Optional[QTimer] = None
+        self._preview_active: bool = False
 
         self._setup_ui()
         self._populate_from_settings()
@@ -213,7 +220,26 @@ class CameraConfigDialog(QDialog):
         self.apply_settings_btn.setEnabled(False)
         self.settings_form.addRow(self.apply_settings_btn)
 
+        # Preview button
+        self.preview_btn = QPushButton("Start Preview")
+        self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.preview_btn.setEnabled(False)
+        self.settings_form.addRow(self.preview_btn)
+
         right_layout.addWidget(settings_group)
+
+        # Preview widget
+        self.preview_group = QGroupBox("Camera Preview")
+        preview_layout = QVBoxLayout(self.preview_group)
+        self.preview_label = QLabel("No preview")
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumSize(320, 240)
+        self.preview_label.setMaximumSize(400, 300)
+        self.preview_label.setStyleSheet("background-color: #1a1a1a; color: #888;")
+        preview_layout.addWidget(self.preview_label)
+        self.preview_group.setVisible(False)
+        right_layout.addWidget(self.preview_group)
+
         right_layout.addStretch(1)
 
         # Dialog buttons
@@ -249,14 +275,15 @@ class CameraConfigDialog(QDialog):
             self._on_available_camera_double_clicked
         )
         self.apply_settings_btn.clicked.connect(self._apply_camera_settings)
+        self.preview_btn.clicked.connect(self._toggle_preview)
         self.ok_btn.clicked.connect(self._on_ok_clicked)
         self.cancel_btn.clicked.connect(self.reject)
 
     def _populate_from_settings(self) -> None:
         """Populate the dialog from existing settings."""
         self.active_cameras_list.clear()
-        for cam in self._multi_camera_settings.cameras:
-            item = QListWidgetItem(self._format_camera_label(cam))
+        for i, cam in enumerate(self._multi_camera_settings.cameras):
+            item = QListWidgetItem(self._format_camera_label(cam, i))
             item.setData(Qt.ItemDataRole.UserRole, cam)
             if not cam.enabled:
                 item.setForeground(Qt.GlobalColor.gray)
@@ -265,10 +292,27 @@ class CameraConfigDialog(QDialog):
         self._refresh_available_cameras()
         self._update_button_states()
 
-    def _format_camera_label(self, cam: CameraSettings) -> str:
-        """Format camera label for display."""
+    def _format_camera_label(self, cam: CameraSettings, index: int = -1) -> str:
+        """Format camera label for display.
+
+        Parameters
+        ----------
+        cam : CameraSettings
+            The camera settings.
+        index : int
+            The index of the camera in the list. If 0 and enabled, shows DLC indicator.
+        """
         status = "✓" if cam.enabled else "○"
-        return f"{status} {cam.name} [{cam.backend}:{cam.index}]"
+        dlc_indicator = " [DLC]" if index == 0 and cam.enabled else ""
+        return f"{status} {cam.name} [{cam.backend}:{cam.index}]{dlc_indicator}"
+
+    def _refresh_camera_labels(self) -> None:
+        """Refresh all camera labels in the active list (e.g., after reorder)."""
+        for i in range(self.active_cameras_list.count()):
+            item = self.active_cameras_list.item(i)
+            cam = item.data(Qt.ItemDataRole.UserRole)
+            if cam:
+                item.setText(self._format_camera_label(cam, i))
 
     def _on_backend_changed(self, _index: int) -> None:
         self._refresh_available_cameras()
@@ -298,6 +342,10 @@ class CameraConfigDialog(QDialog):
 
     def _on_active_camera_selected(self, row: int) -> None:
         """Handle selection of an active camera."""
+        # Stop any running preview when selection changes
+        if self._preview_active:
+            self._stop_preview()
+
         self._current_edit_index = row
         self._update_button_states()
 
@@ -399,11 +447,14 @@ class CameraConfigDialog(QDialog):
         self._multi_camera_settings.cameras.append(new_cam)
 
         # Add to list
-        new_item = QListWidgetItem(self._format_camera_label(new_cam))
+        new_index = len(self._multi_camera_settings.cameras) - 1
+        new_item = QListWidgetItem(self._format_camera_label(new_cam, new_index))
         new_item.setData(Qt.ItemDataRole.UserRole, new_cam)
         self.active_cameras_list.addItem(new_item)
         self.active_cameras_list.setCurrentItem(new_item)
 
+        # Refresh labels in case this is the first camera (gets DLC indicator)
+        self._refresh_camera_labels()
         self._update_button_states()
 
     def _remove_selected_camera(self) -> None:
@@ -418,6 +469,8 @@ class CameraConfigDialog(QDialog):
 
         self._current_edit_index = None
         self._clear_settings_form()
+        # Refresh labels since DLC camera may have changed
+        self._refresh_camera_labels()
         self._update_button_states()
 
     def _move_camera_up(self) -> None:
@@ -434,6 +487,9 @@ class CameraConfigDialog(QDialog):
         cams = self._multi_camera_settings.cameras
         cams[row], cams[row - 1] = cams[row - 1], cams[row]
 
+        # Refresh labels since DLC camera may have changed
+        self._refresh_camera_labels()
+
     def _move_camera_down(self) -> None:
         """Move selected camera down in the list."""
         row = self.active_cameras_list.currentRow()
@@ -447,6 +503,9 @@ class CameraConfigDialog(QDialog):
         # Update settings list
         cams = self._multi_camera_settings.cameras
         cams[row], cams[row + 1] = cams[row + 1], cams[row]
+
+        # Refresh labels since DLC camera may have changed
+        self._refresh_camera_labels()
 
     def _apply_camera_settings(self) -> None:
         """Apply current form settings to the selected camera."""
@@ -470,14 +529,21 @@ class CameraConfigDialog(QDialog):
 
         # Update list item
         item = self.active_cameras_list.item(row)
-        item.setText(self._format_camera_label(cam))
+        item.setText(self._format_camera_label(cam, row))
         item.setData(Qt.ItemDataRole.UserRole, cam)
         if not cam.enabled:
             item.setForeground(Qt.GlobalColor.gray)
         else:
             item.setForeground(Qt.GlobalColor.black)
 
+        # Refresh all labels in case enabled state changed (affects DLC indicator)
+        self._refresh_camera_labels()
         self._update_button_states()
+
+        # Restart preview to apply new settings (exposure, gain, fps, etc.)
+        if self._preview_active:
+            self._stop_preview()
+            self._start_preview()
 
     def _update_button_states(self) -> None:
         """Update button enabled states."""
@@ -489,12 +555,16 @@ class CameraConfigDialog(QDialog):
         self.move_down_btn.setEnabled(
             has_active_selection and active_row < self.active_cameras_list.count() - 1
         )
+        self.preview_btn.setEnabled(has_active_selection)
 
         available_row = self.available_cameras_list.currentRow()
         self.add_camera_btn.setEnabled(available_row >= 0)
 
     def _on_ok_clicked(self) -> None:
         """Handle OK button click."""
+        # Stop preview if running
+        self._stop_preview()
+
         # Validate that we have at least one enabled camera if any cameras are configured
         if self._multi_camera_settings.cameras:
             active = self._multi_camera_settings.get_active_cameras()
@@ -508,6 +578,127 @@ class CameraConfigDialog(QDialog):
 
         self.settings_changed.emit(self._multi_camera_settings)
         self.accept()
+
+    def reject(self) -> None:
+        """Handle dialog rejection (Cancel or close)."""
+        self._stop_preview()
+        super().reject()
+
+    def _toggle_preview(self) -> None:
+        """Toggle camera preview on/off."""
+        if self._preview_active:
+            self._stop_preview()
+        else:
+            self._start_preview()
+
+    def _start_preview(self) -> None:
+        """Start camera preview for the currently selected camera."""
+        if self._current_edit_index is None or self._current_edit_index < 0:
+            return
+
+        item = self.active_cameras_list.item(self._current_edit_index)
+        if not item:
+            return
+
+        cam = item.data(Qt.ItemDataRole.UserRole)
+        if not cam:
+            return
+
+        try:
+            self._preview_backend = CameraFactory.create(cam)
+            self._preview_backend.open()
+        except Exception as exc:
+            LOGGER.error(f"Failed to start preview: {exc}")
+            QMessageBox.warning(self, "Preview Error", f"Failed to start camera preview:\n{exc}")
+            self._preview_backend = None
+            return
+
+        self._preview_active = True
+        self.preview_btn.setText("Stop Preview")
+        self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        self.preview_group.setVisible(True)
+        self.preview_label.setText("Starting...")
+
+        # Start timer to update preview
+        self._preview_timer = QTimer(self)
+        self._preview_timer.timeout.connect(self._update_preview)
+        self._preview_timer.start(33)  # ~30 fps
+
+    def _stop_preview(self) -> None:
+        """Stop camera preview."""
+        if self._preview_timer:
+            self._preview_timer.stop()
+            self._preview_timer = None
+
+        if self._preview_backend:
+            try:
+                self._preview_backend.close()
+            except Exception:
+                pass
+            self._preview_backend = None
+
+        self._preview_active = False
+        self.preview_btn.setText("Start Preview")
+        self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.preview_group.setVisible(False)
+        self.preview_label.setText("No preview")
+        self.preview_label.setPixmap(QPixmap())
+
+    def _update_preview(self) -> None:
+        """Update preview frame."""
+        if not self._preview_backend or not self._preview_active:
+            return
+
+        try:
+            frame, _ = self._preview_backend.read()
+            if frame is None or frame.size == 0:
+                return
+
+            # Apply rotation if set in the form (real-time from UI)
+            rotation = self.cam_rotation.currentData()
+            if rotation == 90:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            elif rotation == 180:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+            elif rotation == 270:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+            # Apply crop if set in the form (real-time from UI)
+            h, w = frame.shape[:2]
+            x0 = self.cam_crop_x0.value()
+            y0 = self.cam_crop_y0.value()
+            x1 = self.cam_crop_x1.value() or w
+            y1 = self.cam_crop_y1.value() or h
+            # Clamp to frame bounds
+            x0 = max(0, min(x0, w))
+            y0 = max(0, min(y0, h))
+            x1 = max(x0, min(x1, w))
+            y1 = max(y0, min(y1, h))
+            if x1 > x0 and y1 > y0:
+                frame = frame[y0:y1, x0:x1]
+
+            # Resize to fit preview label
+            h, w = frame.shape[:2]
+            max_w, max_h = 400, 300
+            scale = min(max_w / w, max_h / h)
+            new_w, new_h = int(w * scale), int(h * scale)
+            frame = cv2.resize(frame, (new_w, new_h))
+
+            # Convert to QImage and display
+            if frame.ndim == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            elif frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
+            else:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            h, w, ch = frame.shape
+            bytes_per_line = ch * w
+            q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            self.preview_label.setPixmap(QPixmap.fromImage(q_img))
+
+        except Exception as exc:
+            LOGGER.warning(f"Preview frame error: {exc}")
 
     def get_settings(self) -> MultiCameraSettings:
         """Get the current multi-camera settings."""
