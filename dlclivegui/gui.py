@@ -1538,21 +1538,93 @@ class MainWindow(QMainWindow):
         return overlay
 
     def _draw_pose(self, frame: np.ndarray, pose: np.ndarray) -> np.ndarray:
+        """Draw pose predictions on frame using colormap.
+
+        Supports both single-animal poses (shape: num_keypoints x 3) and
+        multi-animal poses (shape: num_animals x num_keypoints x 3).
+        """
         overlay = frame.copy()
+        pose_arr = np.asarray(pose)
 
         # Get tile offset and scale for multi-camera mode
         offset_x, offset_y = self._dlc_tile_offset
         scale_x, scale_y = self._dlc_tile_scale
 
-        # Get the colormap from config
-        cmap = plt.get_cmap(self._colormap)
-        num_keypoints = len(np.asarray(pose))
-
         # Calculate scaled radius for the keypoint circles
         base_radius = 4
         scaled_radius = max(2, int(base_radius * min(scale_x, scale_y)))
 
-        for idx, keypoint in enumerate(np.asarray(pose)):
+        # Get colormap from config
+        cmap = plt.get_cmap(self._colormap)
+
+        # Detect multi-animal pose: shape (num_animals, num_keypoints, 3)
+        # vs single-animal pose: shape (num_keypoints, 3)
+        if pose_arr.ndim == 3:
+            # Multi-animal pose - use different markers per animal
+            num_animals = pose_arr.shape[0]
+            num_keypoints = pose_arr.shape[1]
+            # Cycle through different marker types for each animal
+            marker_types = [
+                cv2.MARKER_CROSS,
+                cv2.MARKER_TILTED_CROSS,
+                cv2.MARKER_STAR,
+                cv2.MARKER_DIAMOND,
+                cv2.MARKER_SQUARE,
+                cv2.MARKER_TRIANGLE_UP,
+                cv2.MARKER_TRIANGLE_DOWN,
+            ]
+            for animal_idx in range(num_animals):
+                marker = marker_types[animal_idx % len(marker_types)]
+                animal_pose = pose_arr[animal_idx]
+                self._draw_keypoints(
+                    overlay,
+                    animal_pose,
+                    num_keypoints,
+                    cmap,
+                    offset_x,
+                    offset_y,
+                    scale_x,
+                    scale_y,
+                    scaled_radius,
+                    marker=marker,
+                )
+        else:
+            # Single-animal pose - use circles (marker=None)
+            num_keypoints = len(pose_arr)
+            self._draw_keypoints(
+                overlay,
+                pose_arr,
+                num_keypoints,
+                cmap,
+                offset_x,
+                offset_y,
+                scale_x,
+                scale_y,
+                scaled_radius,
+                marker=None,
+            )
+
+        return overlay
+
+    def _draw_keypoints(
+        self,
+        overlay: np.ndarray,
+        keypoints: np.ndarray,
+        num_keypoints: int,
+        cmap,
+        offset_x: int,
+        offset_y: int,
+        scale_x: float,
+        scale_y: float,
+        radius: int,
+        marker: int | None = None,
+    ) -> None:
+        """Draw keypoints for a single animal on the overlay.
+
+        Args:
+            marker: OpenCV marker type (e.g., cv2.MARKER_CROSS). If None, draws circles.
+        """
+        for idx, keypoint in enumerate(keypoints):
             if len(keypoint) < 2:
                 continue
             x, y = keypoint[:2]
@@ -1572,8 +1644,10 @@ class MainWindow(QMainWindow):
             # Convert from RGBA [0, 1] to BGR [0, 255] for OpenCV
             bgr_color = (int(rgba[2] * 255), int(rgba[1] * 255), int(rgba[0] * 255))
 
-            cv2.circle(overlay, (x_scaled, y_scaled), scaled_radius, bgr_color, -1)
-        return overlay
+            if marker is None:
+                cv2.circle(overlay, (x_scaled, y_scaled), radius, bgr_color, -1)
+            else:
+                cv2.drawMarker(overlay, (x_scaled, y_scaled), bgr_color, marker, radius * 2, 2)
 
     def _on_dlc_initialised(self, success: bool) -> None:
         if success:
