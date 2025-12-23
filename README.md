@@ -1,11 +1,11 @@
 # DeepLabCut Live GUI
 
-A modern PyQt6 GUI for running [DeepLabCut-live](https://github.com/DeepLabCut/DeepLabCut-live) experiments with real-time pose estimation. The application streams frames from industrial or consumer cameras, performs DLCLive inference, and records high-quality video with synchronized pose data.
+A modern PySide6 GUI for running [DeepLabCut-live](https://github.com/DeepLabCut/DeepLabCut-live) experiments with real-time pose estimation. The application streams frames from industrial or consumer cameras, performs DLCLive inference, and records high-quality video with synchronized pose data.
 
 ## Features
 
 ### Core Functionality
-- **Modern Python Stack**: Python 3.10+ compatible codebase with PyQt6 interface
+- **Modern Python Stack**: Python 3.10+ compatible codebase with PySide6 interface
 - **Multi-Backend Camera Support**: OpenCV, GenTL (Harvesters), Aravis, and Basler (pypylon)
 - **Real-Time Pose Estimation**: Live DLCLive inference with configurable models (TensorFlow, PyTorch)
 - **High-Performance Recording**: Hardware-accelerated video encoding via FFmpeg
@@ -261,7 +261,7 @@ Enable "Auto-record video on processor command" to automatically start/stop reco
 ```
 dlclivegui/
 ├── __init__.py
-├── gui.py                 # Main PyQt6 application
+├── gui.py                 # Main PySide6 application
 ├── config.py             # Configuration dataclasses
 ├── camera_controller.py  # Camera capture thread
 ├── dlc_processor.py      # DLCLive inference thread

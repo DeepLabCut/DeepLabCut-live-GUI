@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "deeplabcut-live-gui"
 version = "2.0"
-description = "PyQt-based GUI to run real time DeepLabCut experiments"
+description = "PySide6-based GUI to run real time DeepLabCut experiments"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "GNU Lesser General Public License v3 (LGPLv3)"}
@@ -26,8 +26,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "deeplabcut-live",
-    "PyQt6",
+    "deeplabcut-live", # might be missing timm and scipy
+    "PySide6",
     "numpy",
     "opencv-python",
     "vidgear[core]",

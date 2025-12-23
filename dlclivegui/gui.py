@@ -1,4 +1,4 @@
-"""PyQt6 based GUI for DeepLabCut Live."""
+"""PySide6 based GUI for DeepLabCut Live."""
 
 from __future__ import annotations
 
@@ -11,12 +11,14 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
+os.environ["PYLON_CAMEMU"] = "2"
+
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QAction, QCloseEvent, QImage, QPixmap
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QCloseEvent, QImage, QPixmap
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import numpy as np
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 from dlclivegui.config import DLCProcessorSettings
 
@@ -60,9 +60,9 @@ _SENTINEL = object()
 class DLCLiveProcessor(QObject):
     """Background pose estimation using DLCLive with queue-based threading."""
 
-    pose_ready = pyqtSignal(object)
-    error = pyqtSignal(str)
-    initialized = pyqtSignal(bool)
+    pose_ready = Signal(object)
+    error = Signal(str)
+    initialized = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()

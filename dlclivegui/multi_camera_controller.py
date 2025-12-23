@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
@@ -32,10 +32,10 @@ class MultiFrameData:
 class SingleCameraWorker(QObject):
     """Worker for a single camera in multi-camera mode."""
 
-    frame_captured = pyqtSignal(str, object, float)  # camera_id, frame, timestamp
-    error_occurred = pyqtSignal(str, str)  # camera_id, error_message
-    started = pyqtSignal(str)  # camera_id
-    stopped = pyqtSignal(str)  # camera_id
+    frame_captured = Signal(str, object, float)  # camera_id, frame, timestamp
+    error_occurred = Signal(str, str)  # camera_id, error_message
+    started = Signal(str)  # camera_id
+    stopped = Signal(str)  # camera_id
 
     def __init__(self, camera_id: str, settings: CameraSettings):
         super().__init__()
@@ -46,7 +46,7 @@ class SingleCameraWorker(QObject):
         self._max_consecutive_errors = 5
         self._retry_delay = 0.1
 
-    @pyqtSlot()
+    @Slot()
     def run(self) -> None:
         self._stop_event.clear()
 
@@ -107,12 +107,12 @@ class MultiCameraController(QObject):
     """Controller for managing multiple cameras simultaneously."""
 
     # Signals
-    frame_ready = pyqtSignal(object)  # MultiFrameData
-    camera_started = pyqtSignal(str, object)  # camera_id, settings
-    camera_stopped = pyqtSignal(str)  # camera_id
-    camera_error = pyqtSignal(str, str)  # camera_id, error_message
-    all_started = pyqtSignal()
-    all_stopped = pyqtSignal()
+    frame_ready = Signal(object)  # MultiFrameData
+    camera_started = Signal(str, object)  # camera_id, settings
+    camera_stopped = Signal(str)  # camera_id
+    camera_error = Signal(str, str)  # camera_id, error_message
+    all_started = Signal()
+    all_stopped = Signal()
 
     MAX_CAMERAS = 4
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
@@ -36,7 +36,7 @@ class CameraConfigDialog(QDialog):
     """Dialog for configuring multiple cameras."""
 
     MAX_CAMERAS = 4
-    settings_changed = pyqtSignal(object)  # MultiCameraSettings
+    settings_changed = Signal(object)  # MultiCameraSettings
 
     def __init__(
         self,
