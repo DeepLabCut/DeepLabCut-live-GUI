@@ -128,6 +128,42 @@ class CameraFactory:
         return backend_cls(settings)
 
     @staticmethod
+    def check_camera_available(settings: CameraSettings) -> tuple[bool, str]:
+        """Check if a camera is available without keeping it open.
+
+        Parameters
+        ----------
+        settings : CameraSettings
+            The camera settings to check.
+
+        Returns
+        -------
+        tuple[bool, str]
+            A tuple of (is_available, error_message).
+            If available, error_message is empty.
+        """
+        backend_name = (settings.backend or "opencv").lower()
+
+        # Check if backend module is available
+        try:
+            backend_cls = CameraFactory._resolve_backend(backend_name)
+        except RuntimeError as exc:
+            return False, f"Backend '{backend_name}' not installed: {exc}"
+
+        # Check if backend reports as available (drivers installed)
+        if not backend_cls.is_available():
+            return False, f"Backend '{backend_name}' is not available (missing drivers/packages)"
+
+        # Try to actually open the camera briefly
+        try:
+            backend_instance = backend_cls(settings)
+            backend_instance.open()
+            backend_instance.close()
+            return True, ""
+        except Exception as exc:
+            return False, f"Camera not accessible: {exc}"
+
+    @staticmethod
     def _resolve_backend(name: str) -> Type[CameraBackend]:
         try:
             module_name, class_name = _BACKENDS[name]

@@ -113,6 +113,7 @@ class MultiCameraController(QObject):
     camera_error = Signal(str, str)  # camera_id, error_message
     all_started = Signal()
     all_stopped = Signal()
+    initialization_failed = Signal(list)  # List of (camera_id, error_message) tuples
 
     MAX_CAMERAS = 4
 
@@ -126,6 +127,8 @@ class MultiCameraController(QObject):
         self._frame_lock = Lock()
         self._running = False
         self._started_cameras: set = set()
+        self._failed_cameras: Dict[str, str] = {}  # camera_id -> error message
+        self._expected_cameras: int = 0  # Number of cameras we're trying to start
 
     def is_running(self) -> bool:
         """Check if any camera is currently running."""
@@ -158,6 +161,8 @@ class MultiCameraController(QObject):
         self._frames.clear()
         self._timestamps.clear()
         self._started_cameras.clear()
+        self._failed_cameras.clear()
+        self._expected_cameras = len(active_settings)
 
         for settings in active_settings:
             self._start_camera(settings)
@@ -207,6 +212,8 @@ class MultiCameraController(QObject):
         self._threads.clear()
         self._settings.clear()
         self._started_cameras.clear()
+        self._failed_cameras.clear()
+        self._expected_cameras = 0
         self.all_stopped.emit()
 
     def _on_frame_captured(self, camera_id: str, frame: np.ndarray, timestamp: float) -> None:
@@ -362,15 +369,21 @@ class MultiCameraController(QObject):
         self.camera_started.emit(camera_id, settings)
         LOGGER.info(f"Camera {camera_id} started")
 
-        # Check if all cameras have started
-        if len(self._started_cameras) == len(self._settings):
-            self.all_started.emit()
+        # Check if all cameras have reported (started or failed)
+        total_reported = len(self._started_cameras) + len(self._failed_cameras)
+        if total_reported == self._expected_cameras:
+            if self._started_cameras:
+                # At least some cameras started successfully
+                self.all_started.emit()
+            # If no cameras started but all failed, that's handled in _on_camera_stopped
 
     def _on_camera_stopped(self, camera_id: str) -> None:
         """Handle camera stop event."""
+        # Check if this camera never started (initialization failure)
+        was_started = camera_id in self._started_cameras
         self._started_cameras.discard(camera_id)
         self.camera_stopped.emit(camera_id)
-        LOGGER.info(f"Camera {camera_id} stopped")
+        LOGGER.info(f"Camera {camera_id} stopped (was_started={was_started})")
 
         # Cleanup thread
         if camera_id in self._threads:
@@ -388,14 +401,28 @@ class MultiCameraController(QObject):
             self._frames.pop(camera_id, None)
             self._timestamps.pop(camera_id, None)
 
-        # Check if all cameras have stopped
-        if not self._started_cameras and self._running:
+        # Check if all cameras have reported and none started
+        total_reported = len(self._started_cameras) + len(self._failed_cameras)
+        if total_reported == self._expected_cameras and not self._started_cameras:
+            # All cameras failed to start
+            if self._running and self._failed_cameras:
+                self._running = False
+                failure_list = list(self._failed_cameras.items())
+                self.initialization_failed.emit(failure_list)
+                self.all_stopped.emit()
+                return
+
+        # Check if all running cameras have stopped (normal shutdown)
+        if not self._started_cameras and self._running and not self._workers:
             self._running = False
             self.all_stopped.emit()
 
     def _on_camera_error(self, camera_id: str, message: str) -> None:
         """Handle camera error event."""
         LOGGER.error(f"Camera {camera_id} error: {message}")
+        # Track failed cameras (only if not already started - i.e., initialization failure)
+        if camera_id not in self._started_cameras:
+            self._failed_cameras[camera_id] = message
         self.camera_error.emit(camera_id, message)
 
     def get_frame(self, camera_id: str) -> Optional[np.ndarray]:

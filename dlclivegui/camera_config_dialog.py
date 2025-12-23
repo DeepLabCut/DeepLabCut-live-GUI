@@ -245,6 +245,9 @@ class CameraConfigDialog(QDialog):
         self.move_down_btn.clicked.connect(self._move_camera_down)
         self.active_cameras_list.currentRowChanged.connect(self._on_active_camera_selected)
         self.available_cameras_list.currentRowChanged.connect(self._on_available_camera_selected)
+        self.available_cameras_list.itemDoubleClicked.connect(
+            self._on_available_camera_double_clicked
+        )
         self.apply_settings_btn.clicked.connect(self._apply_camera_settings)
         self.ok_btn.clicked.connect(self._on_ok_clicked)
         self.cancel_btn.clicked.connect(self.reject)
@@ -288,6 +291,10 @@ class CameraConfigDialog(QDialog):
 
     def _on_available_camera_selected(self, row: int) -> None:
         self.add_camera_btn.setEnabled(row >= 0)
+
+    def _on_available_camera_double_clicked(self, item: QListWidgetItem) -> None:
+        """Handle double-click on an available camera to add it."""
+        self._add_selected_camera()
 
     def _on_active_camera_selected(self, row: int) -> None:
         """Handle selection of an active camera."""

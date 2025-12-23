@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from dlclivegui.camera_config_dialog import CameraConfigDialog
+from dlclivegui.cameras import CameraFactory
 from dlclivegui.config import (
     DEFAULT_CONFIG,
     ApplicationSettings,
@@ -148,6 +149,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Auto-loaded configuration from {self._config_path}", 5000
             )
+
+        # Validate cameras from loaded config (deferred to allow window to show first)
+        QTimer.singleShot(100, self._validate_configured_cameras)
 
     # ------------------------------------------------------------------ UI
     def _setup_ui(self) -> None:
@@ -486,6 +490,9 @@ class MainWindow(QMainWindow):
         self.multi_camera_controller.all_started.connect(self._on_multi_camera_started)
         self.multi_camera_controller.all_stopped.connect(self._on_multi_camera_stopped)
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
+        self.multi_camera_controller.initialization_failed.connect(
+            self._on_multi_camera_initialization_failed
+        )
 
         self.dlc_processor.pose_ready.connect(self._on_pose_ready)
         self.dlc_processor.error.connect(self._on_dlc_error)
@@ -601,6 +608,8 @@ class MainWindow(QMainWindow):
         self._config_path = Path(file_name)
         self._apply_config(config)
         self.statusBar().showMessage(f"Loaded configuration: {file_name}", 5000)
+        # Validate cameras after loading
+        self._validate_configured_cameras()
 
     def _action_save_config(self) -> None:
         if self._config_path is None:
@@ -714,6 +723,39 @@ class MainWindow(QMainWindow):
         else:
             cam_names = [f"{c.name}" for c in active_cams]
             self.active_cameras_label.setText(f"{len(active_cams)} cameras: {', '.join(cam_names)}")
+
+    def _validate_configured_cameras(self) -> None:
+        """Validate that configured cameras are available.
+
+        Disables unavailable cameras and shows a warning dialog.
+        """
+        active_cams = self._config.multi_camera.get_active_cameras()
+        if not active_cams:
+            return
+
+        unavailable: list[tuple[str, str, CameraSettings]] = []
+        for cam in active_cams:
+            cam_id = f"{cam.backend}:{cam.index}"
+            available, error = CameraFactory.check_camera_available(cam)
+            if not available:
+                unavailable.append((cam.name or cam_id, error, cam))
+
+        if unavailable:
+            # Disable unavailable cameras
+            for _, _, cam in unavailable:
+                cam.enabled = False
+
+            # Update the active cameras label
+            self._update_active_cameras_label()
+
+            # Build warning message
+            error_lines = ["The following camera(s) are not available and have been disabled:"]
+            for cam_name, error_msg, _ in unavailable:
+                error_lines.append(f"  • {cam_name}: {error_msg}")
+            error_lines.append("")
+            error_lines.append("Please check camera connections or re-enable in camera settings.")
+            self._show_warning("\n".join(error_lines))
+            logging.warning("\n".join(error_lines))
 
     def _on_multi_frame_ready(self, frame_data: MultiFrameData) -> None:
         """Handle frames from multiple cameras.
@@ -849,6 +891,19 @@ class MainWindow(QMainWindow):
     def _on_multi_camera_error(self, camera_id: str, message: str) -> None:
         """Handle error from a camera in multi-camera mode."""
         self._show_warning(f"Camera {camera_id} error: {message}")
+
+    def _on_multi_camera_initialization_failed(self, failures: list) -> None:
+        """Handle complete failure to initialize cameras."""
+        # Build error message with details for each failed camera
+        error_lines = ["Failed to initialize camera(s):"]
+        for camera_id, error_msg in failures:
+            error_lines.append(f"  • {camera_id}: {error_msg}")
+        error_lines.append("")
+        error_lines.append("Please check that the required camera backend is installed.")
+
+        error_message = "\n".join(error_lines)
+        self._show_error(error_message)
+        logging.error(error_message)
 
     def _start_multi_camera_recording(self) -> None:
         """Start recording from all active cameras."""
@@ -1542,8 +1597,14 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Error", message)
 
     def _show_warning(self, message: str) -> None:
-        """Display a warning message in the status bar without blocking."""
-        self.statusBar().showMessage(f"⚠ {message}", 3000)
+        """Display a warning message dialog."""
+        self.statusBar().showMessage(f"⚠ {message}", 5000)
+        QMessageBox.warning(self, "Warning", message)
+
+    def _show_info(self, message: str) -> None:
+        """Display an informational message dialog."""
+        self.statusBar().showMessage(message, 5000)
+        QMessageBox.information(self, "Information", message)
 
     # ------------------------------------------------------------------ Qt overrides
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour
