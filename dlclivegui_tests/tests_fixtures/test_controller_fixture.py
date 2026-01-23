@@ -1,3 +1,6 @@
+import pytest
+
+
 @pytest.mark.integration
 def test_controller_emits_started_and_frames(qtbot, multi_camera_controller, app_config_two_cams):
     ctrl = multi_camera_controller
