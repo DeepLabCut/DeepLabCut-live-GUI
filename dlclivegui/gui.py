@@ -943,7 +943,7 @@ class MainWindow(QMainWindow):
             frame = self._multi_camera_frames.get(cam_id)
             frame_size = (frame.shape[0], frame.shape[1]) if frame is not None else None
 
-            recorder = VideoRecorder(
+            recorder = self._recorder_factory(
                 cam_path,
                 frame_size=frame_size,
                 frame_rate=float(cam.fps),

@@ -52,6 +52,7 @@ test = [
     "pytest-cov>=4.0",
     "pytest-mock>=3.10",
     "pytest-qt>=4.2",
+    "pytest-env",
 ]
 
 [project.urls]
@@ -78,6 +79,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "-v",
+    "-q",
     "--strict-markers",
     "--tb=short",
     "--cov=dlclivegui",
@@ -91,6 +93,11 @@ markers = [
     "slow: Tests that take a long time to run",
     "gui: Tests that require GUI interaction",
 ]
+env = [
+  "QT_QPA_PLATFORM=offscreen",
+  "QT_LOGGING_RULES=qt.qpa.*=false"
+]
+
 
 [tool.coverage.run]
 source = ["dlclivegui"]
