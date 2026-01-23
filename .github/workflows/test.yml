@@ -1,4 +1,5 @@
 
+# .github/workflows/ci.yml
 name: Run Tests
 
 on:
@@ -25,7 +26,7 @@ jobs:
             toxenv: "py312-all"
 
     env:
-      # Default is OFF. Set to "1" in workflow env, repository env, or rerun with env override if needed.
+      # Optional escape hatch (Linux only). Default off.
       USE_XVFB: "0"
 
     steps:
@@ -41,8 +42,6 @@ jobs:
       - name: Install tox
         run: python -m pip install -U pip tox
 
-      # Optional: install xvfb and run tests under xvfb-run only if USE_XVFB=1 on Linux.
-      # This can help properly handle OpenGL contexts in headless Linux environments.
       - name: Install Xvfb (Linux, optional)
         if: runner.os == 'Linux' && env.USE_XVFB == '1'
         run: |
@@ -61,3 +60,24 @@ jobs:
       - name: Run tests with tox (macOS/Windows)
         if: runner.os != 'Linux'
         run: tox -e ${{ matrix.toxenv }}
+
+      # ----------------------------
+      # Coverage reporting
+      # ----------------------------
+
+      - name: Upload HTML coverage report (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: htmlcov-${{ runner.os }}-py${{ matrix.python-version }}
+          path: htmlcov
+          if-no-files-found: warn
+
+      - name: Add coverage summary to GitHub Actions job summary
+        shell: bash
+        run: |
+          echo "## Coverage (py${{ matrix.python-version }} on ${{ runner.os }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # `pytest-cov` writes `.coverage` by default; coverage.py can render a summary from it.
+          python -m coverage report -m >> "$GITHUB_STEP_SUMMARY" || echo "coverage report not available" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "📎 HTML report uploaded as artifact: **htmlcov-${{ runner.os }}-py${{ matrix.python-version }}**" >> "$GITHUB_STEP_SUMMARY"
