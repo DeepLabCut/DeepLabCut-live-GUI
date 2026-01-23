@@ -90,6 +90,15 @@ class DLCLiveProcessor(QObject):
         self._gpu_inference_times: deque[float] = deque(maxlen=60)
         self._processor_overhead_times: deque[float] = deque(maxlen=60)
 
+    @property
+    def processor(self) -> Optional[Any]:
+        """Get the current DLCLive processor instance."""
+        return self._processor
+    
+    @processor.setter
+    def processor(self, value: Optional[Any]) -> None:
+        self._processor = value
+
     def configure(self, settings: DLCProcessorSettings, processor: Optional[Any] = None) -> None:
         self._settings = settings
         self._processor = processor

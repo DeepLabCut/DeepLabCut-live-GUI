@@ -64,7 +64,13 @@ logging.basicConfig(level=logging.INFO)
 class MainWindow(QMainWindow):
     """Main application window."""
 
-    def __init__(self, config: Optional[ApplicationSettings] = None):
+    def __init__(
+        self, 
+        config: Optional[ApplicationSettings] = None,
+        multi_camera_controller: Optional[MultiCameraController] = None,
+        dlc_processor: Optional[DLCLiveProcessor] = None,
+        recorder_factory: Optional[callable] = None,
+        ):
         super().__init__()
         self.setWindowTitle("DeepLabCut Live GUI")
 
@@ -113,8 +119,9 @@ class MainWindow(QMainWindow):
         self._colormap = "hot"
         self._bbox_color = (0, 0, 255)  # BGR: red
 
-        self.multi_camera_controller = MultiCameraController()
-        self.dlc_processor = DLCLiveProcessor()
+        self.multi_camera_controller = multi_camera_controller or MultiCameraController()
+        self.dlc_processor = dlc_processor or DLCLiveProcessor()
+        self._recorder_factory = recorder_factory or VideoRecorder # for testing/mocking
 
         # Multi-camera state
         self._multi_camera_mode = False
@@ -133,14 +140,16 @@ class MainWindow(QMainWindow):
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
         self._metrics_timer = QTimer(self)
-        self._metrics_timer.setInterval(500)
+        self._metrics_timer_interval = 500  # ms
+        self._metrics_timer.setInterval(self._metrics_timer_interval)
         self._metrics_timer.timeout.connect(self._update_metrics)
         self._metrics_timer.start()
         self._update_metrics()
 
         # Display timer - decoupled from frame capture for performance
         self._display_timer = QTimer(self)
-        self._display_timer.setInterval(33)  # ~30 fps display rate
+        self._display_timer_interval = 33  # ms
+        self._display_timer.setInterval(self._display_timer_interval)  # ~30 fps display rate
         self._display_timer.timeout.connect(self._update_display_from_pending)
         self._display_timer.start()
 
@@ -151,7 +160,8 @@ class MainWindow(QMainWindow):
             )
 
         # Validate cameras from loaded config (deferred to allow window to show first)
-        QTimer.singleShot(100, self._validate_configured_cameras)
+        self._validation_timer_interval = 100  # ms
+        QTimer.singleShot(self._validation_timer_interval, self._validate_configured_cameras)
 
     # ------------------------------------------------------------------ UI
     def _setup_ui(self) -> None:
@@ -1337,7 +1347,7 @@ class MainWindow(QMainWindow):
             return
 
         # Get processor instance from dlc_processor
-        processor = self.dlc_processor._processor
+        processor = self.dlc_processor.processor
 
         if processor is None:
             self.processor_status_label.setText("Processor: None loaded")
