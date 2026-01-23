@@ -117,3 +117,5 @@ venv.bak/
 .vscode
 
 !dlclivegui/config.py
+# uv package files
+uv.lock
