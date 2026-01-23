@@ -2,7 +2,8 @@
 ### DLC Live Specific
 #####################
 
-**test*
+# TODO figure out safer way that does not shadow test files
+# **tests*
 
 ###################
 ### python standard
@@ -116,6 +117,7 @@ venv.bak/
 # ide files
 .vscode
 
+!dlclivegui_tests/*
 !dlclivegui/config.py
 # uv package files
 uv.lock
