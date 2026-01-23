@@ -1,0 +1,63 @@
+
+name: Run Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  tests:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }} (all incl. GUI)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+        include:
+          - python-version: "3.10"
+            toxenv: "py310-all"
+          - python-version: "3.11"
+            toxenv: "py311-all"
+          - python-version: "3.12"
+            toxenv: "py312-all"
+
+    env:
+      # Default is OFF. Set to "1" in workflow env, repository env, or rerun with env override if needed.
+      USE_XVFB: "0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install tox
+        run: python -m pip install -U pip tox
+
+      # Optional: install xvfb and run tests under xvfb-run only if USE_XVFB=1 on Linux.
+      # This can help properly handle OpenGL contexts in headless Linux environments.
+      - name: Install Xvfb (Linux, optional)
+        if: runner.os == 'Linux' && env.USE_XVFB == '1'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Run tests with tox (Linux + optional Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          if [ "${USE_XVFB}" = "1" ]; then
+            xvfb-run -a tox -e ${{ matrix.toxenv }}
+          else
+            tox -e ${{ matrix.toxenv }}
+          fi
+
+      - name: Run tests with tox (macOS/Windows)
+        if: runner.os != 'Linux'
+        run: tox -e ${{ matrix.toxenv }}

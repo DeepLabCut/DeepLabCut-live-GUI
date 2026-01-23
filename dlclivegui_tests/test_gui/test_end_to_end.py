@@ -78,7 +78,7 @@ def test_start_inference_emits_pose(qtbot, window, multi_camera_controller, dlc_
         # Avoid leaking connections across tests
         try:
             dlc.pose_ready.disconnect(_on_pose)
-        except Exception:
+        except Exception:  # pragma: no cover
             pass
 
     # Stop preview
