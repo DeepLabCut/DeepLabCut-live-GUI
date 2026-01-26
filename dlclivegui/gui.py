@@ -248,9 +248,9 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
 
-        load_action = QAction("Load configuration…", self)
-        load_action.triggered.connect(self._action_load_config)
-        file_menu.addAction(load_action)
+        self.load_config_action = QAction("Load configuration…", self)
+        self.load_config_action.triggered.connect(self._action_load_config)
+        file_menu.addAction(self.load_config_action)
 
         save_action = QAction("Save configuration", self)
         save_action.triggered.connect(self._action_save_config)
@@ -1072,6 +1072,10 @@ class MainWindow(QMainWindow):
         # Config cameras button should be available when not in preview/recording
         self.config_cameras_button.setEnabled(allow_changes)
 
+        # Disable loading configurations when preview/recording is active
+        if hasattr(self, "load_config_action"):
+            self.load_config_action.setEnabled(allow_changes)
+
     def _track_camera_frame(self) -> None:
         now = time.perf_counter()
         self._camera_frame_times.append(now)
@@ -1454,7 +1458,15 @@ class MainWindow(QMainWindow):
         h, w, ch = rgb.shape
         bytes_per_line = ch * w
         image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-        self.video_label.setPixmap(QPixmap.fromImage(image))
+        pixmap = QPixmap.fromImage(image)
+        
+        # Scale pixmap to fit label while preserving aspect ratio
+        scaled_pixmap = pixmap.scaled(
+            self.video_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.video_label.setPixmap(scaled_pixmap)
 
     def _on_show_predictions_changed(self, _state: int) -> None:
         if self._current_frame is not None:
