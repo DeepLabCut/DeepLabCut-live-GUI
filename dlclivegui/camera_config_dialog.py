@@ -109,9 +109,11 @@ class CameraLoadWorker(QThread):
                 return
 
             LOGGER.debug("Creating camera backend for %s:%d", self._cam.backend, self._cam.index)
-            self._backend = CameraFactory.create(self._cam)
-
+            # self._backend = CameraFactory.create(self._cam)
             self.progress.emit("Opening device…")
+            self.success.emit(self._cam)
+            return
+
             if self._check_cancel():
                 self.canceled.emit()
                 return
@@ -440,8 +442,6 @@ class CameraConfigDialog(QDialog):
     # Maintain overlay geometry when resizing
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self._loading_overlay and self._loading_overlay.isVisible():
-            self._position_loading_overlay()
         if hasattr(self, "_loading_overlay") and self._loading_overlay.isVisible():
             self._position_loading_overlay()
 
@@ -859,6 +859,7 @@ class CameraConfigDialog(QDialog):
             self._preview_backend = None
         # Reset UI
         self._loading_active = False
+        self._preview_active = False
         self._set_preview_button_loading(False)
         self.preview_btn.setText("Start Preview")
         self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
@@ -908,23 +909,43 @@ class CameraConfigDialog(QDialog):
         self._show_loading_overlay(message)
         self._append_status(message)
 
-    def _on_loader_success(self, backend: CameraBackend) -> None:
-        # Transfer ownership to dialog
-        self._preview_backend = backend
-        self._append_status("Starting preview…")
+    def _on_loader_success(self, payload) -> None:
+        """
+        Payload is either:
+        - CameraBackend (non-Windows path if you kept worker-open), or
+        - CameraSettings (Windows probe-only, open on GUI thread)
+        """
+        try:
+            if isinstance(payload, CameraBackend):
+                # Legacy path: backend already opened in worker
+                self._preview_backend = payload
 
-        # Mark preview as active
-        self._preview_active = True
-        self.preview_btn.setText("Stop Preview")
-        self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
-        self.preview_group.setVisible(True)
-        self.preview_label.setText("Starting…")
-        self._hide_loading_overlay()
+            elif isinstance(payload, CameraSettings):
+                # Windows probe path: open now on GUI thread
+                cam_settings = payload
+                self._append_status("Opening camera on main thread…")
+                self._preview_backend = CameraFactory.create(cam_settings)
+                self._preview_backend.open()  # fast now; overlay keeps UI pleasant
 
-        # Start timer to update preview (~25 fps more stable on Windows)
-        self._preview_timer = QTimer(self)
-        self._preview_timer.timeout.connect(self._update_preview)
-        self._preview_timer.start(40)
+            else:
+                raise TypeError(f"Unexpected success payload type: {type(payload)}")
+
+            self._append_status("Starting preview…")
+            self._preview_active = True
+            self.preview_btn.setText("Stop Preview")
+            self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+            self.preview_group.setVisible(True)
+            self.preview_label.setText("Starting…")
+            self._hide_loading_overlay()
+
+            # Start timer to update preview (~25 fps more stable on Windows)
+            self._preview_timer = QTimer(self)
+            self._preview_timer.timeout.connect(self._update_preview)
+            self._preview_timer.start(40)
+
+        except Exception as exc:
+            # If open failed here, fall back to error handling
+            self._on_loader_error(str(exc))
 
     def _on_loader_error(self, error: str) -> None:
         self._append_status(f"Error: {error}")
