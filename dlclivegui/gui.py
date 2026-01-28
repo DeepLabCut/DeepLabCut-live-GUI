@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -207,49 +208,49 @@ class MainWindow(QMainWindow):
         # stats_widget.setMinimumWidth(800)  # Prevent excessive line breaks
         stats_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         stats_widget.setMinimumHeight(80)
-        stats_layout = QVBoxLayout(stats_widget)
-        stats_layout.setContentsMargins(5, 5, 5, 5)
-        stats_layout.setSpacing(3)
 
-        # Camera throughput stats
-        camera_stats_container = QHBoxLayout()
-        camera_stats_container.setContentsMargins(0, 0, 0, 0)
-        camera_stats_container.setSpacing(8)
-        camera_stats_label_title = QLabel("<b>Camera:</b>")
-        camera_stats_label_title.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        camera_stats_container.addWidget(camera_stats_label_title, stretch=0)
+        stats_layout = QGridLayout(stats_widget)
+        stats_layout.setContentsMargins(5, 5, 5, 5)
+        stats_layout.setHorizontalSpacing(8)  # tighten horizontal gap between title and value
+        stats_layout.setVerticalSpacing(3)
+
+        row = 0
+
+        # Camera
+        title_camera = QLabel("<b>Camera:</b>")
+        title_camera.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        stats_layout.addWidget(title_camera, row, 0, alignment=Qt.AlignTop)
+
         self.camera_stats_label = QLabel("Camera idle")
         self.camera_stats_label.setWordWrap(True)
-        self.camera_stats_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        camera_stats_container.addWidget(self.camera_stats_label, stretch=1)
-        # camera_stats_container.addStretch(1)
-        stats_layout.addLayout(camera_stats_container)
+        self.camera_stats_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        stats_layout.addWidget(self.camera_stats_label, row, 1, alignment=Qt.AlignTop)
+        row += 1
 
-        # DLC processor stats
-        dlc_stats_container = QHBoxLayout()
-        dlc_stats_label_title = QLabel("<b>DLC Processor:</b>")
-        dlc_stats_container.setContentsMargins(0, 0, 0, 0)
-        dlc_stats_container.setSpacing(8)
-        dlc_stats_label_title.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        dlc_stats_container.addWidget(dlc_stats_label_title, stretch=0)
+        # DLC
+        title_dlc = QLabel("<b>DLC Processor:</b>")
+        title_dlc.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        stats_layout.addWidget(title_dlc, row, 0, alignment=Qt.AlignTop)
+
         self.dlc_stats_label = QLabel("DLC processor idle")
         self.dlc_stats_label.setWordWrap(True)
-        self.dlc_stats_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        dlc_stats_container.addWidget(self.dlc_stats_label, stretch=1)
-        stats_layout.addLayout(dlc_stats_container)
+        self.dlc_stats_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        stats_layout.addWidget(self.dlc_stats_label, row, 1, alignment=Qt.AlignTop)
+        row += 1
 
-        # Video recorder stats
-        recorder_stats_container = QHBoxLayout()
-        recorder_stats_label_title = QLabel("<b>Recorder:</b>")
-        recorder_stats_container.setContentsMargins(0, 0, 0, 0)
-        recorder_stats_container.setSpacing(8)
-        recorder_stats_label_title.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        recorder_stats_container.addWidget(recorder_stats_label_title, stretch=0)
+        # Recorder
+        title_rec = QLabel("<b>Recorder:</b>")
+        title_rec.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        stats_layout.addWidget(title_rec, row, 0, alignment=Qt.AlignTop)
+
         self.recording_stats_label = QLabel("Recorder idle")
         self.recording_stats_label.setWordWrap(True)
-        self.recording_stats_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        recorder_stats_container.addWidget(self.recording_stats_label, stretch=1)
-        stats_layout.addLayout(recorder_stats_container)
+        self.recording_stats_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        stats_layout.addWidget(self.recording_stats_label, row, 1, alignment=Qt.AlignTop)
+
+        # Critical: make column 1 (values) eat the width, keep column 0 tight
+        stats_layout.setColumnStretch(0, 0)
+        stats_layout.setColumnStretch(1, 1)
         video_layout.addWidget(stats_widget, stretch=0)
 
         # Allow user to select stats text
