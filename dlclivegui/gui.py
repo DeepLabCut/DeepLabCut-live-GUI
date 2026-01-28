@@ -769,16 +769,19 @@ class MainWindow(QMainWindow):
             self.dlc_processor.enqueue_frame(frame, timestamp)
 
         # PRIORITY 2: Recording (queued, non-blocking)
-        if self._multi_camera_recorders:
-            for cam_id, frame in frame_data.frames.items():
-                if cam_id in self._multi_camera_recorders:
-                    recorder = self._multi_camera_recorders[cam_id]
-                    if recorder.is_running:
-                        timestamp = frame_data.timestamps.get(cam_id, time.time())
-                        try:
-                            recorder.write(frame, timestamp=timestamp)
-                        except Exception as exc:
-                            logging.warning(f"Failed to write frame for camera {cam_id}: {exc}")
+        # Only record the frame from the camera that triggered this signal to avoid
+        # writing duplicate timestamps when multiple cameras are running
+        if self._multi_camera_recorders and frame_data.source_camera_id:
+            cam_id = frame_data.source_camera_id
+            if cam_id in self._multi_camera_recorders and cam_id in frame_data.frames:
+                recorder = self._multi_camera_recorders[cam_id]
+                if recorder.is_running:
+                    frame = frame_data.frames[cam_id]
+                    timestamp = frame_data.timestamps.get(cam_id, time.time())
+                    try:
+                        recorder.write(frame, timestamp=timestamp)
+                    except Exception as exc:
+                        logging.warning(f"Failed to write frame for camera {cam_id}: {exc}")
 
         # PRIORITY 3: Mark display dirty (tiling done in display timer)
         self._display_dirty = True
