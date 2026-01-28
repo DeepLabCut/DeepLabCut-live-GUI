@@ -32,7 +32,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -77,6 +76,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("DeepLabCut Live GUI")
 
         # Try to load myconfig.json from the application directory if no config provided
+        # FIXME @C-Achard change this behavior for release
         if config is None:
             myconfig_path = Path(__file__).parent.parent / "myconfig.json"
             if myconfig_path.exists():
@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
             self._config_path = None
 
         self._config = config
+        self._inference_camera_id: str | None = None  # Camera ID used for inference
         self._current_frame: np.ndarray | None = None
         self._raw_frame: np.ndarray | None = None
         self._last_pose: PoseResult | None = None
@@ -365,10 +366,13 @@ class MainWindow(QMainWindow):
         self.processor_combo.addItem("No Processor", None)
         form.addRow("Processor", self.processor_combo)
 
-        self.additional_options_edit = QPlainTextEdit()
-        self.additional_options_edit.setPlaceholderText("")
-        self.additional_options_edit.setFixedHeight(40)
-        form.addRow("Additional options", self.additional_options_edit)
+        # self.additional_options_edit = QPlainTextEdit()
+        # self.additional_options_edit.setPlaceholderText("")
+        # self.additional_options_edit.setFixedHeight(40)
+        # form.addRow("Additional options", self.additional_options_edit)
+        self.dlc_camera_combo = QComboBox()
+        self.dlc_camera_combo.setToolTip("Select which camera to use for pose inference")
+        form.addRow("Inference Camera", self.dlc_camera_combo)
 
         # Wrap inference buttons in a widget to prevent shifting
         inference_button_widget = QWidget()
@@ -523,6 +527,7 @@ class MainWindow(QMainWindow):
         self.dlc_processor.pose_ready.connect(self._on_pose_ready)
         self.dlc_processor.error.connect(self._on_dlc_error)
         self.dlc_processor.initialized.connect(self._on_dlc_initialised)
+        self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
 
     # ------------------------------------------------------------------ config
     def _apply_config(self, config: ApplicationSettings) -> None:
@@ -532,7 +537,7 @@ class MainWindow(QMainWindow):
         dlc = config.dlc
         self.model_path_edit.setText(dlc.model_path)
 
-        self.additional_options_edit.setPlainText(json.dumps(dlc.additional_options, indent=2))
+        # self.additional_options_edit.setPlainText(json.dumps(dlc.additional_options, indent=2))
 
         recording = config.recording
         self.output_directory_edit.setText(recording.directory)
@@ -559,6 +564,8 @@ class MainWindow(QMainWindow):
         self._p_cutoff = viz.p_cutoff
         self._colormap = viz.colormap
         self._bbox_color = viz.get_bbox_color_bgr()
+        # Update DLC camera list
+        self._refresh_dlc_camera_list()
 
     def _current_config(self) -> ApplicationSettings:
         # Get the first camera from multi-camera config for backward compatibility
@@ -588,8 +595,8 @@ class MainWindow(QMainWindow):
             dynamic=self._config.dlc.dynamic,  # Preserve from config
             resize=self._config.dlc.resize,  # Preserve from config
             precision=self._config.dlc.precision,  # Preserve from config
-            model_type="pytorch",
-            additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
+            model_type="pytorch",  # FIXME @C-Achard hardcoded for now, we should allow tf models too
+            # additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
         )
 
     def _recording_settings_from_ui(self) -> RecordingSettings:
@@ -727,6 +734,7 @@ class MainWindow(QMainWindow):
         else:
             # Refresh its UI from current settings when reopened
             self._cam_dialog._populate_from_settings()
+            self._cam_dialog.dlc_camera_id = self._inference_camera_id
 
         self._cam_dialog.show()
         self._cam_dialog.raise_()
@@ -736,6 +744,7 @@ class MainWindow(QMainWindow):
         """Handle changes to multi-camera settings."""
         self._config.multi_camera = settings
         self._update_active_cameras_label()
+        self._refresh_dlc_camera_list()
         active_count = len(settings.get_active_cameras())
         self.statusBar().showMessage(f"Camera configuration updated: {active_count} active camera(s)", 3000)
 
@@ -784,6 +793,39 @@ class MainWindow(QMainWindow):
             self._show_warning("\n".join(error_lines))
             logging.warning("\n".join(error_lines))
 
+    def _refresh_dlc_camera_list(self) -> None:
+        """Populate the inference camera dropdown from active cameras."""
+        self.dlc_camera_combo.blockSignals(True)
+        self.dlc_camera_combo.clear()
+
+        active_cams = self._config.multi_camera.get_active_cameras()
+        for cam in active_cams:
+            cam_id = get_camera_id(cam)  # e.g., "opencv:0" or "pylon:1"
+            label = f"{cam.name} [{cam.backend}:{cam.index}]"
+            self.dlc_camera_combo.addItem(label, cam_id)
+
+        # Keep previous selection if still present, else default to first
+        if self._inference_camera_id is not None:
+            idx = self.dlc_camera_combo.findData(self._inference_camera_id)
+            if idx >= 0:
+                self.dlc_camera_combo.setCurrentIndex(idx)
+            elif self.dlc_camera_combo.count() > 0:
+                self.dlc_camera_combo.setCurrentIndex(0)
+                self._inference_camera_id = self.dlc_camera_combo.currentData()
+        else:
+            if self.dlc_camera_combo.count() > 0:
+                self.dlc_camera_combo.setCurrentIndex(0)
+                self._inference_camera_id = self.dlc_camera_combo.currentData()
+
+        self.dlc_camera_combo.blockSignals(False)
+
+    def _on_dlc_camera_changed(self, _index: int) -> None:
+        """Track user selection of the inference camera."""
+        self._inference_camera_id = self.dlc_camera_combo.currentData()
+        # Force redraw so bbox/pose overlays switch to the new tile immediately
+        if self._current_frame is not None:
+            self._display_frame(self._current_frame, force=True)
+
     def _on_multi_frame_ready(self, frame_data: MultiFrameData) -> None:
         """Handle frames from multiple cameras.
 
@@ -797,7 +839,10 @@ class MainWindow(QMainWindow):
 
         # Determine DLC camera (first active camera)
         active_cams = self._config.multi_camera.get_active_cameras()
-        dlc_cam_id = get_camera_id(active_cams[0]) if active_cams else None
+        selected_id = self._inference_camera_id
+        fallback_id = get_camera_id(active_cams[0]) if active_cams else None
+
+        dlc_cam_id = selected_id if selected_id in frame_data.frames else fallback_id
 
         # Check if this frame is from the DLC camera
         is_dlc_camera_frame = frame_data.source_camera_id == dlc_cam_id
@@ -1100,7 +1145,8 @@ class MainWindow(QMainWindow):
             self.browse_processor_folder_button,
             self.refresh_processors_button,
             self.processor_combo,
-            self.additional_options_edit,
+            # self.additional_options_edit,
+            self.dlc_camera_combo,
         ]
         for widget in widgets:
             widget.setEnabled(allow_changes)

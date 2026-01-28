@@ -6,7 +6,7 @@ import copy  # NEW
 import logging
 
 import cv2
-from PySide6.QtCore import QElapsedTimer, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont, QImage, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -109,46 +109,8 @@ class CameraLoadWorker(QThread):
                 return
 
             LOGGER.debug("Creating camera backend for %s:%d", self._cam.backend, self._cam.index)
-            # self._backend = CameraFactory.create(self._cam)
             self.progress.emit("Opening device…")
             self.success.emit(self._cam)
-            return
-
-            if self._check_cancel():
-                self.canceled.emit()
-                return
-
-            self._backend.open()  # heavy: backend chooses/negotiates API/format/res/FPS
-
-            self.progress.emit("Warming up stream…")
-            if self._check_cancel():
-                self._backend.close()
-                self.canceled.emit()
-                return
-
-            # Warmup: allow driver pipeline to stabilize (skip None frames silently)
-            warm_ok = False
-            timer = QElapsedTimer()
-            timer.start()
-            budget = 50000  # ms
-            while timer.elapsed() < budget and not self._cancel:
-                frame, _ = self._backend.read()
-                if frame is not None and frame.size > 0:
-                    warm_ok = True
-                    break
-
-            if self._cancel:
-                self._backend.close()
-                self.canceled.emit()
-                return
-
-            if not warm_ok:
-                # Not fatal—some cameras deliver the first frame only after UI starts polling.
-                self.progress.emit("Warmup yielded no frame, proceeding…")
-
-            self.progress.emit("Camera ready.")
-            self.success.emit(self._backend)
-            # Ownership of _backend transfers to the receiver; do not close here.
 
         except Exception as exc:
             msg = f"{type(exc).__name__}: {exc}"
@@ -178,6 +140,7 @@ class CameraConfigDialog(QDialog):
         self.setWindowTitle("Configure Cameras")
         self.setMinimumSize(960, 720)
 
+        self.dlc_camera_id: str | None = None
         self._multi_camera_settings = multi_camera_settings if multi_camera_settings else MultiCameraSettings()
         self._detected_cameras: list[DetectedCamera] = []
         self._current_edit_index: int | None = None
@@ -197,6 +160,17 @@ class CameraConfigDialog(QDialog):
         self._setup_ui()
         self._populate_from_settings()
         self._connect_signals()
+
+    @property
+    def dlc_camera_id(self) -> str | None:
+        """Get the currently selected DLC camera ID."""
+        return self._dlc_camera_id
+
+    @dlc_camera_id.setter
+    def dlc_camera_id(self, value: str | None) -> None:
+        """Set the currently selected DLC camera ID."""
+        self._dlc_camera_id = value
+        self._refresh_camera_labels()
 
     # -------------------------------
     # UI setup
@@ -509,15 +483,18 @@ class CameraConfigDialog(QDialog):
 
     def _format_camera_label(self, cam: CameraSettings, index: int = -1) -> str:
         status = "✓" if cam.enabled else "○"
-        dlc_indicator = " [DLC]" if index == 0 and cam.enabled else ""
+        this_id = f"{cam.backend}:{cam.index}"
+        dlc_indicator = " [DLC]" if this_id == self._dlc_camera_id and cam.enabled else ""
         return f"{status} {cam.name} [{cam.backend}:{cam.index}]{dlc_indicator}"
 
     def _refresh_camera_labels(self) -> None:
-        for i in range(self.active_cameras_list.count()):
-            item = self.active_cameras_list.item(i)
-            cam = item.data(Qt.ItemDataRole.UserRole)
-            if cam:
-                item.setText(self._format_camera_label(cam, i))
+        cam_list = getattr(self, "active_cameras_list", None)
+        if cam_list:
+            for i in range(cam_list.count()):
+                item = cam_list.item(i)
+                cam = item.data(Qt.ItemDataRole.UserRole)
+                if cam:
+                    item.setText(self._format_camera_label(cam, i))
 
     def _on_backend_changed(self, _index: int) -> None:
         self._refresh_available_cameras()
