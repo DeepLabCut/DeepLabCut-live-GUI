@@ -59,7 +59,7 @@ from dlclivegui.processors.processor_utils import instantiate_from_scan, scan_pr
 from dlclivegui.video_recorder import RecorderStats, VideoRecorder
 
 # logging.basicConfig(level=logging.INFO)
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG)  # FIXME @C-Achard set back to INFO for release
 
 
 # auto enum for styles
@@ -101,7 +101,9 @@ class MainWindow(QMainWindow):
         self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
         self._active_camera_settings: CameraSettings | None = None
-        self._camera_frame_times: deque[float] = deque(maxlen=240)
+        # self._camera_frame_times: deque[float] = deque(maxlen=240)
+        self._camera_frame_times: dict[str, deque[float]] = {}
+        self._fps_window_seconds = 5.0  # seconds for fps calculation
         self._last_drop_warning = 0.0
         self._last_recorder_summary = "Recorder idle"
         self._display_interval = 1.0 / 25.0
@@ -197,47 +199,62 @@ class MainWindow(QMainWindow):
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumSize(640, 360)
         self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        video_layout.addWidget(self.video_label)
+        video_layout.addWidget(self.video_label, stretch=1)
 
         # Stats panel below video with clear labels
         stats_widget = QWidget()
         stats_widget.setStyleSheet("padding: 5px;")
-        stats_widget.setMinimumWidth(800)  # Prevent excessive line breaks
+        # stats_widget.setMinimumWidth(800)  # Prevent excessive line breaks
+        stats_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        stats_widget.setMinimumHeight(80)
         stats_layout = QVBoxLayout(stats_widget)
         stats_layout.setContentsMargins(5, 5, 5, 5)
         stats_layout.setSpacing(3)
 
         # Camera throughput stats
         camera_stats_container = QHBoxLayout()
+        camera_stats_container.setContentsMargins(0, 0, 0, 0)
+        camera_stats_container.setSpacing(8)
         camera_stats_label_title = QLabel("<b>Camera:</b>")
-        camera_stats_container.addWidget(camera_stats_label_title)
+        camera_stats_label_title.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        camera_stats_container.addWidget(camera_stats_label_title, stretch=0)
         self.camera_stats_label = QLabel("Camera idle")
         self.camera_stats_label.setWordWrap(True)
-        camera_stats_container.addWidget(self.camera_stats_label)
-        camera_stats_container.addStretch(1)
+        self.camera_stats_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        camera_stats_container.addWidget(self.camera_stats_label, stretch=1)
+        # camera_stats_container.addStretch(1)
         stats_layout.addLayout(camera_stats_container)
 
         # DLC processor stats
         dlc_stats_container = QHBoxLayout()
         dlc_stats_label_title = QLabel("<b>DLC Processor:</b>")
-        dlc_stats_container.addWidget(dlc_stats_label_title)
+        dlc_stats_container.setContentsMargins(0, 0, 0, 0)
+        dlc_stats_container.setSpacing(8)
+        dlc_stats_label_title.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        dlc_stats_container.addWidget(dlc_stats_label_title, stretch=0)
         self.dlc_stats_label = QLabel("DLC processor idle")
         self.dlc_stats_label.setWordWrap(True)
-        dlc_stats_container.addWidget(self.dlc_stats_label)
-        dlc_stats_container.addStretch(1)
+        self.dlc_stats_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        dlc_stats_container.addWidget(self.dlc_stats_label, stretch=1)
         stats_layout.addLayout(dlc_stats_container)
 
         # Video recorder stats
         recorder_stats_container = QHBoxLayout()
         recorder_stats_label_title = QLabel("<b>Recorder:</b>")
-        recorder_stats_container.addWidget(recorder_stats_label_title)
+        recorder_stats_container.setContentsMargins(0, 0, 0, 0)
+        recorder_stats_container.setSpacing(8)
+        recorder_stats_label_title.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        recorder_stats_container.addWidget(recorder_stats_label_title, stretch=0)
         self.recording_stats_label = QLabel("Recorder idle")
         self.recording_stats_label.setWordWrap(True)
-        recorder_stats_container.addWidget(self.recording_stats_label)
-        recorder_stats_container.addStretch(1)
+        self.recording_stats_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        recorder_stats_container.addWidget(self.recording_stats_label, stretch=1)
         stats_layout.addLayout(recorder_stats_container)
+        video_layout.addWidget(stats_widget, stretch=0)
 
-        video_layout.addWidget(stats_widget)
+        # Allow user to select stats text
+        for lbl in (self.camera_stats_label, self.dlc_stats_label, self.recording_stats_label):
+            lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         # Controls panel with fixed width to prevent shifting
         controls_widget = QWidget()
@@ -269,6 +286,8 @@ class MainWindow(QMainWindow):
         # Add controls and video panel to main layout
         layout.addWidget(controls_widget, stretch=0)
         layout.addWidget(video_panel, stretch=1)
+        layout.setStretch(0, 0)
+        layout.setStretch(1, 1)
 
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
@@ -835,7 +854,9 @@ class MainWindow(QMainWindow):
         3. Display (lowest priority - tiled and updated on separate timer)
         """
         self._multi_camera_frames = frame_data.frames
-        self._track_camera_frame()  # Track FPS
+        src_id = frame_data.source_camera_id
+        if src_id:
+            self._track_camera_frame(src_id)  # Track FPS
 
         # Determine DLC camera (first active camera)
         active_cams = self._config.multi_camera.get_active_cameras()
@@ -1171,12 +1192,20 @@ class MainWindow(QMainWindow):
         if hasattr(self, "load_config_action"):
             self.load_config_action.setEnabled(allow_changes)
 
-    def _track_camera_frame(self) -> None:
+    def _track_camera_frame(self, camera_id: str) -> None:
         now = time.perf_counter()
-        self._camera_frame_times.append(now)
-        window_seconds = 5.0
-        while self._camera_frame_times and now - self._camera_frame_times[0] > window_seconds:
-            self._camera_frame_times.popleft()
+        dq = self._camera_frame_times.get(camera_id)
+        if dq is None:
+            # Maxlen sized to about the highest plausible FPS * window
+            # e.g., 240 entries ~ 48 FPS over 5s
+            dq = deque(maxlen=240)
+            self._camera_frame_times[camera_id] = dq
+        dq.append(now)
+
+        # Drop old timestamps outside window
+        window_seconds = self._fps_window_seconds
+        while dq and (now - dq[0]) > window_seconds:
+            dq.popleft()
 
     def _display_frame(self, frame: np.ndarray, *, force: bool = False) -> None:
         if frame is None:
@@ -1337,25 +1366,38 @@ class MainWindow(QMainWindow):
         )
 
     def _update_metrics(self) -> None:
+        # --- Camera stats ---
         if hasattr(self, "camera_stats_label"):
             running = self.multi_camera_controller.is_running()
-
             if running:
                 active_count = self.multi_camera_controller.get_active_count()
-                fps = self._compute_fps(self._camera_frame_times)
-                if fps > 0:
-                    if active_count > 1:
-                        self.camera_stats_label.setText(f"{active_count} cameras | {fps:.1f} fps (last 5 s)")
+
+                # Build per-camera FPS list for active cameras only
+                active_cams = self._config.multi_camera.get_active_cameras()
+                lines = []
+                for cam in active_cams:
+                    cam_id = get_camera_id(cam)  # e.g., "opencv:0" or "pylon:1"
+                    dq = self._camera_frame_times.get(cam_id, deque())
+                    fps = self._compute_fps(dq)
+                    # Make a compact label: name [backend:index] @ fps
+                    label = f"{cam.name or cam_id} [{cam.backend}:{cam.index}]"
+                    if fps > 0:
+                        lines.append(f"{label} @ {fps:.1f} fps")
                     else:
-                        self.camera_stats_label.setText(f"{fps:.1f} fps (last 5 s)")
+                        lines.append(f"{label} @ Measuring…")
+
+                if active_count == 1:
+                    # Single camera: show just the line
+                    summary = lines[0] if lines else "Measuring…"
                 else:
-                    if active_count > 1:
-                        self.camera_stats_label.setText(f"{active_count} cameras | Measuring…")
-                    else:
-                        self.camera_stats_label.setText("Measuring…")
+                    # Multi camera: join lines with separator
+                    summary = " | ".join(lines)
+
+                self.camera_stats_label.setText(summary)
             else:
                 self.camera_stats_label.setText("Camera idle")
 
+        # --- DLC processor stats ---
         if hasattr(self, "dlc_stats_label"):
             if self._dlc_active and self._dlc_initialized:
                 stats = self.dlc_processor.get_stats()
@@ -1368,6 +1410,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "processor_status_label"):
             self._update_processor_status()
 
+        # --- Recorder stats ---
         if hasattr(self, "recording_stats_label"):
             # Handle multi-camera recording stats
             if self._multi_camera_recorders:
