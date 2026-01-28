@@ -26,7 +26,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "deeplabcut-live", # might be missing timm and scipy
+    # "deeplabcut-live", # might be missing timm and scipy
     "PySide6",
     "numpy",
     "opencv-python",
@@ -110,3 +110,13 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "@abstract",
 ]
+
+[tool.ruff]
+lint.select = ["E", "F", "B", "I", "UP"]
+lint.ignore = ["E741"]
+target-version = "py310"
+fix = true
+line-length = 120
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
