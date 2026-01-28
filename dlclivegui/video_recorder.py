@@ -125,11 +125,9 @@ class VideoRecorder:
         if error is not None:
             raise RuntimeError(f"Video encoding failed: {error}") from error
 
-        # Record timestamp for this frame
+        # Capture timestamp now, but only record it if frame is successfully enqueued
         if timestamp is None:
             timestamp = time.time()
-        with self._stats_lock:
-            self._frame_timestamps.append(timestamp)
 
         # Convert frame to uint8 if needed
         if frame.dtype != np.uint8:
@@ -179,6 +177,7 @@ class VideoRecorder:
             return False
         with self._stats_lock:
             self._frames_enqueued += 1
+            self._frame_timestamps.append(timestamp)
         return True
 
     def stop(self) -> None:
