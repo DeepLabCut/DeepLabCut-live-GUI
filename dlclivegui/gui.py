@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 import json
 import logging
 import os
@@ -16,8 +17,9 @@ os.environ["PYLON_CAMEMU"] = "2"
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import qdarkstyle
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent, QImage, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -59,6 +61,12 @@ from dlclivegui.video_recorder import RecorderStats, VideoRecorder
 
 # logging.basicConfig(level=logging.INFO)
 logging.basicConfig(level=logging.DEBUG)
+
+
+# auto enum for styles
+class AppStyle(enum.Enum):
+    SYS_DEFAULT = "system"
+    DARK = "dark"
 
 
 class MainWindow(QMainWindow):
@@ -108,6 +116,7 @@ class MainWindow(QMainWindow):
         self._bbox_y1 = 0
         self._bbox_enabled = False
         # UI elements
+        self._current_style: AppStyle = AppStyle.DARK
         self._cam_dialog: CameraConfigDialog | None = None
 
         # Visualization settings (will be updated from config)
@@ -154,6 +163,25 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, self._validate_configured_cameras)
 
     # ------------------------------------------------------------------ UI
+    def _init_theme_actions(self) -> None:
+        """Set initial checked state for theme actions based on current app stylesheet."""
+        self.action_dark_mode.setChecked(self._current_style == AppStyle.DARK)
+        self.action_light_mode.setChecked(self._current_style == AppStyle.SYS_DEFAULT)
+
+    def _apply_theme(self, mode: AppStyle) -> None:
+        """Apply the selected theme and update menu action states."""
+        app = QApplication.instance()
+        if mode == AppStyle.DARK:
+            css = qdarkstyle.load_stylesheet_pyside6()
+            app.setStyleSheet(css)
+            self.action_dark_mode.setChecked(True)
+            self.action_light_mode.setChecked(False)
+        else:
+            app.setStyleSheet("")  # empty -> default Qt
+            self.action_dark_mode.setChecked(False)
+            self.action_light_mode.setChecked(True)
+        self._current_style = mode
+
     def _setup_ui(self) -> None:
         central = QWidget()
         layout = QHBoxLayout(central)
@@ -246,24 +274,42 @@ class MainWindow(QMainWindow):
         self._build_menus()
 
     def _build_menus(self) -> None:
+        # File menu
         file_menu = self.menuBar().addMenu("&File")
 
+        ## Save/Load config
         self.load_config_action = QAction("Load configuration…", self)
         self.load_config_action.triggered.connect(self._action_load_config)
         file_menu.addAction(self.load_config_action)
-
         save_action = QAction("Save configuration", self)
         save_action.triggered.connect(self._action_save_config)
         file_menu.addAction(save_action)
-
         save_as_action = QAction("Save configuration as…", self)
         save_as_action.triggered.connect(self._action_save_config_as)
         file_menu.addAction(save_as_action)
-
+        ## Close
         file_menu.addSeparator()
-        exit_action = QAction("Exit", self)
+        exit_action = QAction("Close window", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        # View menu
+        view_menu = self.menuBar().addMenu("&View")
+        appearance_menu = view_menu.addMenu("Appearance")
+        ## Style actions
+        self.action_dark_mode = QAction("Dark theme", self, checkable=True)
+        self.action_light_mode = QAction("System theme", self, checkable=True)
+        theme_group = QActionGroup(self)
+        theme_group.setExclusive(True)
+        theme_group.addAction(self.action_dark_mode)
+        theme_group.addAction(self.action_light_mode)
+        self.action_dark_mode.triggered.connect(lambda: self._apply_theme(AppStyle.DARK))
+        self.action_light_mode.triggered.connect(lambda: self._apply_theme(AppStyle.SYS_DEFAULT))
+
+        appearance_menu.addAction(self.action_light_mode)
+        appearance_menu.addAction(self.action_dark_mode)
+        self._apply_theme(self._current_style)
+        self._init_theme_actions()
 
     def _build_camera_group(self) -> QGroupBox:
         group = QGroupBox("Camera settings")
@@ -1462,12 +1508,10 @@ class MainWindow(QMainWindow):
         bytes_per_line = ch * w
         image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(image)
-        
+
         # Scale pixmap to fit label while preserving aspect ratio
         scaled_pixmap = pixmap.scaled(
-            self.video_label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+            self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
         )
         self.video_label.setPixmap(scaled_pixmap)
 
