@@ -1,14 +1,13 @@
-"""Camera configuration dialog for multi-camera setup."""
+"""Camera configuration dialog for multi-camera setup (with async preview loading)."""
 
 from __future__ import annotations
 
+import copy  # NEW
 import logging
-from typing import List, Optional
 
 import cv2
-import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import QElapsedTimer, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFont, QImage, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,9 +20,11 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QStyle,
+    QTextEdit,  # NEW: lightweight status console in the preview panel
     QVBoxLayout,
     QWidget,
 )
@@ -36,34 +37,168 @@ from dlclivegui.config import CameraSettings, MultiCameraSettings
 LOGGER = logging.getLogger(__name__)
 
 
+# -------------------------------
+# Background worker to detect cameras
+# -------------------------------
+class DetectCamerasWorker(QThread):
+    """Background worker to detect cameras for the selected backend."""
+
+    progress = Signal(str)  # human-readable text
+    result = Signal(list)  # list[DetectedCamera]
+    error = Signal(str)
+    finished = Signal()
+
+    def __init__(self, backend: str, max_devices: int = 10, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.backend = backend
+        self.max_devices = max_devices
+
+    def run(self):
+        try:
+            # Initial message
+            self.progress.emit(f"Scanning {self.backend} cameras…")
+
+            cams = CameraFactory.detect_cameras(
+                self.backend,
+                max_devices=self.max_devices,
+                should_cancel=self.isInterruptionRequested,
+                progress_cb=self.progress.emit,
+            )
+            self.result.emit(cams)
+        except Exception as exc:
+            self.error.emit(f"{type(exc).__name__}: {exc}")
+        finally:
+            self.finished.emit()
+
+
+# -------------------------------
+# Singleton camera preview loader worker
+# -------------------------------
+class CameraLoadWorker(QThread):
+    """Open/configure a camera backend off the UI thread with progress and cancel support."""
+
+    progress = Signal(str)  # Human-readable status updates
+    success = Signal(object)  # Emits the ready backend (CameraBackend)
+    error = Signal(str)  # Emits error message
+    canceled = Signal()  # Emits when canceled before success
+
+    def __init__(self, cam: CameraSettings, parent: QWidget | None = None):
+        super().__init__(parent)
+        # Work on a defensive copy so we never mutate the original settings
+        self._cam = copy.deepcopy(cam)
+        # Make first-time opening snappier by allowing backend fast-path if supported
+        if isinstance(self._cam.properties, dict):
+            self._cam.properties.setdefault("fast_start", True)
+        self._cancel = False
+        self._backend: CameraBackend | None = None
+
+    def request_cancel(self):
+        self._cancel = True
+
+    def _check_cancel(self) -> bool:
+        if self._cancel:
+            self.progress.emit("Canceled by user.")
+            return True
+        return False
+
+    def run(self):
+        try:
+            self.progress.emit("Creating backend…")
+            if self._check_cancel():
+                self.canceled.emit()
+                return
+
+            LOGGER.debug("Creating camera backend for %s:%d", self._cam.backend, self._cam.index)
+            self._backend = CameraFactory.create(self._cam)
+
+            self.progress.emit("Opening device…")
+            if self._check_cancel():
+                self.canceled.emit()
+                return
+
+            self._backend.open()  # heavy: backend chooses/negotiates API/format/res/FPS
+
+            self.progress.emit("Warming up stream…")
+            if self._check_cancel():
+                self._backend.close()
+                self.canceled.emit()
+                return
+
+            # Warmup: allow driver pipeline to stabilize (skip None frames silently)
+            warm_ok = False
+            timer = QElapsedTimer()
+            timer.start()
+            budget = 50000  # ms
+            while timer.elapsed() < budget and not self._cancel:
+                frame, _ = self._backend.read()
+                if frame is not None and frame.size > 0:
+                    warm_ok = True
+                    break
+
+            if self._cancel:
+                self._backend.close()
+                self.canceled.emit()
+                return
+
+            if not warm_ok:
+                # Not fatal—some cameras deliver the first frame only after UI starts polling.
+                self.progress.emit("Warmup yielded no frame, proceeding…")
+
+            self.progress.emit("Camera ready.")
+            self.success.emit(self._backend)
+            # Ownership of _backend transfers to the receiver; do not close here.
+
+        except Exception as exc:
+            msg = f"{type(exc).__name__}: {exc}"
+            try:
+                if self._backend:
+                    self._backend.close()
+            except Exception:
+                pass
+            self.error.emit(msg)
+
+
 class CameraConfigDialog(QDialog):
-    """Dialog for configuring multiple cameras."""
+    """Dialog for configuring multiple cameras with async preview loading."""
 
     MAX_CAMERAS = 4
     settings_changed = Signal(object)  # MultiCameraSettings
+    # Camera discovery signals
+    scan_started = Signal(str)
+    scan_finished = Signal()
 
     def __init__(
         self,
-        parent: Optional[QWidget] = None,
-        multi_camera_settings: Optional[MultiCameraSettings] = None,
+        parent: QWidget | None = None,
+        multi_camera_settings: MultiCameraSettings | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Configure Cameras")
         self.setMinimumSize(960, 720)
 
-        self._multi_camera_settings = (
-            multi_camera_settings if multi_camera_settings else MultiCameraSettings()
-        )
-        self._detected_cameras: List[DetectedCamera] = []
-        self._current_edit_index: Optional[int] = None
-        self._preview_backend: Optional[CameraBackend] = None
-        self._preview_timer: Optional[QTimer] = None
+        self._multi_camera_settings = multi_camera_settings if multi_camera_settings else MultiCameraSettings()
+        self._detected_cameras: list[DetectedCamera] = []
+        self._current_edit_index: int | None = None
+
+        # Preview state
+        self._preview_backend: CameraBackend | None = None
+        self._preview_timer: QTimer | None = None
         self._preview_active: bool = False
+
+        # Camera detection worker
+        self._scan_worker: DetectCamerasWorker | None = None
+
+        # Singleton loader per dialog
+        self._loader: CameraLoadWorker | None = None
+        self._loading_active: bool = False
 
         self._setup_ui()
         self._populate_from_settings()
         self._connect_signals()
 
+    # -------------------------------
+    # UI setup
+    # -------------------------------
     def _setup_ui(self) -> None:
         # Main layout for the dialog
         main_layout = QVBoxLayout(self)
@@ -86,9 +221,7 @@ class CameraConfigDialog(QDialog):
         # Buttons for managing active cameras
         list_buttons = QHBoxLayout()
         self.remove_camera_btn = QPushButton("Remove")
-        self.remove_camera_btn.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
-        )
+        self.remove_camera_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
         self.remove_camera_btn.setEnabled(False)
         self.move_up_btn = QPushButton("↑")
         self.move_up_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
@@ -125,6 +258,30 @@ class CameraConfigDialog(QDialog):
 
         self.available_cameras_list = QListWidget()
         available_layout.addWidget(self.available_cameras_list)
+
+        # Show status overlay during scan
+        self._scan_overlay = QLabel(available_group)
+        self._scan_overlay.setVisible(False)
+        self._scan_overlay.setAlignment(Qt.AlignCenter)
+        self._scan_overlay.setWordWrap(True)
+        self._scan_overlay.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 140);color: white;padding: 12px;border: 1px solid #333;font-size: 12px;"
+        )
+        self._scan_overlay.setText("Discovering cameras…")
+        self.available_cameras_list.installEventFilter(self)
+
+        # Indeterminate progress bar + status text for async scan
+        self.scan_progress = QProgressBar()
+        self.scan_progress.setRange(0, 0)
+        self.scan_progress.setVisible(False)
+
+        available_layout.addWidget(self.scan_progress)
+
+        self.scan_cancel_btn = QPushButton("Cancel Scan")
+        self.scan_cancel_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserStop))
+        self.scan_cancel_btn.setVisible(False)
+        self.scan_cancel_btn.clicked.connect(self._on_scan_cancel)
+        available_layout.addWidget(self.scan_cancel_btn)
 
         self.add_camera_btn = QPushButton("Add Selected Camera →")
         self.add_camera_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight))
@@ -214,9 +371,7 @@ class CameraConfigDialog(QDialog):
         self.settings_form.addRow("Crop (x0,y0,x1,y1):", crop_widget)
 
         self.apply_settings_btn = QPushButton("Apply Settings")
-        self.apply_settings_btn.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
-        )
+        self.apply_settings_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.apply_settings_btn.setEnabled(False)
         self.settings_form.addRow(self.apply_settings_btn)
 
@@ -231,12 +386,35 @@ class CameraConfigDialog(QDialog):
         # Preview widget
         self.preview_group = QGroupBox("Camera Preview")
         preview_layout = QVBoxLayout(self.preview_group)
+
         self.preview_label = QLabel("No preview")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(320, 240)
         self.preview_label.setMaximumSize(400, 300)
         self.preview_label.setStyleSheet("background-color: #1a1a1a; color: #888;")
         preview_layout.addWidget(self.preview_label)
+        self.preview_label.installEventFilter(self)  # For resize events
+
+        # NEW: small, read-only status console for loader messages
+        self.preview_status = QTextEdit()
+        self.preview_status.setReadOnly(True)
+        self.preview_status.setFixedHeight(45)
+        self.preview_status.setStyleSheet(
+            "QTextEdit { background: #141414; color: #bdbdbd; border: 1px solid #2a2a2a; }"
+        )
+        font = QFont("Consolas")
+        font.setPointSize(9)
+        self.preview_status.setFont(font)
+        preview_layout.addWidget(self.preview_status)
+
+        # NEW: overlay label for loading glass pane
+        self._loading_overlay = QLabel(self.preview_group)
+        self._loading_overlay.setVisible(False)
+        self._loading_overlay.setAlignment(Qt.AlignCenter)
+        self._loading_overlay.setStyleSheet("background-color: rgba(0,0,0,140); color: white; border: 1px solid #333;")
+        self._loading_overlay.setText("Loading camera…")
+        # We size/position it on show & on resize
+
         self.preview_group.setVisible(False)
         right_layout.addWidget(self.preview_group)
 
@@ -247,9 +425,7 @@ class CameraConfigDialog(QDialog):
         self.ok_btn = QPushButton("OK")
         self.ok_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOkButton))
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton)
-        )
+        self.cancel_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
         button_layout.addStretch(1)
         button_layout.addWidget(self.ok_btn)
         button_layout.addWidget(self.cancel_btn)
@@ -262,6 +438,48 @@ class CameraConfigDialog(QDialog):
         main_layout.addLayout(panels_layout)
         main_layout.addLayout(button_layout)
 
+    # Maintain overlay geometry when resizing
+    def resizeEvent(self, event):  # NEW
+        super().resizeEvent(event)
+        if self._loading_overlay and self._loading_overlay.isVisible():
+            self._position_loading_overlay()
+        if hasattr(self, "_loading_overlay") and self._loading_overlay.isVisible():
+            self._position_loading_overlay()
+
+    def eventFilter(self, obj, event):
+        if obj is self.available_cameras_list and event.type() == event.Type.Resize:
+            if self._scan_overlay and self._scan_overlay.isVisible():
+                self._position_scan_overlay()
+        return super().eventFilter(obj, event)
+
+    def _position_scan_overlay(self) -> None:
+        """Position scan overlay to cover the available_cameras_list area."""
+        if not self._scan_overlay or not self.available_cameras_list:
+            return
+        parent = self._scan_overlay.parent()  # available_group
+        top_left = self.available_cameras_list.mapTo(parent, self.available_cameras_list.rect().topLeft())
+        rect = self.available_cameras_list.rect()
+        self._scan_overlay.setGeometry(top_left.x(), top_left.y(), rect.width(), rect.height())
+
+    def _show_scan_overlay(self, message: str = "Discovering cameras…") -> None:
+        self._scan_overlay.setText(message)
+        self._scan_overlay.setVisible(True)
+        self._position_scan_overlay()
+
+    def _hide_scan_overlay(self) -> None:
+        self._scan_overlay.setVisible(False)
+
+    def _position_loading_overlay(self):  # NEW
+        # Cover just the preview image area (label), not the whole group
+        if not self.preview_label:
+            return
+        gp = self.preview_label.mapTo(self.preview_group, self.preview_label.rect().topLeft())
+        rect = self.preview_label.rect()
+        self._loading_overlay.setGeometry(gp.x(), gp.y(), rect.width(), rect.height())
+
+    # -------------------------------
+    # Signals / population
+    # -------------------------------
     def _connect_signals(self) -> None:
         self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self.refresh_btn.clicked.connect(self._refresh_available_cameras)
@@ -271,9 +489,7 @@ class CameraConfigDialog(QDialog):
         self.move_down_btn.clicked.connect(self._move_camera_down)
         self.active_cameras_list.currentRowChanged.connect(self._on_active_camera_selected)
         self.available_cameras_list.currentRowChanged.connect(self._on_available_camera_selected)
-        self.available_cameras_list.itemDoubleClicked.connect(
-            self._on_available_camera_double_clicked
-        )
+        self.available_cameras_list.itemDoubleClicked.connect(self._on_available_camera_double_clicked)
         self.apply_settings_btn.clicked.connect(self._apply_camera_settings)
         self.preview_btn.clicked.connect(self._toggle_preview)
         self.ok_btn.clicked.connect(self._on_ok_clicked)
@@ -293,21 +509,11 @@ class CameraConfigDialog(QDialog):
         self._update_button_states()
 
     def _format_camera_label(self, cam: CameraSettings, index: int = -1) -> str:
-        """Format camera label for display.
-
-        Parameters
-        ----------
-        cam : CameraSettings
-            The camera settings.
-        index : int
-            The index of the camera in the list. If 0 and enabled, shows DLC indicator.
-        """
         status = "✓" if cam.enabled else "○"
         dlc_indicator = " [DLC]" if index == 0 and cam.enabled else ""
         return f"{status} {cam.name} [{cam.backend}:{cam.index}]{dlc_indicator}"
 
     def _refresh_camera_labels(self) -> None:
-        """Refresh all camera labels in the active list (e.g., after reorder)."""
         for i in range(self.active_cameras_list.count()):
             item = self.active_cameras_list.item(i)
             cam = item.data(Qt.ItemDataRole.UserRole)
@@ -318,48 +524,96 @@ class CameraConfigDialog(QDialog):
         self._refresh_available_cameras()
 
     def _refresh_available_cameras(self) -> None:
-        """Refresh the list of available cameras."""
+        """Refresh the list of available cameras asynchronously."""
         backend = self.backend_combo.currentData()
         if not backend:
             backend = self.backend_combo.currentText().split()[0]
 
-        self.available_cameras_list.clear()
-        self._detected_cameras = CameraFactory.detect_cameras(backend, max_devices=10)
+        # If already scanning, ignore new requests to avoid races
+        if getattr(self, "_scan_worker", None) and self._scan_worker.isRunning():
+            self._show_scan_overlay("Already discovering cameras…")
+            return
 
+        # Reset list UI and show progress
+        self.available_cameras_list.clear()
+        self._detected_cameras = []
+        msg = f"Discovering {backend} cameras…"
+        self._show_scan_overlay(msg)
+        self.scan_progress.setRange(0, 0)
+        self.scan_progress.setVisible(True)
+        self.scan_cancel_btn.setVisible(True)
+        self.add_camera_btn.setEnabled(False)
+        self.refresh_btn.setEnabled(False)
+        self.backend_combo.setEnabled(False)
+
+        # Start worker
+        self._scan_worker = DetectCamerasWorker(backend, max_devices=10, parent=self)
+        self._scan_worker.progress.connect(self._on_scan_progress)
+        self._scan_worker.result.connect(self._on_scan_result)
+        self._scan_worker.error.connect(self._on_scan_error)
+        self._scan_worker.finished.connect(self._on_scan_finished)
+        self.scan_started.emit(f"Scanning {backend} cameras…")
+        self._scan_worker.start()
+
+    def _on_scan_progress(self, msg: str) -> None:
+        self._show_scan_overlay(msg or "Discovering cameras…")
+
+    def _on_scan_result(self, cams: list) -> None:
+        self._detected_cameras = cams or []
         for cam in self._detected_cameras:
             item = QListWidgetItem(f"{cam.label} (index {cam.index})")
             item.setData(Qt.ItemDataRole.UserRole, cam)
             self.available_cameras_list.addItem(item)
 
+    def _on_scan_error(self, msg: str) -> None:
+        QMessageBox.warning(self, "Camera Scan", f"Failed to detect cameras:\n{msg}")
+
+    def _on_scan_finished(self) -> None:
+        self._hide_scan_overlay()
+        self.scan_progress.setVisible(False)
+        self._scan_worker = None
+
+        self.scan_cancel_btn.setVisible(False)
+        self.scan_cancel_btn.setEnabled(True)
+        self.refresh_btn.setEnabled(True)
+        self.backend_combo.setEnabled(True)
+
         self._update_button_states()
+        self.scan_finished.emit()
+
+    def _on_scan_cancel(self) -> None:
+        """User requested to cancel discovery."""
+        if self._scan_worker and self._scan_worker.isRunning():
+            try:
+                self._scan_worker.requestInterruption()
+            except Exception:
+                pass
+            # Keep the busy bar, update texts
+            self._show_scan_overlay("Canceling discovery…")
+            self.scan_progress.setVisible(True)  # stay visible as indeterminate
+            self.scan_cancel_btn.setEnabled(False)
 
     def _on_available_camera_selected(self, row: int) -> None:
         self.add_camera_btn.setEnabled(row >= 0)
 
     def _on_available_camera_double_clicked(self, item: QListWidgetItem) -> None:
-        """Handle double-click on an available camera to add it."""
         self._add_selected_camera()
 
     def _on_active_camera_selected(self, row: int) -> None:
-        """Handle selection of an active camera."""
         # Stop any running preview when selection changes
         if self._preview_active:
             self._stop_preview()
-
         self._current_edit_index = row
         self._update_button_states()
-
         if row < 0 or row >= self.active_cameras_list.count():
             self._clear_settings_form()
             return
-
         item = self.active_cameras_list.item(row)
         cam = item.data(Qt.ItemDataRole.UserRole)
         if cam:
             self._load_camera_to_form(cam)
 
     def _load_camera_to_form(self, cam: CameraSettings) -> None:
-        """Load camera settings into the form."""
         self.cam_enabled_checkbox.setChecked(cam.enabled)
         self.cam_name_label.setText(cam.name)
         self.cam_index_label.setText(str(cam.index))
@@ -367,21 +621,16 @@ class CameraConfigDialog(QDialog):
         self.cam_fps.setValue(cam.fps)
         self.cam_exposure.setValue(cam.exposure)
         self.cam_gain.setValue(cam.gain)
-
-        # Set rotation
         rot_index = self.cam_rotation.findData(cam.rotation)
         if rot_index >= 0:
             self.cam_rotation.setCurrentIndex(rot_index)
-
         self.cam_crop_x0.setValue(cam.crop_x0)
         self.cam_crop_y0.setValue(cam.crop_y0)
         self.cam_crop_x1.setValue(cam.crop_x1)
         self.cam_crop_y1.setValue(cam.crop_y1)
-
         self.apply_settings_btn.setEnabled(True)
 
     def _clear_settings_form(self) -> None:
-        """Clear the settings form."""
         self.cam_enabled_checkbox.setChecked(True)
         self.cam_name_label.setText("")
         self.cam_index_label.setText("")
@@ -397,12 +646,10 @@ class CameraConfigDialog(QDialog):
         self.apply_settings_btn.setEnabled(False)
 
     def _add_selected_camera(self) -> None:
-        """Add the selected available camera to active cameras."""
         row = self.available_cameras_list.currentRow()
         if row < 0:
             return
-
-        # Check limit
+        # limit check
         active_count = len(
             [
                 i
@@ -411,29 +658,20 @@ class CameraConfigDialog(QDialog):
             ]
         )
         if active_count >= self.MAX_CAMERAS:
-            QMessageBox.warning(
-                self,
-                "Maximum Cameras",
-                f"Maximum of {self.MAX_CAMERAS} active cameras allowed.",
-            )
+            QMessageBox.warning(self, "Maximum Cameras", f"Maximum of {self.MAX_CAMERAS} active cameras allowed.")
             return
-
         item = self.available_cameras_list.item(row)
         detected = item.data(Qt.ItemDataRole.UserRole)
         backend = self.backend_combo.currentData() or "opencv"
 
-        # Check if this camera (same backend + index) is already added
         for i in range(self.active_cameras_list.count()):
             existing_cam = self.active_cameras_list.item(i).data(Qt.ItemDataRole.UserRole)
             if existing_cam.backend == backend and existing_cam.index == detected.index:
                 QMessageBox.warning(
-                    self,
-                    "Duplicate Camera",
-                    f"Camera '{backend}:{detected.index}' is already in the active list.",
+                    self, "Duplicate Camera", f"Camera '{backend}:{detected.index}' is already in the active list."
                 )
                 return
 
-        # Create new camera settings
         new_cam = CameraSettings(
             name=detected.label,
             index=detected.index,
@@ -443,79 +681,55 @@ class CameraConfigDialog(QDialog):
             gain=0.0,
             enabled=True,
         )
-
         self._multi_camera_settings.cameras.append(new_cam)
-
-        # Add to list
         new_index = len(self._multi_camera_settings.cameras) - 1
         new_item = QListWidgetItem(self._format_camera_label(new_cam, new_index))
         new_item.setData(Qt.ItemDataRole.UserRole, new_cam)
         self.active_cameras_list.addItem(new_item)
         self.active_cameras_list.setCurrentItem(new_item)
-
-        # Refresh labels in case this is the first camera (gets DLC indicator)
         self._refresh_camera_labels()
         self._update_button_states()
 
     def _remove_selected_camera(self) -> None:
-        """Remove the selected camera from active cameras."""
         row = self.active_cameras_list.currentRow()
         if row < 0:
             return
-
         self.active_cameras_list.takeItem(row)
         if row < len(self._multi_camera_settings.cameras):
             del self._multi_camera_settings.cameras[row]
-
         self._current_edit_index = None
         self._clear_settings_form()
-        # Refresh labels since DLC camera may have changed
         self._refresh_camera_labels()
         self._update_button_states()
 
     def _move_camera_up(self) -> None:
-        """Move selected camera up in the list."""
         row = self.active_cameras_list.currentRow()
         if row <= 0:
             return
-
         item = self.active_cameras_list.takeItem(row)
         self.active_cameras_list.insertItem(row - 1, item)
         self.active_cameras_list.setCurrentRow(row - 1)
-
-        # Update settings list
         cams = self._multi_camera_settings.cameras
         cams[row], cams[row - 1] = cams[row - 1], cams[row]
-
-        # Refresh labels since DLC camera may have changed
         self._refresh_camera_labels()
 
     def _move_camera_down(self) -> None:
-        """Move selected camera down in the list."""
         row = self.active_cameras_list.currentRow()
         if row < 0 or row >= self.active_cameras_list.count() - 1:
             return
-
         item = self.active_cameras_list.takeItem(row)
         self.active_cameras_list.insertItem(row + 1, item)
         self.active_cameras_list.setCurrentRow(row + 1)
-
-        # Update settings list
         cams = self._multi_camera_settings.cameras
         cams[row], cams[row + 1] = cams[row + 1], cams[row]
-
-        # Refresh labels since DLC camera may have changed
         self._refresh_camera_labels()
 
     def _apply_camera_settings(self) -> None:
-        """Apply current form settings to the selected camera."""
         if self._current_edit_index is None:
             return
-
         row = self._current_edit_index
         if row < 0 or row >= len(self._multi_camera_settings.cameras):
             return
-
         cam = self._multi_camera_settings.cameras[row]
         cam.enabled = self.cam_enabled_checkbox.isChecked()
         cam.fps = self.cam_fps.value()
@@ -526,124 +740,215 @@ class CameraConfigDialog(QDialog):
         cam.crop_y0 = self.cam_crop_y0.value()
         cam.crop_x1 = self.cam_crop_x1.value()
         cam.crop_y1 = self.cam_crop_y1.value()
-
-        # Update list item
         item = self.active_cameras_list.item(row)
         item.setText(self._format_camera_label(cam, row))
         item.setData(Qt.ItemDataRole.UserRole, cam)
-        if not cam.enabled:
-            item.setForeground(Qt.GlobalColor.gray)
-        else:
-            item.setForeground(Qt.GlobalColor.black)
-
-        # Refresh all labels in case enabled state changed (affects DLC indicator)
+        item.setForeground(Qt.GlobalColor.gray if not cam.enabled else Qt.GlobalColor.black)
         self._refresh_camera_labels()
         self._update_button_states()
-
-        # Restart preview to apply new settings (exposure, gain, fps, etc.)
         if self._preview_active:
             self._stop_preview()
             self._start_preview()
 
     def _update_button_states(self) -> None:
-        """Update button enabled states."""
         active_row = self.active_cameras_list.currentRow()
         has_active_selection = active_row >= 0
-
         self.remove_camera_btn.setEnabled(has_active_selection)
         self.move_up_btn.setEnabled(has_active_selection and active_row > 0)
-        self.move_down_btn.setEnabled(
-            has_active_selection and active_row < self.active_cameras_list.count() - 1
-        )
-        self.preview_btn.setEnabled(has_active_selection)
-
+        self.move_down_btn.setEnabled(has_active_selection and active_row < self.active_cameras_list.count() - 1)
+        # During loading, preview button becomes "Cancel Loading"
+        self.preview_btn.setEnabled(has_active_selection or self._loading_active)
         available_row = self.available_cameras_list.currentRow()
         self.add_camera_btn.setEnabled(available_row >= 0)
 
     def _on_ok_clicked(self) -> None:
-        """Handle OK button click."""
-        # Stop preview if running
         self._stop_preview()
-
-        # Validate that we have at least one enabled camera if any cameras are configured
         if self._multi_camera_settings.cameras:
             active = self._multi_camera_settings.get_active_cameras()
             if not active:
                 QMessageBox.warning(
-                    self,
-                    "No Active Cameras",
-                    "Please enable at least one camera or remove all cameras.",
+                    self, "No Active Cameras", "Please enable at least one camera or remove all cameras."
                 )
                 return
-
         self.settings_changed.emit(self._multi_camera_settings)
         self.accept()
 
     def reject(self) -> None:
         """Handle dialog rejection (Cancel or close)."""
         self._stop_preview()
+
+        if getattr(self, "_scan_worker", None) and self._scan_worker.isRunning():
+            try:
+                self._scan_worker.requestInterruption()
+            except Exception:
+                pass
+            self._scan_worker.wait(1500)
+            self._scan_worker = None
+
+        self._hide_scan_overlay()
+        self.scan_progress.setVisible(False)
+        self.scan_cancel_btn.setVisible(False)
+        self.scan_cancel_btn.setEnabled(True)
+        self.refresh_btn.setEnabled(True)
+        self.backend_combo.setEnabled(True)
+
         super().reject()
 
+    # -------------------------------
+    # Preview start/stop (ASYNC)
+    # -------------------------------
     def _toggle_preview(self) -> None:
-        """Toggle camera preview on/off."""
+        if self._loading_active:
+            self._cancel_loading()
+            return
         if self._preview_active:
             self._stop_preview()
         else:
             self._start_preview()
 
     def _start_preview(self) -> None:
-        """Start camera preview for the currently selected camera."""
+        """Start camera preview asynchronously (no UI freeze)."""
         if self._current_edit_index is None or self._current_edit_index < 0:
             return
-
         item = self.active_cameras_list.item(self._current_edit_index)
         if not item:
             return
-
         cam = item.data(Qt.ItemDataRole.UserRole)
         if not cam:
             return
 
-        try:
-            self._preview_backend = CameraFactory.create(cam)
-            self._preview_backend.open()
-        except Exception as exc:
-            LOGGER.error(f"Failed to start preview: {exc}")
-            QMessageBox.warning(self, "Preview Error", f"Failed to start camera preview:\n{exc}")
-            self._preview_backend = None
-            return
+        # Ensure any existing preview or loader is stopped/canceled
+        self._stop_preview()
+        if self._loader and self._loader.isRunning():
+            self._loader.request_cancel()
 
-        self._preview_active = True
-        self.preview_btn.setText("Stop Preview")
-        self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        # Prepare UI
         self.preview_group.setVisible(True)
-        self.preview_label.setText("Starting...")
+        self.preview_label.setText("No preview")
+        self.preview_status.clear()
+        self._show_loading_overlay("Loading camera…")
+        self._set_preview_button_loading(True)
 
-        # Start timer to update preview
-        self._preview_timer = QTimer(self)
-        self._preview_timer.timeout.connect(self._update_preview)
-        self._preview_timer.start(33)  # ~30 fps
+        # Create singleton worker
+        self._loader = CameraLoadWorker(cam, self)
+        self._loader.progress.connect(self._on_loader_progress)
+        self._loader.success.connect(self._on_loader_success)
+        self._loader.error.connect(self._on_loader_error)
+        self._loader.canceled.connect(self._on_loader_canceled)
+        self._loader.finished.connect(self._on_loader_finished)
+        self._loading_active = True
+        self._update_button_states()
+        self._loader.start()
 
     def _stop_preview(self) -> None:
-        """Stop camera preview."""
+        """Stop camera preview and cancel any ongoing loading."""
+        # Cancel loader if running
+        if self._loader and self._loader.isRunning():
+            self._loader.request_cancel()
+            self._loader.wait(1500)
+            self._loader = None
+        # Stop timer
         if self._preview_timer:
             self._preview_timer.stop()
             self._preview_timer = None
-
+        # Close backend
         if self._preview_backend:
             try:
                 self._preview_backend.close()
             except Exception:
                 pass
             self._preview_backend = None
-
-        self._preview_active = False
+        # Reset UI
+        self._loading_active = False
+        self._set_preview_button_loading(False)
         self.preview_btn.setText("Start Preview")
         self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.preview_group.setVisible(False)
         self.preview_label.setText("No preview")
         self.preview_label.setPixmap(QPixmap())
+        self._hide_loading_overlay()
+        self._update_button_states()
 
+    # -------------------------------
+    # Loader UI helpers / slots
+    # -------------------------------
+    def _set_preview_button_loading(self, loading: bool) -> None:
+        if loading:
+            self.preview_btn.setText("Cancel Loading")
+            self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserStop))
+        else:
+            self.preview_btn.setText("Start Preview")
+            self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+
+    def _show_loading_overlay(self, message: str) -> None:
+        self._loading_overlay.setText(message)
+        self._loading_overlay.setVisible(True)
+        self._position_loading_overlay()
+
+    def _hide_loading_overlay(self) -> None:
+        self._loading_overlay.setVisible(False)
+
+    def _append_status(self, text: str) -> None:
+        self.preview_status.append(text)
+        self.preview_status.moveCursor(QTextCursor.End)
+        self.preview_status.ensureCursorVisible()
+
+    def _cancel_loading(self) -> None:
+        if self._loader and self._loader.isRunning():
+            self._append_status("Cancel requested…")
+            self._loader.request_cancel()
+            # UI will flip back on finished -> _on_loader_finished
+        else:
+            self._loading_active = False
+            self._set_preview_button_loading(False)
+            self._hide_loading_overlay()
+            self._update_button_states()
+
+    # Loader signal handlers
+    def _on_loader_progress(self, message: str) -> None:
+        self._show_loading_overlay(message)
+        self._append_status(message)
+
+    def _on_loader_success(self, backend: CameraBackend) -> None:
+        # Transfer ownership to dialog
+        self._preview_backend = backend
+        self._append_status("Starting preview…")
+
+        # Mark preview as active
+        self._preview_active = True
+        self.preview_btn.setText("Stop Preview")
+        self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        self.preview_group.setVisible(True)
+        self.preview_label.setText("Starting…")
+        self._hide_loading_overlay()
+
+        # Start timer to update preview (~25 fps more stable on Windows)
+        self._preview_timer = QTimer(self)
+        self._preview_timer.timeout.connect(self._update_preview)
+        self._preview_timer.start(40)
+
+    def _on_loader_error(self, error: str) -> None:
+        self._append_status(f"Error: {error}")
+        LOGGER.error(f"Failed to start preview: {error}")
+        QMessageBox.warning(self, "Preview Error", f"Failed to start camera preview:\n{error}")
+        self._hide_loading_overlay()
+        self.preview_group.setVisible(False)
+
+    def _on_loader_canceled(self) -> None:
+        self._append_status("Loading canceled.")
+        self._hide_loading_overlay()
+
+    def _on_loader_finished(self) -> None:
+        # Reset loading state and preview button iff not already running preview
+        self._loading_active = False
+        if not self._preview_active:
+            self._set_preview_button_loading(False)
+        self._loader = None
+        self._update_button_states()
+
+    # -------------------------------
+    # Preview frame update (unchanged logic, robust to None frames)
+    # -------------------------------
     def _update_preview(self) -> None:
         """Update preview frame."""
         if not self._preview_backend or not self._preview_active:
@@ -698,8 +1003,4 @@ class CameraConfigDialog(QDialog):
             self.preview_label.setPixmap(QPixmap.fromImage(q_img))
 
         except Exception as exc:
-            LOGGER.warning(f"Preview frame error: {exc}")
-
-    def get_settings(self) -> MultiCameraSettings:
-        """Get the current multi-camera settings."""
-        return self._multi_camera_settings
+            LOGGER.debug(f"Preview frame skipped: {exc}")

@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from collections import deque
 from pathlib import Path
-from typing import Optional
 
 os.environ["PYLON_CAMEMU"] = "2"
 
@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -58,13 +57,14 @@ from dlclivegui.multi_camera_controller import MultiCameraController, MultiFrame
 from dlclivegui.processors.processor_utils import instantiate_from_scan, scan_processor_folder
 from dlclivegui.video_recorder import RecorderStats, VideoRecorder
 
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 
 class MainWindow(QMainWindow):
     """Main application window."""
 
-    def __init__(self, config: Optional[ApplicationSettings] = None):
+    def __init__(self, config: ApplicationSettings | None = None):
         super().__init__()
         self.setWindowTitle("DeepLabCut Live GUI")
 
@@ -87,11 +87,11 @@ class MainWindow(QMainWindow):
             self._config_path = None
 
         self._config = config
-        self._current_frame: Optional[np.ndarray] = None
-        self._raw_frame: Optional[np.ndarray] = None
-        self._last_pose: Optional[PoseResult] = None
+        self._current_frame: np.ndarray | None = None
+        self._raw_frame: np.ndarray | None = None
+        self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
-        self._active_camera_settings: Optional[CameraSettings] = None
+        self._active_camera_settings: CameraSettings | None = None
         self._camera_frame_times: deque[float] = deque(maxlen=240)
         self._last_drop_warning = 0.0
         self._last_recorder_summary = "Recorder idle"
@@ -101,12 +101,14 @@ class MainWindow(QMainWindow):
         self._scanned_processors: dict = {}
         self._processor_keys: list = []
         self._last_processor_vid_recording = False
-        self._auto_record_session_name: Optional[str] = None
+        self._auto_record_session_name: str | None = None
         self._bbox_x0 = 0
         self._bbox_y0 = 0
         self._bbox_x1 = 0
         self._bbox_y1 = 0
         self._bbox_enabled = False
+        # UI elements
+        self._cam_dialog: CameraConfigDialog | None = None
 
         # Visualization settings (will be updated from config)
         self._p_cutoff = 0.6
@@ -146,9 +148,7 @@ class MainWindow(QMainWindow):
 
         # Show status message if myconfig.json was loaded
         if self._config_path and self._config_path.name == "myconfig.json":
-            self.statusBar().showMessage(
-                f"Auto-loaded configuration from {self._config_path}", 5000
-            )
+            self.statusBar().showMessage(f"Auto-loaded configuration from {self._config_path}", 5000)
 
         # Validate cameras from loaded config (deferred to allow window to show first)
         QTimer.singleShot(100, self._validate_configured_cameras)
@@ -229,9 +229,7 @@ class MainWindow(QMainWindow):
         self.preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.preview_button.setMinimumWidth(150)
         self.stop_preview_button = QPushButton("Stop Preview")
-        self.stop_preview_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
-        )
+        self.stop_preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
         self.stop_preview_button.setEnabled(False)
         self.stop_preview_button.setMinimumWidth(150)
         button_bar.addWidget(self.preview_button)
@@ -274,9 +272,7 @@ class MainWindow(QMainWindow):
         # Camera config button - opens dialog for all camera configuration
         config_layout = QHBoxLayout()
         self.config_cameras_button = QPushButton("Configure Cameras...")
-        self.config_cameras_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
-        )
+        self.config_cameras_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
         self.config_cameras_button.setToolTip("Configure camera settings (single or multi-camera)")
         config_layout.addWidget(self.config_cameras_button)
         form.addRow(config_layout)
@@ -297,9 +293,7 @@ class MainWindow(QMainWindow):
         self.model_path_edit.setPlaceholderText("/path/to/exported/model")
         path_layout.addWidget(self.model_path_edit)
         self.browse_model_button = QPushButton("Browse…")
-        self.browse_model_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
-        )
+        self.browse_model_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.browse_model_button.clicked.connect(self._action_browse_model)
         path_layout.addWidget(self.browse_model_button)
         form.addRow("Model file", path_layout)
@@ -311,16 +305,12 @@ class MainWindow(QMainWindow):
         processor_path_layout.addWidget(self.processor_folder_edit)
 
         self.browse_processor_folder_button = QPushButton("Browse...")
-        self.browse_processor_folder_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
-        )
+        self.browse_processor_folder_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.browse_processor_folder_button.clicked.connect(self._action_browse_processor_folder)
         processor_path_layout.addWidget(self.browse_processor_folder_button)
 
         self.refresh_processors_button = QPushButton("Refresh")
-        self.refresh_processors_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
-        )
+        self.refresh_processors_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.refresh_processors_button.clicked.connect(self._refresh_processors)
         processor_path_layout.addWidget(self.refresh_processors_button)
         form.addRow("Processor folder", processor_path_layout)
@@ -339,16 +329,12 @@ class MainWindow(QMainWindow):
         inference_buttons = QHBoxLayout(inference_button_widget)
         inference_buttons.setContentsMargins(0, 0, 0, 0)
         self.start_inference_button = QPushButton("Start pose inference")
-        self.start_inference_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
-        )
+        self.start_inference_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight))
         self.start_inference_button.setEnabled(False)
         self.start_inference_button.setMinimumWidth(150)
         inference_buttons.addWidget(self.start_inference_button)
         self.stop_inference_button = QPushButton("Stop pose inference")
-        self.stop_inference_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserStop)
-        )
+        self.stop_inference_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserStop))
         self.stop_inference_button.setEnabled(False)
         self.stop_inference_button.setMinimumWidth(150)
         inference_buttons.addWidget(self.stop_inference_button)
@@ -410,15 +396,11 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout(recording_button_widget)
         buttons.setContentsMargins(0, 0, 0, 0)
         self.start_record_button = QPushButton("Start recording")
-        self.start_record_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton)
-        )
+        self.start_record_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton))
         self.start_record_button.setMinimumWidth(150)
         buttons.addWidget(self.start_record_button)
         self.stop_record_button = QPushButton("Stop recording")
-        self.stop_record_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogNoButton)
-        )
+        self.stop_record_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogNoButton))
         self.stop_record_button.setEnabled(False)
         self.stop_record_button.setMinimumWidth(150)
         buttons.addWidget(self.stop_record_button)
@@ -490,9 +472,7 @@ class MainWindow(QMainWindow):
         self.multi_camera_controller.all_started.connect(self._on_multi_camera_started)
         self.multi_camera_controller.all_stopped.connect(self._on_multi_camera_stopped)
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
-        self.multi_camera_controller.initialization_failed.connect(
-            self._on_multi_camera_initialization_failed
-        )
+        self.multi_camera_controller.initialization_failed.connect(self._on_multi_camera_initialization_failed)
 
         self.dlc_processor.pose_ready.connect(self._on_pose_ready)
         self.dlc_processor.error.connect(self._on_dlc_error)
@@ -594,9 +574,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ actions
     def _action_load_config(self) -> None:
-        file_name, _ = QFileDialog.getOpenFileName(
-            self, "Load configuration", str(Path.home()), "JSON files (*.json)"
-        )
+        file_name, _ = QFileDialog.getOpenFileName(self, "Load configuration", str(Path.home()), "JSON files (*.json)")
         if not file_name:
             return
         try:
@@ -618,9 +596,7 @@ class MainWindow(QMainWindow):
         self._save_config_to_path(self._config_path)
 
     def _action_save_config_as(self) -> None:
-        file_name, _ = QFileDialog.getSaveFileName(
-            self, "Save configuration", str(Path.home()), "JSON files (*.json)"
-        )
+        file_name, _ = QFileDialog.getSaveFileName(self, "Save configuration", str(Path.home()), "JSON files (*.json)")
         if not file_name:
             return
         path = Path(file_name)
@@ -651,9 +627,7 @@ class MainWindow(QMainWindow):
             self.model_path_edit.setText(file_path)
 
     def _action_browse_directory(self) -> None:
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select output directory", str(Path.home())
-        )
+        directory = QFileDialog.getExistingDirectory(self, "Select output directory", str(Path.home()))
         if directory:
             self.output_directory_edit.setText(directory)
 
@@ -696,19 +670,28 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ multi-camera
     def _open_camera_config_dialog(self) -> None:
-        """Open the camera configuration dialog."""
-        dialog = CameraConfigDialog(self, self._config.multi_camera)
-        dialog.settings_changed.connect(self._on_multi_camera_settings_changed)
-        dialog.exec()
+        """Open the camera configuration dialog (non-modal, async inside)."""
+        if self.multi_camera_controller.is_running():
+            self._show_warning("Stop the main preview before configuring cameras.")
+            return
+
+        if self._cam_dialog is None:
+            self._cam_dialog = CameraConfigDialog(self, self._config.multi_camera)
+            self._cam_dialog.settings_changed.connect(self._on_multi_camera_settings_changed)
+        else:
+            # Refresh its UI from current settings when reopened
+            self._cam_dialog._populate_from_settings()
+
+        self._cam_dialog.show()
+        self._cam_dialog.raise_()
+        self._cam_dialog.activateWindow()
 
     def _on_multi_camera_settings_changed(self, settings: MultiCameraSettings) -> None:
         """Handle changes to multi-camera settings."""
         self._config.multi_camera = settings
         self._update_active_cameras_label()
         active_count = len(settings.get_active_cameras())
-        self.statusBar().showMessage(
-            f"Camera configuration updated: {active_count} active camera(s)", 3000
-        )
+        self.statusBar().showMessage(f"Camera configuration updated: {active_count} active camera(s)", 3000)
 
     def _update_active_cameras_label(self) -> None:
         """Update the label showing active cameras."""
@@ -717,9 +700,7 @@ class MainWindow(QMainWindow):
             self.active_cameras_label.setText("No cameras configured")
         elif len(active_cams) == 1:
             cam = active_cams[0]
-            self.active_cameras_label.setText(
-                f"{cam.name} [{cam.backend}:{cam.index}] @ {cam.fps:.1f} fps"
-            )
+            self.active_cameras_label.setText(f"{cam.name} [{cam.backend}:{cam.index}] @ {cam.fps:.1f} fps")
         else:
             cam_names = [f"{c.name}" for c in active_cams]
             self.active_cameras_label.setText(f"{len(active_cams)} cameras: {', '.join(cam_names)}")
@@ -802,9 +783,7 @@ class MainWindow(QMainWindow):
         # PRIORITY 3: Mark display dirty (tiling done in display timer)
         self._display_dirty = True
 
-    def _update_dlc_tile_info(
-        self, dlc_cam_id: str, original_frame: np.ndarray, frames: dict[str, np.ndarray]
-    ) -> None:
+    def _update_dlc_tile_info(self, dlc_cam_id: str, original_frame: np.ndarray, frames: dict[str, np.ndarray]) -> None:
         """Calculate tile offset and scale for drawing DLC poses on tiled frame."""
         num_cameras = len(frames)
         if num_cameras == 0:
@@ -867,9 +846,7 @@ class MainWindow(QMainWindow):
         self.preview_button.setEnabled(False)
         self.stop_preview_button.setEnabled(True)
         active_count = self.multi_camera_controller.get_active_count()
-        self.statusBar().showMessage(
-            f"Multi-camera preview started: {active_count} camera(s)", 5000
-        )
+        self.statusBar().showMessage(f"Multi-camera preview started: {active_count} camera(s)", 5000)
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
 
@@ -1001,6 +978,8 @@ class MainWindow(QMainWindow):
 
         # Store active settings for single camera mode (for DLC, recording frame rate, etc.)
         self._active_camera_settings = active_cams[0] if active_cams else None
+        for cam in active_cams:
+            cam.properties.setdefault("fast_start", True)
 
         self.multi_camera_controller.start(active_cams)
         self._update_inference_buttons()
@@ -1267,9 +1246,7 @@ class MainWindow(QMainWindow):
                 fps = self._compute_fps(self._camera_frame_times)
                 if fps > 0:
                     if active_count > 1:
-                        self.camera_stats_label.setText(
-                            f"{active_count} cameras | {fps:.1f} fps (last 5 s)"
-                        )
+                        self.camera_stats_label.setText(f"{active_count} cameras | {fps:.1f} fps (last 5 s)")
                     else:
                         self.camera_stats_label.setText(f"{fps:.1f} fps (last 5 s)")
                 else:
@@ -1322,7 +1299,7 @@ class MainWindow(QMainWindow):
                     avg_latency = sum(avg_latencies) / len(avg_latencies) if avg_latencies else 0.0
                     summary = (
                         f"{num_recorders} cams | {total_written} frames | "
-                        f"latency {max_latency*1000:.1f}ms (avg {avg_latency*1000:.1f}ms) | "
+                        f"latency {max_latency * 1000:.1f}ms (avg {avg_latency * 1000:.1f}ms) | "
                         f"queue {total_queue} | dropped {total_dropped}"
                     )
                 self._last_recorder_summary = summary
@@ -1371,13 +1348,11 @@ class MainWindow(QMainWindow):
                         self._auto_record_session_name = session_name
 
                         # Update filename with session name
-                        original_filename = self.filename_edit.text()
+                        self.filename_edit.text()
                         self.filename_edit.setText(f"{session_name}.mp4")
 
                         self._start_recording()
-                        self.statusBar().showMessage(
-                            f"Auto-started recording: {session_name}", 3000
-                        )
+                        self.statusBar().showMessage(f"Auto-started recording: {session_name}", 3000)
                         logging.info(f"Auto-recording started for session: {session_name}")
                 else:
                     # Stop video recording
@@ -1468,11 +1443,7 @@ class MainWindow(QMainWindow):
 
     def _update_video_display(self, frame: np.ndarray) -> None:
         display_frame = frame
-        if (
-            self.show_predictions_checkbox.isChecked()
-            and self._last_pose
-            and self._last_pose.pose is not None
-        ):
+        if self.show_predictions_checkbox.isChecked() and self._last_pose and self._last_pose.pose is not None:
             display_frame = self._draw_pose(frame, self._last_pose.pose)
 
         # Draw bounding box if enabled
@@ -1684,11 +1655,21 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour
         if self.multi_camera_controller.is_running():
             self.multi_camera_controller.stop(wait=True)
+
         # Stop all multi-camera recorders
         for recorder in self._multi_camera_recorders.values():
             if recorder.is_running:
                 recorder.stop()
         self._multi_camera_recorders.clear()
+
+        # Close the camera dialog if open (ensures its worker thread is canceled)
+        if getattr(self, "_cam_dialog", None) is not None and self._cam_dialog.isVisible():
+            try:
+                self._cam_dialog.close()
+            except Exception:
+                pass
+            self._cam_dialog = None
+
         self.dlc_processor.shutdown()
         if hasattr(self, "_metrics_timer"):
             self._metrics_timer.stop()
@@ -1696,6 +1677,8 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)  # Allow Ctrl+C to terminate the app
+
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()

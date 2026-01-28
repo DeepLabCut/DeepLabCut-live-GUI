@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable, Generator, Iterable  # CHANGED
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Dict, Generator, Iterable, List, Tuple, Type
 
 from ..config import CameraSettings
 from .base import CameraBackend
@@ -35,7 +35,7 @@ class DetectedCamera:
     label: str
 
 
-_BACKENDS: Dict[str, Tuple[str, str]] = {
+_BACKENDS: dict[str, tuple[str, str]] = {
     "opencv": ("dlclivegui.cameras.opencv_backend", "OpenCVCameraBackend"),
     "basler": ("dlclivegui.cameras.basler_backend", "BaslerCameraBackend"),
     "gentl": ("dlclivegui.cameras.gentl_backend", "GenTLCameraBackend"),
@@ -49,14 +49,12 @@ class CameraFactory:
     @staticmethod
     def backend_names() -> Iterable[str]:
         """Return the identifiers of all known backends."""
-
         return tuple(_BACKENDS.keys())
 
     @staticmethod
-    def available_backends() -> Dict[str, bool]:
+    def available_backends() -> dict[str, bool]:
         """Return a mapping of backend names to availability flags."""
-
-        availability: Dict[str, bool] = {}
+        availability: dict[str, bool] = {}
         for name in _BACKENDS:
             try:
                 backend_cls = CameraFactory._resolve_backend(name)
@@ -67,7 +65,13 @@ class CameraFactory:
         return availability
 
     @staticmethod
-    def detect_cameras(backend: str, max_devices: int = 10) -> List[DetectedCamera]:
+    def detect_cameras(
+        backend: str,
+        max_devices: int = 10,
+        *,
+        should_cancel: Callable[[], bool] | None = None,  # NEW
+        progress_cb: Callable[[str], None] | None = None,  # NEW
+    ) -> list[DetectedCamera]:
         """Probe ``backend`` for available cameras.
 
         Parameters
@@ -77,12 +81,20 @@ class CameraFactory:
         max_devices:
             Upper bound for the indices that should be probed.
             For backends with get_device_count (GenTL, Aravis), the actual device count is queried.
+        should_cancel:
+            Optional callable that returns True if discovery should be canceled.
+            When cancellation is requested, the function returns the cameras found so far.
+        progress_cb:
+            Optional callable to receive human-readable progress messages.
 
         Returns
         -------
         list of :class:`DetectedCamera`
-            Sorted list of detected cameras with human readable labels.
+            Sorted list of detected cameras with human readable labels (partial if canceled).
         """
+
+        def _canceled() -> bool:
+            return bool(should_cancel and should_cancel())
 
         try:
             backend_cls = CameraFactory._resolve_backend(backend)
@@ -91,49 +103,72 @@ class CameraFactory:
         if not backend_cls.is_available():
             return []
 
-        # For GenTL backend, try to get actual device count
+        # Resolve device count if possible
         num_devices = max_devices
         if hasattr(backend_cls, "get_device_count"):
             try:
+                if _canceled():
+                    return []
                 actual_count = backend_cls.get_device_count()
                 if actual_count >= 0:
                     num_devices = actual_count
             except Exception:
                 pass
 
-        detected: List[DetectedCamera] = []
+        detected: list[DetectedCamera] = []
         # Suppress OpenCV warnings/errors during probing (e.g., "can't open camera by index")
         with _suppress_opencv_logging():
-            for index in range(num_devices):
-                settings = CameraSettings(
-                    name=f"Probe {index}",
-                    index=index,
-                    fps=30.0,
-                    backend=backend,
-                    properties={},
-                )
-                backend_instance = backend_cls(settings)
-                try:
-                    backend_instance.open()
-                except Exception:
-                    continue
-                else:
-                    label = backend_instance.device_name()
-                    if not label:
-                        label = f"{backend.title()} #{index}"
-                    detected.append(DetectedCamera(index=index, label=label))
-                finally:
+            try:
+                for index in range(num_devices):
+                    if _canceled():
+                        # return partial results immediately
+                        break
+
+                    if progress_cb:
+                        progress_cb(f"Probing {backend}:{index}…")
+
+                    settings = CameraSettings(
+                        name=f"Probe {index}",
+                        index=index,
+                        fps=30.0,
+                        backend=backend,
+                        properties={},
+                    )
+                    backend_instance = backend_cls(settings)
+
                     try:
-                        backend_instance.close()
+                        # This open() may block for a short time depending on driver/backend.
+                        backend_instance.open()
                     except Exception:
+                        # Not available → continue probing next index
                         pass
+                    else:
+                        label = backend_instance.device_name() or f"{backend.title()} #{index}"
+                        detected.append(DetectedCamera(index=index, label=label))
+                        if progress_cb:
+                            progress_cb(f"Found {label}")
+                    finally:
+                        try:
+                            backend_instance.close()
+                        except Exception:
+                            pass
+
+                    # Check cancel again between indices
+                    if _canceled():
+                        break
+
+            except KeyboardInterrupt:
+                # Graceful early exit with partial results
+                if progress_cb:
+                    progress_cb("Discovery interrupted.")
+            # any other exception bubbles up to caller
+
         detected.sort(key=lambda camera: camera.index)
         return detected
 
     @staticmethod
     def create(settings: CameraSettings) -> CameraBackend:
         """Instantiate a backend for ``settings``."""
-
         backend_name = (settings.backend or "opencv").lower()
         try:
             backend_cls = CameraFactory._resolve_backend(backend_name)
@@ -148,32 +183,17 @@ class CameraFactory:
 
     @staticmethod
     def check_camera_available(settings: CameraSettings) -> tuple[bool, str]:
-        """Check if a camera is available without keeping it open.
-
-        Parameters
-        ----------
-        settings : CameraSettings
-            The camera settings to check.
-
-        Returns
-        -------
-        tuple[bool, str]
-            A tuple of (is_available, error_message).
-            If available, error_message is empty.
-        """
+        """Check if a camera is available without keeping it open."""
         backend_name = (settings.backend or "opencv").lower()
 
-        # Check if backend module is available
         try:
             backend_cls = CameraFactory._resolve_backend(backend_name)
         except RuntimeError as exc:
             return False, f"Backend '{backend_name}' not installed: {exc}"
 
-        # Check if backend reports as available (drivers installed)
         if not backend_cls.is_available():
             return False, f"Backend '{backend_name}' is not available (missing drivers/packages)"
 
-        # Try to actually open the camera briefly
         try:
             backend_instance = backend_cls(settings)
             backend_instance.open()
@@ -183,7 +203,7 @@ class CameraFactory:
             return False, f"Camera not accessible: {exc}"
 
     @staticmethod
-    def _resolve_backend(name: str) -> Type[CameraBackend]:
+    def _resolve_backend(name: str) -> type[CameraBackend]:
         try:
             module_name, class_name = _BACKENDS[name]
         except KeyError as exc:
