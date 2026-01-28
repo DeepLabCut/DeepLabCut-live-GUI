@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QStyle,
-    QTextEdit,  # NEW: lightweight status console in the preview panel
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -395,7 +395,7 @@ class CameraConfigDialog(QDialog):
         preview_layout.addWidget(self.preview_label)
         self.preview_label.installEventFilter(self)  # For resize events
 
-        # NEW: small, read-only status console for loader messages
+        # Small, read-only status console for loader messages
         self.preview_status = QTextEdit()
         self.preview_status.setReadOnly(True)
         self.preview_status.setFixedHeight(45)
@@ -407,13 +407,12 @@ class CameraConfigDialog(QDialog):
         self.preview_status.setFont(font)
         preview_layout.addWidget(self.preview_status)
 
-        # NEW: overlay label for loading glass pane
+        # Overlay label for loading glass pane
         self._loading_overlay = QLabel(self.preview_group)
         self._loading_overlay.setVisible(False)
         self._loading_overlay.setAlignment(Qt.AlignCenter)
         self._loading_overlay.setStyleSheet("background-color: rgba(0,0,0,140); color: white; border: 1px solid #333;")
         self._loading_overlay.setText("Loading camera…")
-        # We size/position it on show & on resize
 
         self.preview_group.setVisible(False)
         right_layout.addWidget(self.preview_group)
@@ -439,7 +438,7 @@ class CameraConfigDialog(QDialog):
         main_layout.addLayout(button_layout)
 
     # Maintain overlay geometry when resizing
-    def resizeEvent(self, event):  # NEW
+    def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._loading_overlay and self._loading_overlay.isVisible():
             self._position_loading_overlay()
@@ -469,7 +468,7 @@ class CameraConfigDialog(QDialog):
     def _hide_scan_overlay(self) -> None:
         self._scan_overlay.setVisible(False)
 
-    def _position_loading_overlay(self):  # NEW
+    def _position_loading_overlay(self):
         # Cover just the preview image area (label), not the whole group
         if not self.preview_label:
             return
@@ -819,17 +818,9 @@ class CameraConfigDialog(QDialog):
 
         # Ensure any existing preview or loader is stopped/canceled
         self._stop_preview()
-        if self._loader and self._loader.isRunning():
-            self._loader.request_cancel()
-
-        # Prepare UI
-        self.preview_group.setVisible(True)
-        self.preview_label.setText("No preview")
-        self.preview_status.clear()
-        self._show_loading_overlay("Loading camera…")
-        self._set_preview_button_loading(True)
-
-        # Create singleton worker
+        # if self._loader and self._loader.isRunning():
+        # self._loader.request_cancel()
+        # Create worker
         self._loader = CameraLoadWorker(cam, self)
         self._loader.progress.connect(self._on_loader_progress)
         self._loader.success.connect(self._on_loader_success)
@@ -838,6 +829,14 @@ class CameraConfigDialog(QDialog):
         self._loader.finished.connect(self._on_loader_finished)
         self._loading_active = True
         self._update_button_states()
+
+        # Prepare UI
+        self.preview_group.setVisible(True)
+        self.preview_label.setText("No preview")
+        self.preview_status.clear()
+        self._show_loading_overlay("Loading camera…")
+        self._set_preview_button_loading(True)
+
         self._loader.start()
 
     def _stop_preview(self) -> None:
