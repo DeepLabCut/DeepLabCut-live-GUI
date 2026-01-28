@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import importlib.metadata
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import qdarkstyle
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QImage, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QFont, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QSplashScreen,
     QStatusBar,
     QStyle,
     QVBoxLayout,
@@ -62,6 +64,11 @@ from dlclivegui.video_recorder import RecorderStats, VideoRecorder
 # logging.basicConfig(level=logging.INFO)
 logging.basicConfig(level=logging.DEBUG)  # FIXME @C-Achard set back to INFO for release
 
+ASSETS = Path(__file__).parent / "assets"
+LOGO = str(ASSETS / "logo.png")
+LOGO_ALPHA = str(ASSETS / "logo_transparent.png")
+SPLASH_SCREEN = str(ASSETS / "welcome.png")
+
 
 # auto enum for styles
 class AppStyle(enum.Enum):
@@ -69,7 +76,7 @@ class AppStyle(enum.Enum):
     DARK = "dark"
 
 
-class MainWindow(QMainWindow):
+class DLCLiveMainWindow(QMainWindow):
     """Main application window."""
 
     def __init__(self, config: ApplicationSettings | None = None):
@@ -141,6 +148,8 @@ class MainWindow(QMainWindow):
         # Display flag (decoupled from frame capture for performance)
         self._display_dirty: bool = False
 
+        self._load_icons()
+        self._preview_pixmap = QPixmap(LOGO_ALPHA)
         self._setup_ui()
         self._connect_signals()
         self._apply_config(self._config)
@@ -166,6 +175,11 @@ class MainWindow(QMainWindow):
         # Validate cameras from loaded config (deferred to allow window to show first)
         QTimer.singleShot(100, self._validate_configured_cameras)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self.multi_camera_controller.is_running():
+            self._show_logo_and_text()
+
     # ------------------------------------------------------------------ UI
     def _init_theme_actions(self) -> None:
         """Set initial checked state for theme actions based on current app stylesheet."""
@@ -186,6 +200,9 @@ class MainWindow(QMainWindow):
             self.action_light_mode.setChecked(True)
         self._current_style = mode
 
+    def _load_icons(self):
+        self.setWindowIcon(QIcon(LOGO))
+
     def _setup_ui(self) -> None:
         central = QWidget()
         layout = QHBoxLayout(central)
@@ -196,7 +213,7 @@ class MainWindow(QMainWindow):
         video_layout.setContentsMargins(0, 0, 0, 0)
 
         # Video display widget
-        self.video_label = QLabel("Camera preview not started")
+        self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumSize(640, 360)
         self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -293,6 +310,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
         self._build_menus()
+        QTimer.singleShot(0, self._show_logo_and_text)
 
     def _build_menus(self) -> None:
         # File menu
@@ -1069,6 +1087,59 @@ class MainWindow(QMainWindow):
         self._update_camera_controls_enabled()
 
     # ------------------------------------------------------------------ camera control
+    def _show_logo_and_text(self):
+        """Show the transparent logo with text below it in the preview area when not running."""
+        from PySide6.QtCore import QRect
+        from PySide6.QtGui import QColor
+
+        size = self.video_label.size()
+
+        if size.width() <= 0 or size.height() <= 0:
+            return
+
+        # Prepare blank canvas (transparent)
+        composed = QPixmap(size)
+        composed.fill(Qt.transparent)
+
+        painter = QPainter(composed)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # --- Scale logo to at most 50% height (nice proportion) ---
+        max_logo_height = int(size.height() * 0.45)
+        logo = self._preview_pixmap.scaledToHeight(max_logo_height, Qt.SmoothTransformation)
+
+        # Center the logo horizontally
+        logo_x = (size.width() - logo.width()) // 2
+        logo_y = int(size.height() * 0.15)  # small top margin
+
+        painter.drawPixmap(logo_x, logo_y, logo)
+
+        # --- Draw text BELOW the logo ---
+        painter.setPen(QColor(255, 255, 255))
+        painter.setFont(QFont("Arial", 22, QFont.Bold))
+
+        text = "DeepLabCut-Live! "
+        try:
+            version = importlib.metadata.version("dlclivegui")
+        except Exception:
+            version = ""
+        if version:
+            text += f"\n(v{version})"
+
+        # Position text under the logo with a small gap
+        text_rect = QRect(
+            0,
+            logo_y + logo.height() + 15,  # 15px gap under logo
+            size.width(),
+            size.height() - (logo_y + logo.height() + 15),
+        )
+
+        painter.drawText(text_rect, Qt.AlignHCenter | Qt.AlignTop, text)
+
+        painter.end()
+        self.video_label.setPixmap(composed)
+
     def _start_preview(self) -> None:
         """Start camera preview - uses multi-camera controller for all configurations."""
         active_cams = self._config.multi_camera.get_active_cameras()
@@ -1121,6 +1192,7 @@ class MainWindow(QMainWindow):
         self._last_display_time = 0.0
         if hasattr(self, "camera_stats_label"):
             self.camera_stats_label.setText("Camera idle")
+        # self._show_logo_and_text()
 
     def _configure_dlc(self) -> bool:
         try:
@@ -1826,11 +1898,46 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
-    signal.signal(signal.SIGINT, signal.SIG_DFL)  # Allow Ctrl+C to terminate the app
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    # Enable HiDPI pixmaps (optional but recommended)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
+    app.setWindowIcon(QIcon(LOGO))
+
+    # Load and scale splash pixmap
+    raw_pixmap = QPixmap(SPLASH_SCREEN)
+    splash_width = 600
+
+    if not raw_pixmap.isNull():
+        aspect_ratio = raw_pixmap.width() / raw_pixmap.height()
+        splash_height = int(splash_width / aspect_ratio)
+        scaled_pixmap = raw_pixmap.scaled(
+            splash_width,
+            splash_height,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+    else:
+        # Fallback: empty pixmap; you can also use a color fill if desired
+        splash_height = 400
+        scaled_pixmap = QPixmap(splash_width, splash_height)
+        scaled_pixmap.fill(Qt.black)
+
+    # Create splash with the *scaled* pixmap
+    splash = QSplashScreen(scaled_pixmap)
+    splash.show()
+
+    # Let the splash breathe without blocking the event loop
+    def show_main():
+        splash.close()
+        window = DLCLiveMainWindow()
+        window.show()
+
+    # Show main window after 1500 ms
+    QTimer.singleShot(1500, show_main)
+
     sys.exit(app.exec())
 
 

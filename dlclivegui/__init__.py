@@ -8,7 +8,7 @@ from .config import (
     MultiCameraSettings,
     RecordingSettings,
 )
-from .gui import MainWindow, main
+from .gui import DLCLiveMainWindow, main
 from .multi_camera_controller import MultiCameraController, MultiFrameData
 
 __all__ = [
@@ -17,7 +17,7 @@ __all__ = [
     "DLCProcessorSettings",
     "MultiCameraSettings",
     "RecordingSettings",
-    "MainWindow",
+    "DLCLiveMainWindow",
     "MultiCameraController",
     "MultiFrameData",
     "CameraConfigDialog",
