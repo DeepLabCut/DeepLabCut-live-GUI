@@ -127,6 +127,18 @@ class OpenCVCameraBackend(CameraBackend):
                 base_name = backend_name
         return f"{base_name} camera #{self.settings.index}"
 
+    @property
+    def actual_fps(self) -> float | None:
+        """Return the actual configured FPS, if known."""
+        return self._actual_fps
+
+    @property
+    def actual_resolution(self) -> tuple[int, int] | None:
+        """Return the actual configured resolution, if known."""
+        if self._actual_width and self._actual_height:
+            return (self._actual_width, self._actual_height)
+        return None
+
     # ----------------------------
     # Internal helpers
     # ----------------------------
@@ -227,6 +239,8 @@ class OpenCVCameraBackend(CameraBackend):
         else:
             self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
             self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        if self._actual_width and self._actual_height:
+            self.settings.properties["resolution"] = (self._actual_width, self._actual_height)
 
         # Handle mismatch quickly with a few known-good UVC fallbacks (Windows only)
         if platform.system() == "Windows" and self._actual_width and self._actual_height:
@@ -259,8 +273,11 @@ class OpenCVCameraBackend(CameraBackend):
         else:
             self._actual_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
 
+        # Log any mismatch
         if self._actual_fps and requested_fps and abs(self._actual_fps - requested_fps) > 0.1:
             LOG.warning(f"FPS mismatch: requested {requested_fps:.2f}, got {self._actual_fps:.2f}")
+
+        # Always reconcile the settings with what we measured/obtained
         if self._actual_fps:
             self.settings.fps = float(self._actual_fps)
             LOG.info(f"Camera configured with FPS: {self._actual_fps:.2f}")

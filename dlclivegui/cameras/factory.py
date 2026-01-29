@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 from collections.abc import Callable, Generator, Iterable  # CHANGED
 from contextlib import contextmanager
@@ -41,6 +42,24 @@ _BACKENDS: dict[str, tuple[str, str]] = {
     "gentl": ("dlclivegui.cameras.gentl_backend", "GenTLCameraBackend"),
     "aravis": ("dlclivegui.cameras.aravis_backend", "AravisCameraBackend"),
 }
+
+
+def _sanitize_for_probe(settings: CameraSettings) -> CameraSettings:
+    """
+    Return a light, side-effect-minimized copy of CameraSettings for availability probes.
+    - Zero FPS (let driver pick default)
+    - Keep only 'api' hint in properties, force fast_start=True
+    - Do not change 'enabled'
+    """
+    probe = copy.deepcopy(settings)
+    probe.fps = 0.0  # don't force FPS during probe
+    props = probe.properties if isinstance(probe.properties, dict) else {}
+    api = props.get("api")
+    probe.properties = {}
+    if api is not None:
+        probe.properties["api"] = api
+    probe.properties["fast_start"] = True
+    return probe
 
 
 class CameraFactory:
@@ -127,6 +146,19 @@ class CameraFactory:
                     if progress_cb:
                         progress_cb(f"Probing {backend}:{index}…")
 
+                    # Prefer quick presence check first
+                    quick_ok = None
+                    if hasattr(backend_cls, "quick_ping"):
+                        try:
+                            quick_ok = bool(backend_cls.quick_ping(index))  # type: ignore[attr-defined]
+                        except TypeError:
+                            quick_ok = bool(backend_cls.quick_ping(index, None))  # type: ignore[attr-defined]
+                        except Exception:
+                            quick_ok = None
+                    if quick_ok is False:
+                        # Definitely not present, skip heavy open
+                        continue
+
                     settings = CameraSettings(
                         name=f"Probe {index}",
                         index=index,
@@ -183,7 +215,7 @@ class CameraFactory:
 
     @staticmethod
     def check_camera_available(settings: CameraSettings) -> tuple[bool, str]:
-        """Check if a camera is available without keeping it open."""
+        """Check if a camera is present/accessible without pushing heavy settings like FPS."""
         backend_name = (settings.backend or "opencv").lower()
 
         try:
@@ -194,10 +226,31 @@ class CameraFactory:
         if not backend_cls.is_available():
             return False, f"Backend '{backend_name}' is not available (missing drivers/packages)"
 
+        # Prefer quick presence test if the backend provides it (e.g., OpenCV.quick_ping)
+        if hasattr(backend_cls, "quick_ping"):
+            try:
+                with _suppress_opencv_logging():
+                    idx = int(settings.index)
+                    # Most backends expose quick_ping(index [, backend_flag])
+                    ok = False
+                    try:
+                        ok = backend_cls.quick_ping(idx)  # type: ignore[attr-defined]
+                    except TypeError:
+                        # Fallback signature with backend flag if required by the specific backend
+                        ok = backend_cls.quick_ping(idx, None)  # type: ignore[attr-defined]
+                    if ok:
+                        return True, ""
+                    return False, "Device not present"
+            except Exception as exc:
+                return False, f"Quick probe failed: {exc}"
+
+        # 2) Fallback: try a very lightweight open/close with sanitized settings
         try:
-            backend_instance = backend_cls(settings)
-            backend_instance.open()
-            backend_instance.close()
+            probe_settings = _sanitize_for_probe(settings)
+            backend_instance = backend_cls(probe_settings)
+            with _suppress_opencv_logging():
+                backend_instance.open()
+                backend_instance.close()
             return True, ""
         except Exception as exc:
             return False, f"Camera not accessible: {exc}"

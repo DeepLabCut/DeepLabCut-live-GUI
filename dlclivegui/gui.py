@@ -841,6 +841,10 @@ class DLCLiveMainWindow(QMainWindow):
 
         Disables unavailable cameras and shows a warning dialog.
         """
+        if getattr(self._cam_dialog, "_dialog_active", False):
+            # Skip validation if camera config dialog is open
+            return
+
         active_cams = self._config.multi_camera.get_active_cameras()
         if not active_cams:
             return
