@@ -68,7 +68,7 @@ class SingleCameraWorker(QObject):
                     consecutive_errors += 1
                     if consecutive_errors >= self._max_consecutive_errors:
                         self.error_occurred.emit(
-                            self._camera_id, "Too many empty frames.\nWas the device disconnected "
+                            self._camera_id, "Too many empty frames.\nWas the device disconnected ?"
                         )
                         break
                     time.sleep(self._retry_delay)

@@ -19,7 +19,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import qdarkstyle
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QFont, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -59,10 +59,12 @@ from dlclivegui.config import (
 from dlclivegui.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStats
 from dlclivegui.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
 from dlclivegui.processors.processor_utils import instantiate_from_scan, scan_processor_folder
+from dlclivegui.utils import is_model_file
 from dlclivegui.video_recorder import RecorderStats, VideoRecorder
 
 # logging.basicConfig(level=logging.INFO)
 logging.basicConfig(level=logging.DEBUG)  # FIXME @C-Achard set back to INFO for release
+logger = logging.getLogger("DLCLiveGUI")
 
 ASSETS = Path(__file__).parent / "assets"
 LOGO = str(ASSETS / "logo.png")
@@ -91,9 +93,9 @@ class DLCLiveMainWindow(QMainWindow):
                 try:
                     config = ApplicationSettings.load(str(myconfig_path))
                     self._config_path = myconfig_path
-                    logging.info(f"Loaded configuration from {myconfig_path}")
+                    logger.info(f"Loaded configuration from {myconfig_path}")
                 except Exception as exc:
-                    logging.warning(f"Failed to load myconfig.json: {exc}. Using default config.")
+                    logger.warning(f"Failed to load myconfig.json: {exc}. Using default config.")
                     config = DEFAULT_CONFIG
                     self._config_path = None
             else:
@@ -102,8 +104,11 @@ class DLCLiveMainWindow(QMainWindow):
         else:
             self._config_path = None
 
+        self.settings = QSettings("DeepLabCut", "DLCLiveGUI")
+
         self._config = config
         self._inference_camera_id: str | None = None  # Camera ID used for inference
+        self._running_cams_ids: set[str] = set()
         self._current_frame: np.ndarray | None = None
         self._raw_frame: np.ndarray | None = None
         self._last_pose: PoseResult | None = None
@@ -573,7 +578,8 @@ class DLCLiveMainWindow(QMainWindow):
         self._update_active_cameras_label()
 
         dlc = config.dlc
-        self.model_path_edit.setText(dlc.model_path)
+        resolved_model_path = self._resolve_model_path(dlc.model_path)
+        self.model_path_edit.setText(resolved_model_path)
 
         # self.additional_options_edit.setPlainText(json.dumps(dlc.additional_options, indent=2))
 
@@ -624,6 +630,37 @@ class DLCLiveMainWindow(QMainWindow):
         if not text:
             return {}
         return json.loads(text)
+
+    def _load_last_model_path(self) -> str | None:
+        """Load and validate the last model path from OS settings."""
+        last_path = self.settings.value("dlc/last_model_path")
+        last_path = str(last_path) if last_path else None
+        logger.debug(f"Loaded last model path from settings: {last_path}")
+        if not last_path:
+            return None
+        try:
+            return last_path if is_model_file(last_path) else None
+        except Exception:
+            logger.debug("Invalid last model path in settings", exc_info=True)
+            pass
+        return None  # invalid or missing
+
+    def _resolve_model_path(self, config_path: str | None) -> str:
+        if config_path and is_model_file(config_path):
+            return config_path
+        persisted = self._load_last_model_path()
+        if persisted and is_model_file(persisted):
+            return persisted
+        return ""
+
+    def _save_last_model_path(self, path: str) -> None:
+        """Persist the last model path only if it looks valid."""
+        try:
+            if path and is_model_file(path):
+                self.settings.setValue("dlc/last_model_path", str(Path(path)))
+                logger.debug(f"Persisted last model path to settings: {path}")
+        except Exception:
+            logger.debug("Ignoring invalid model path persistence", exc_info=True)
 
     def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
         return DLCProcessorSettings(
@@ -712,10 +749,11 @@ class DLCLiveMainWindow(QMainWindow):
             self,
             "Select DLCLive model file",
             start_dir,
-            "Model files (*.pt *.pb);;All files (*.*)",
+            "Model files (*.pt *.pth *.pb);;All files (*.*)",
         )
         if file_path:
             self.model_path_edit.setText(file_path)
+            self._save_last_model_path(file_path)
 
     def _action_browse_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Select output directory", str(Path.home()))
@@ -755,7 +793,7 @@ class DLCLiveMainWindow(QMainWindow):
         except Exception as e:
             error_msg = f"Error scanning processors: {e}"
             self.statusBar().showMessage(error_msg, 5000)
-            logging.error(error_msg)
+            logger.error(error_msg)
             self._scanned_processors = {}
             self._processor_keys = []
 
@@ -829,7 +867,38 @@ class DLCLiveMainWindow(QMainWindow):
             error_lines.append("")
             error_lines.append("Please check camera connections or re-enable in camera settings.")
             self._show_warning("\n".join(error_lines))
-            logging.warning("\n".join(error_lines))
+            logger.warning("\n".join(error_lines))
+
+    def _label_for_cam_id(self, cam_id: str) -> str:
+        for cam in self._config.multi_camera.get_active_cameras():
+            if get_camera_id(cam) == cam_id:
+                return f"{cam.name} [{cam.backend}:{cam.index}]"
+        return cam_id
+
+    def _refresh_dlc_camera_list_running(self) -> None:
+        """Populate the inference camera dropdown from currently running cameras."""
+        self.dlc_camera_combo.blockSignals(True)
+        self.dlc_camera_combo.clear()
+        for cam_id in sorted(self._running_cams_ids):
+            self.dlc_camera_combo.addItem(self._label_for_cam_id(cam_id), cam_id)
+
+        # Keep current selection if still present, else select first running
+        if self._inference_camera_id in self._running_cams_ids:
+            idx = self.dlc_camera_combo.findData(self._inference_camera_id)
+            if idx >= 0:
+                self.dlc_camera_combo.setCurrentIndex(idx)
+        elif self.dlc_camera_combo.count() > 0:
+            self.dlc_camera_combo.setCurrentIndex(0)
+            self._inference_camera_id = self.dlc_camera_combo.currentData()
+        self.dlc_camera_combo.blockSignals(False)
+
+    def _set_dlc_combo_to_id(self, cam_id: str) -> None:
+        """Update combo selection to a given ID without firing signals."""
+        self.dlc_camera_combo.blockSignals(True)
+        idx = self.dlc_camera_combo.findData(cam_id)
+        if idx >= 0:
+            self.dlc_camera_combo.setCurrentIndex(idx)
+        self.dlc_camera_combo.blockSignals(False)
 
     def _refresh_dlc_camera_list(self) -> None:
         """Populate the inference camera dropdown from active cameras."""
@@ -877,12 +946,29 @@ class DLCLiveMainWindow(QMainWindow):
         if src_id:
             self._track_camera_frame(src_id)  # Track FPS
 
-        # Determine DLC camera (first active camera)
-        active_cams = self._config.multi_camera.get_active_cameras()
-        selected_id = self._inference_camera_id
-        fallback_id = get_camera_id(active_cams[0]) if active_cams else None
+        new_running = set(frame_data.frames.keys())
+        if new_running != self._running_cams_ids:
+            self._running_cams_ids = new_running
+            self._refresh_dlc_camera_list_running()
 
-        dlc_cam_id = selected_id if selected_id in frame_data.frames else fallback_id
+        # Determine DLC camera (first active camera)
+        selected_id = self._inference_camera_id
+        available_ids = sorted(frame_data.frames.keys())
+        if selected_id in frame_data.frames:
+            dlc_cam_id = selected_id
+        else:
+            dlc_cam_id = available_ids[0] if available_ids else ""
+            if dlc_cam_id is not None:
+                self._inference_camera_id = dlc_cam_id
+                self._set_dlc_combo_to_id(dlc_cam_id)
+                self.statusBar().showMessage(
+                    f"DLC inference camera changed to {self._label_for_cam_id(dlc_cam_id)}", 3000
+                )
+            else:  # No more cameras available
+                if self._dlc_active:
+                    self._stop_inference(show_message=True)
+                self._display_dirty = True
+                return
 
         # Check if this frame is from the DLC camera
         is_dlc_camera_frame = frame_data.source_camera_id == dlc_cam_id
@@ -912,11 +998,11 @@ class DLCLiveMainWindow(QMainWindow):
                     try:
                         recorder.write(frame, timestamp=timestamp)
                     except Exception as exc:
-                        logging.warning(f"Failed to write frame for camera {cam_id}: {exc}")
+                        logger.warning(f"Failed to write frame for camera {cam_id}: {exc}")
                         try:
                             recorder.stop()
                         except Exception:
-                            logging.exception(f"Failed to stop recorder for camera {cam_id} after write error.")
+                            logger.exception(f"Failed to stop recorder for camera {cam_id} after write error.")
                         self._multi_camera_recorders.pop(cam_id, None)
                         self.statusBar().showMessage(f"Recording stopped for camera {cam_id} due to write error.", 5000)
 
@@ -1008,6 +1094,8 @@ class DLCLiveMainWindow(QMainWindow):
     def _on_multi_camera_error(self, camera_id: str, message: str) -> None:
         """Handle error from a camera in multi-camera mode."""
         self._show_warning(f"Camera {camera_id} error: {message}\nRecording stopped.")
+        self._refresh_dlc_camera_list_running()
+        # self._stop_inference() # We now gracefully switch DLC camera if needed
         self._stop_recording()
 
     def _on_multi_camera_initialization_failed(self, failures: list) -> None:
@@ -1021,7 +1109,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         error_message = "\n".join(error_lines)
         self._show_error(error_message)
-        logging.error(error_message)
+        logger.error(error_message)
 
     def _start_multi_camera_recording(self) -> None:
         """Start recording from all active cameras."""
@@ -1062,7 +1150,7 @@ class DLCLiveMainWindow(QMainWindow):
             try:
                 recorder.start()
                 self._multi_camera_recorders[cam_id] = recorder
-                logging.info(f"Started recording camera {cam_id} to {cam_path}")
+                logger.info(f"Started recording camera {cam_id} to {cam_path}")
             except Exception as exc:
                 self._show_error(f"Failed to start recording for camera {cam_id}: {exc}")
 
@@ -1083,9 +1171,9 @@ class DLCLiveMainWindow(QMainWindow):
         for cam_id, recorder in self._multi_camera_recorders.items():
             try:
                 recorder.stop()
-                logging.info(f"Stopped recording camera {cam_id}")
+                logger.info(f"Stopped recording camera {cam_id}")
             except Exception as exc:
-                logging.warning(f"Error stopping recorder for camera {cam_id}: {exc}")
+                logger.warning(f"Error stopping recorder for camera {cam_id}: {exc}")
 
         self._multi_camera_recorders.clear()
         self.start_record_button.setEnabled(True)
@@ -1225,10 +1313,11 @@ class DLCLiveMainWindow(QMainWindow):
             except Exception as e:
                 error_msg = f"Failed to instantiate processor: {e}"
                 self._show_error(error_msg)
-                logging.error(error_msg)
+                logger.error(error_msg)
                 return False
 
         self.dlc_processor.configure(settings, processor=processor)
+        self._save_last_model_path(settings.model_path)
         return True
 
     def _update_inference_buttons(self) -> None:
@@ -1575,13 +1664,13 @@ class DLCLiveMainWindow(QMainWindow):
 
                         self._start_recording()
                         self.statusBar().showMessage(f"Auto-started recording: {session_name}", 3000)
-                        logging.info(f"Auto-recording started for session: {session_name}")
+                        logger.info(f"Auto-recording started for session: {session_name}")
                 else:
                     # Stop video recording
                     if self._multi_camera_recorders:
                         self._stop_recording()
                         self.statusBar().showMessage("Auto-stopped recording", 3000)
-                        logging.info("Auto-recording stopped")
+                        logger.info("Auto-recording stopped")
 
                 self._last_processor_vid_recording = current_vid_recording
 
@@ -1655,7 +1744,7 @@ class DLCLiveMainWindow(QMainWindow):
         if not self._dlc_active:
             return
         self._last_pose = result
-        # logging.info(f"Pose result: {result.pose}, Timestamp: {result.timestamp}")
+        # logger.debug(f"Pose result: {result.pose}, Timestamp: {result.timestamp}")
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
 
@@ -1901,6 +1990,11 @@ class DLCLiveMainWindow(QMainWindow):
         self.dlc_processor.shutdown()
         if hasattr(self, "_metrics_timer"):
             self._metrics_timer.stop()
+
+        # Remember model path on exit
+        self._save_last_model_path(self.model_path_edit.text().strip())
+
+        # Close the window
         super().closeEvent(event)
 
 
