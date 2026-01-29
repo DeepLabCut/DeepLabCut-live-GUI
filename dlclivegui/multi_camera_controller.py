@@ -6,7 +6,6 @@ import logging
 import time
 from dataclasses import dataclass
 from threading import Event, Lock
-from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -14,7 +13,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
-from dlclivegui.config import CameraSettings, MultiCameraSettings
+from dlclivegui.config import CameraSettings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,10 +22,10 @@ LOGGER = logging.getLogger(__name__)
 class MultiFrameData:
     """Container for frames from multiple cameras."""
 
-    frames: Dict[str, np.ndarray]  # camera_id -> frame
-    timestamps: Dict[str, float]  # camera_id -> timestamp
+    frames: dict[str, np.ndarray]  # camera_id -> frame
+    timestamps: dict[str, float]  # camera_id -> timestamp
     source_camera_id: str = ""  # ID of camera that triggered this emission
-    tiled_frame: Optional[np.ndarray] = None  # Combined tiled frame (deprecated, done in GUI)
+    tiled_frame: np.ndarray | None = None  # Combined tiled frame (deprecated, done in GUI)
 
 
 class SingleCameraWorker(QObject):
@@ -42,7 +41,7 @@ class SingleCameraWorker(QObject):
         self._camera_id = camera_id
         self._settings = settings
         self._stop_event = Event()
-        self._backend: Optional[CameraBackend] = None
+        self._backend: CameraBackend | None = None
         self._max_consecutive_errors = 5
         self._retry_delay = 0.1
 
@@ -68,7 +67,9 @@ class SingleCameraWorker(QObject):
                 if frame is None or frame.size == 0:
                     consecutive_errors += 1
                     if consecutive_errors >= self._max_consecutive_errors:
-                        self.error_occurred.emit(self._camera_id, "Too many empty frames")
+                        self.error_occurred.emit(
+                            self._camera_id, "Too many empty frames.\nWas the device disconnected "
+                        )
                         break
                     time.sleep(self._retry_delay)
                     continue
@@ -119,15 +120,15 @@ class MultiCameraController(QObject):
 
     def __init__(self):
         super().__init__()
-        self._workers: Dict[str, SingleCameraWorker] = {}
-        self._threads: Dict[str, QThread] = {}
-        self._settings: Dict[str, CameraSettings] = {}
-        self._frames: Dict[str, np.ndarray] = {}
-        self._timestamps: Dict[str, float] = {}
+        self._workers: dict[str, SingleCameraWorker] = {}
+        self._threads: dict[str, QThread] = {}
+        self._settings: dict[str, CameraSettings] = {}
+        self._frames: dict[str, np.ndarray] = {}
+        self._timestamps: dict[str, float] = {}
         self._frame_lock = Lock()
         self._running = False
         self._started_cameras: set = set()
-        self._failed_cameras: Dict[str, str] = {}  # camera_id -> error message
+        self._failed_cameras: dict[str, str] = {}  # camera_id -> error message
         self._expected_cameras: int = 0  # Number of cameras we're trying to start
 
     def is_running(self) -> bool:
@@ -138,7 +139,7 @@ class MultiCameraController(QObject):
         """Get the number of active cameras."""
         return len(self._started_cameras)
 
-    def start(self, camera_settings: List[CameraSettings]) -> None:
+    def start(self, camera_settings: list[CameraSettings]) -> None:
         """Start multiple cameras.
 
         Parameters
@@ -425,17 +426,17 @@ class MultiCameraController(QObject):
             self._failed_cameras[camera_id] = message
         self.camera_error.emit(camera_id, message)
 
-    def get_frame(self, camera_id: str) -> Optional[np.ndarray]:
+    def get_frame(self, camera_id: str) -> np.ndarray | None:
         """Get the latest frame from a specific camera."""
         with self._frame_lock:
             return self._frames.get(camera_id)
 
-    def get_all_frames(self) -> Dict[str, np.ndarray]:
+    def get_all_frames(self) -> dict[str, np.ndarray]:
         """Get the latest frames from all cameras."""
         with self._frame_lock:
             return dict(self._frames)
 
-    def get_tiled_frame(self) -> Optional[np.ndarray]:
+    def get_tiled_frame(self) -> np.ndarray | None:
         """Get a tiled view of all camera frames."""
         with self._frame_lock:
             if self._frames:

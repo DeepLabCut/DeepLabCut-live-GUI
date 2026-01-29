@@ -10,7 +10,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 
@@ -46,21 +46,21 @@ class VideoRecorder:
     def __init__(
         self,
         output: Path | str,
-        frame_size: Optional[Tuple[int, int]] = None,
-        frame_rate: Optional[float] = None,
+        frame_size: tuple[int, int] | None = None,
+        frame_rate: float | None = None,
         codec: str = "libx264",
         crf: int = 23,
         buffer_size: int = 240,
     ):
         self._output = Path(output)
-        self._writer: Optional[Any] = None
+        self._writer: Any | None = None
         self._frame_size = frame_size
         self._frame_rate = frame_rate
         self._codec = codec
         self._crf = int(crf)
         self._buffer_size = max(1, int(buffer_size))
-        self._queue: Optional[queue.Queue[Any]] = None
-        self._writer_thread: Optional[threading.Thread] = None
+        self._queue: queue.Queue[Any] | None = None
+        self._writer_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._stats_lock = threading.Lock()
         self._frames_enqueued = 0
@@ -69,9 +69,9 @@ class VideoRecorder:
         self._total_latency = 0.0
         self._last_latency = 0.0
         self._written_times: deque[float] = deque(maxlen=600)
-        self._encode_error: Optional[Exception] = None
+        self._encode_error: Exception | None = None
         self._last_log_time = 0.0
-        self._frame_timestamps: List[float] = []
+        self._frame_timestamps: list[float] = []
 
     @property
     def is_running(self) -> bool:
@@ -79,14 +79,12 @@ class VideoRecorder:
 
     def start(self) -> None:
         if WriteGear is None:
-            raise RuntimeError(
-                "vidgear is required for video recording. Install it with 'pip install vidgear'."
-            )
+            raise RuntimeError("vidgear is required for video recording. Install it with 'pip install vidgear'.")
         if self._writer is not None:
             return
         fps_value = float(self._frame_rate) if self._frame_rate else 30.0
 
-        writer_kwargs: Dict[str, Any] = {
+        writer_kwargs: dict[str, Any] = {
             "compression_mode": True,
             "logging": False,
             "-input_framerate": fps_value,
@@ -114,11 +112,11 @@ class VideoRecorder:
         )
         self._writer_thread.start()
 
-    def configure_stream(self, frame_size: Tuple[int, int], frame_rate: Optional[float]) -> None:
+    def configure_stream(self, frame_size: tuple[int, int], frame_rate: float | None) -> None:
         self._frame_size = frame_size
         self._frame_rate = frame_rate
 
-    def write(self, frame: np.ndarray, timestamp: Optional[float] = None) -> bool:
+    def write(self, frame: np.ndarray, timestamp: float | None = None) -> bool:
         if not self.is_running or self._queue is None:
             return False
         error = self._current_error()
@@ -188,7 +186,8 @@ class VideoRecorder:
             try:
                 self._queue.put_nowait(_SENTINEL)
             except queue.Full:
-                self._queue.put(_SENTINEL)
+                pass
+                # self._queue.put(_SENTINEL)
         if self._writer_thread is not None:
             self._writer_thread.join(timeout=5.0)
             if self._writer_thread.is_alive():
@@ -206,7 +205,7 @@ class VideoRecorder:
         self._writer_thread = None
         self._queue = None
 
-    def get_stats(self) -> Optional[RecorderStats]:
+    def get_stats(self) -> RecorderStats | None:
         if (
             self._writer is None
             and not self.is_running
@@ -221,9 +220,7 @@ class VideoRecorder:
             frames_enqueued = self._frames_enqueued
             frames_written = self._frames_written
             dropped = self._dropped_frames
-            avg_latency = (
-                self._total_latency / self._frames_written if self._frames_written else 0.0
-            )
+            avg_latency = self._total_latency / self._frames_written if self._frames_written else 0.0
             last_latency = self._last_latency
             write_fps = self._compute_write_fps_locked()
         buffer_seconds = queue_size * avg_latency if avg_latency > 0 else 0.0
@@ -240,47 +237,43 @@ class VideoRecorder:
 
     def _writer_loop(self) -> None:
         assert self._queue is not None
-        while True:
-            try:
-                item = self._queue.get(timeout=0.1)
-            except queue.Empty:
-                if self._stop_event.is_set():
+        try:
+            while True:
+                try:
+                    item = self._queue.get(timeout=0.1)
+                except queue.Empty:
+                    if self._stop_event.is_set():
+                        break
+                    continue
+                if item is _SENTINEL:
+                    self._queue.task_done()
                     break
-                continue
-            if item is _SENTINEL:
-                self._queue.task_done()
-                break
-            frame = item
-            start = time.perf_counter()
-            try:
-                assert self._writer is not None
-                self._writer.write(frame)
-            except OSError as exc:
+                frame = item
+                start = time.perf_counter()
+                try:
+                    assert self._writer is not None
+                    self._writer.write(frame)
+                except OSError as exc:
+                    with self._stats_lock:
+                        self._encode_error = exc
+                    logger.exception("Video encoding failed while writing frame")
+                    self._queue.task_done()
+                    self._stop_event.set()
+                    break
+                elapsed = time.perf_counter() - start
+                now = time.perf_counter()
                 with self._stats_lock:
-                    self._encode_error = exc
-                logger.exception("Video encoding failed while writing frame")
+                    self._frames_written += 1
+                    self._total_latency += elapsed
+                    self._last_latency = elapsed
+                    self._written_times.append(now)
+                    if now - self._last_log_time >= 1.0:
+                        self._compute_write_fps_locked()
+                        self._queue.qsize()
+                        self._last_log_time = now
                 self._queue.task_done()
-                self._stop_event.set()
-                break
-            elapsed = time.perf_counter() - start
-            now = time.perf_counter()
-            with self._stats_lock:
-                self._frames_written += 1
-                self._total_latency += elapsed
-                self._last_latency = elapsed
-                self._written_times.append(now)
-                if now - self._last_log_time >= 1.0:
-                    fps = self._compute_write_fps_locked()
-                    queue_size = self._queue.qsize()
-                    # logger.info(
-                    #     "Recorder throughput: %.2f fps, latency %.2f ms, queue=%d",
-                    #     fps,
-                    #     elapsed * 1000.0,
-                    #     queue_size,
-                    # )
-                    self._last_log_time = now
-            self._queue.task_done()
-        self._finalize_writer()
+        finally:
+            self._finalize_writer()
 
     def _finalize_writer(self) -> None:
         writer = self._writer
@@ -288,6 +281,7 @@ class VideoRecorder:
         if writer is not None:
             try:
                 writer.close()
+                time.sleep(0.2)  # give some time to finalize
             except Exception:
                 logger.exception("Failed to close WriteGear during finalisation")
 
@@ -299,7 +293,7 @@ class VideoRecorder:
             return 0.0
         return (len(self._written_times) - 1) / duration
 
-    def _current_error(self) -> Optional[Exception]:
+    def _current_error(self) -> Exception | None:
         with self._stats_lock:
             return self._encode_error
 
@@ -310,9 +304,7 @@ class VideoRecorder:
             return
 
         # Create timestamps file path
-        timestamp_file = self._output.with_suffix("").with_suffix(
-            self._output.suffix + "_timestamps.json"
-        )
+        timestamp_file = self._output.with_suffix("").with_suffix(self._output.suffix + "_timestamps.json")
 
         try:
             with self._stats_lock:

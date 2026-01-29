@@ -913,6 +913,12 @@ class DLCLiveMainWindow(QMainWindow):
                         recorder.write(frame, timestamp=timestamp)
                     except Exception as exc:
                         logging.warning(f"Failed to write frame for camera {cam_id}: {exc}")
+                        try:
+                            recorder.stop()
+                        except Exception:
+                            logging.exception(f"Failed to stop recorder for camera {cam_id} after write error.")
+                        self._multi_camera_recorders.pop(cam_id, None)
+                        self.statusBar().showMessage(f"Recording stopped for camera {cam_id} due to write error.", 5000)
 
         # PRIORITY 3: Mark display dirty (tiling done in display timer)
         self._display_dirty = True
@@ -1001,7 +1007,8 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _on_multi_camera_error(self, camera_id: str, message: str) -> None:
         """Handle error from a camera in multi-camera mode."""
-        self._show_warning(f"Camera {camera_id} error: {message}")
+        self._show_warning(f"Camera {camera_id} error: {message}\nRecording stopped.")
+        self._stop_recording()
 
     def _on_multi_camera_initialization_failed(self, failures: list) -> None:
         """Handle complete failure to initialize cameras."""
@@ -1936,7 +1943,7 @@ def main() -> None:
         window.show()
 
     # Show main window after 1500 ms
-    QTimer.singleShot(1500, show_main)
+    QTimer.singleShot(1000, show_main)
 
     sys.exit(app.exec())
 
