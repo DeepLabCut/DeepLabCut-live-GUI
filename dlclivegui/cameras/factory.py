@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib
-from collections.abc import Callable, Generator, Iterable  # CHANGED
+from collections.abc import Callable, Iterable  # CHANGED
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -12,19 +12,53 @@ from ..config import CameraSettings
 from .base import CameraBackend
 
 
+def _opencv_get_log_level(cv2):
+    """Return OpenCV log level using new utils.logging API when available, else legacy."""
+    # Preferred (OpenCV ≥ 4.x): cv2.utils.logging.getLogLevel()
+    try:
+        return cv2.utils.logging.getLogLevel()
+    except Exception:
+        # Legacy (older OpenCV): cv2.getLogLevel()
+        try:
+            return cv2.getLogLevel()
+        except Exception:
+            return None  # unknown / not supported
+
+
+def _opencv_set_log_level(cv2, level: int):
+    """Set OpenCV log level using new utils.logging API when available, else legacy."""
+    # Preferred (OpenCV ≥ 4.x): cv2.utils.logging.setLogLevel(level)
+    try:
+        cv2.utils.logging.setLogLevel(level)
+        return
+    except Exception:
+        # Legacy (older OpenCV): cv2.setLogLevel(level)
+        try:
+            cv2.setLogLevel(level)
+        except Exception:
+            pass  # not supported on this build
+
+
 @contextmanager
-def _suppress_opencv_logging() -> Generator[None, None, None]:
-    """Temporarily suppress OpenCV logging during camera probing."""
+def _suppress_opencv_logging():
+    """Temporarily suppress OpenCV logging during camera probing (backwards compatible)."""
     try:
         import cv2
 
-        old_level = cv2.getLogLevel()
-        cv2.setLogLevel(0)  # LOG_LEVEL_SILENT
+        # Resolve a 'silent' level cross-version.
+        # In newer OpenCV it's 0 (LOG_LEVEL_SILENT).
+        SILENT = 0
+        old_level = _opencv_get_log_level(cv2)
+
+        _opencv_set_log_level(cv2, SILENT)
         try:
             yield
         finally:
-            cv2.setLogLevel(old_level)
+            # Restore if we were able to read it
+            if old_level is not None:
+                _opencv_set_log_level(cv2, int(old_level))
     except ImportError:
+        # OpenCV not installed; nothing to suppress
         yield
 
 

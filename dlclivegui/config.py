@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
+
+from PySide6.QtCore import QSettings
+
+from dlclivegui.utils.utils import is_model_file
 
 
 @dataclass
@@ -25,9 +29,9 @@ class CameraSettings:
     max_devices: int = 3  # Maximum number of devices to probe during detection
     rotation: int = 0  # Rotation degrees (0, 90, 180, 270)
     enabled: bool = True  # Whether this camera is active in multi-camera mode
-    properties: Dict[str, Any] = field(default_factory=dict)
+    properties: dict[str, Any] = field(default_factory=dict)
 
-    def apply_defaults(self) -> "CameraSettings":
+    def apply_defaults(self) -> CameraSettings:
         """Ensure fps is a positive number and validate crop settings."""
 
         self.fps = float(self.fps) if self.fps else 30.0
@@ -39,13 +43,13 @@ class CameraSettings:
         self.crop_y1 = max(0, int(self.crop_y1)) if hasattr(self, "crop_y1") else 0
         return self
 
-    def get_crop_region(self) -> Optional[tuple[int, int, int, int]]:
+    def get_crop_region(self) -> tuple[int, int, int, int] | None:
         """Get crop region as (x0, y0, x1, y1) or None if no cropping."""
         if self.crop_x0 == 0 and self.crop_y0 == 0 and self.crop_x1 == 0 and self.crop_y1 == 0:
             return None
         return (self.crop_x0, self.crop_y0, self.crop_x1, self.crop_y1)
 
-    def copy(self) -> "CameraSettings":
+    def copy(self) -> CameraSettings:
         """Create a copy of this settings object."""
         return CameraSettings(
             name=self.name,
@@ -92,7 +96,7 @@ class MultiCameraSettings:
         return False
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "MultiCameraSettings":
+    def from_dict(cls, data: dict[str, Any]) -> MultiCameraSettings:
         """Create MultiCameraSettings from a dictionary."""
         cameras = []
         for cam_data in data.get("cameras", []):
@@ -105,7 +109,7 @@ class MultiCameraSettings:
             tile_layout=data.get("tile_layout", "auto"),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
             "cameras": [asdict(cam) for cam in self.cameras],
@@ -120,13 +124,13 @@ class DLCProcessorSettings:
 
     model_path: str = ""
     model_directory: str = "."  # Default directory for model browser (current dir if not set)
-    device: Optional[str] = (
+    device: str | None = (
         "auto"  # Device for inference (e.g., "cuda:0", "cpu"). None should be auto, but might default to cpu
     )
     dynamic: tuple = (False, 0.5, 10)  # Dynamic cropping: (enabled, margin, max_missing_frames)
     resize: float = 1.0  # Resize factor for input frames
     precision: str = "FP32"  # Inference precision ("FP32", "FP16")
-    additional_options: Dict[str, Any] = field(default_factory=dict)
+    additional_options: dict[str, Any] = field(default_factory=dict)
     model_type: str = "pytorch"  # Only PyTorch models are supported
     single_animal: bool = True  # Only single-animal models are supported
 
@@ -180,7 +184,7 @@ class RecordingSettings:
             filename = name.with_suffix(f".{self.container}")
         return directory / filename
 
-    def writegear_options(self, fps: float) -> Dict[str, Any]:
+    def writegear_options(self, fps: float) -> dict[str, Any]:
         """Return compression parameters for WriteGear."""
 
         fps_value = float(fps) if fps else 30.0
@@ -205,7 +209,7 @@ class ApplicationSettings:
     visualization: VisualizationSettings = field(default_factory=VisualizationSettings)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ApplicationSettings":
+    def from_dict(cls, data: dict[str, Any]) -> ApplicationSettings:
         """Create an :class:`ApplicationSettings` from a dictionary."""
 
         camera = CameraSettings(**data.get("camera", {})).apply_defaults()
@@ -247,7 +251,7 @@ class ApplicationSettings:
             visualization=visualization,
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialise the configuration to a dictionary."""
 
         return {
@@ -260,7 +264,7 @@ class ApplicationSettings:
         }
 
     @classmethod
-    def load(cls, path: Path | str) -> "ApplicationSettings":
+    def load(cls, path: Path | str) -> ApplicationSettings:
         """Load configuration from ``path``."""
 
         file_path = Path(path).expanduser()
@@ -280,3 +284,35 @@ class ApplicationSettings:
 
 
 DEFAULT_CONFIG = ApplicationSettings()
+
+
+class ModelPathStore:
+    """Persist and resolve the last model path via QSettings."""
+
+    def __init__(self, settings: QSettings | None = None):
+        self._settings = settings or QSettings("DeepLabCut", "DLCLiveGUI")
+
+    def load_last(self) -> str | None:
+        val = self._settings.value("dlc/last_model_path")
+        if not val:
+            return None
+        path = str(val)
+        try:
+            return path if is_model_file(path) else None
+        except Exception:
+            return None
+
+    def save_if_valid(self, path: str) -> None:
+        try:
+            if path and is_model_file(path):
+                self._settings.setValue("dlc/last_model_path", str(Path(path)))
+        except Exception:
+            pass
+
+    def resolve(self, config_path: str | None) -> str:
+        if config_path and is_model_file(config_path):
+            return config_path
+        persisted = self.load_last()
+        if persisted and is_model_file(persisted):
+            return persisted
+        return ""

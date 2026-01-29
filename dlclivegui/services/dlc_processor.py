@@ -7,15 +7,16 @@ import queue
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from dlclivegui.config import DLCProcessorSettings
+from dlclivegui.processors.processor_utils import instantiate_from_scan
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # Enable profiling
 ENABLE_PROFILING = True
@@ -23,13 +24,13 @@ ENABLE_PROFILING = True
 try:  # pragma: no cover - optional dependency
     from dlclive import DLCLive  # type: ignore
 except Exception as e:  # pragma: no cover - handled gracefully
-    LOGGER.error(f"dlclive package could not be imported: {e}")
+    logger.error(f"dlclive package could not be imported: {e}")
     DLCLive = None  # type: ignore[assignment]
 
 
 @dataclass
 class PoseResult:
-    pose: Optional[np.ndarray]
+    pose: np.ndarray | None
     timestamp: float
 
 
@@ -67,10 +68,10 @@ class DLCLiveProcessor(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._settings = DLCProcessorSettings()
-        self._dlc: Optional[Any] = None
-        self._processor: Optional[Any] = None
-        self._queue: Optional[queue.Queue[Any]] = None
-        self._worker_thread: Optional[threading.Thread] = None
+        self._dlc: Any | None = None
+        self._processor: Any | None = None
+        self._queue: queue.Queue[Any] | None = None
+        self._worker_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._initialized = False
 
@@ -90,7 +91,7 @@ class DLCLiveProcessor(QObject):
         self._gpu_inference_times: deque[float] = deque(maxlen=60)
         self._processor_overhead_times: deque[float] = deque(maxlen=60)
 
-    def configure(self, settings: DLCProcessorSettings, processor: Optional[Any] = None) -> None:
+    def configure(self, settings: DLCProcessorSettings, processor: Any | None = None) -> None:
         self._settings = settings
         self._processor = processor
 
@@ -134,7 +135,7 @@ class DLCLiveProcessor(QObject):
                 with self._stats_lock:
                     self._frames_enqueued += 1
             except queue.Full:
-                LOGGER.debug("DLC queue full, dropping frame")
+                logger.debug("DLC queue full, dropping frame")
                 with self._stats_lock:
                     self._frames_dropped += 1
 
@@ -149,37 +150,23 @@ class DLCLiveProcessor(QObject):
             # Compute processing FPS from processing times
             if len(self._processing_times) >= 2:
                 duration = self._processing_times[-1] - self._processing_times[0]
-                processing_fps = (
-                    (len(self._processing_times) - 1) / duration if duration > 0 else 0.0
-                )
+                processing_fps = (len(self._processing_times) - 1) / duration if duration > 0 else 0.0
             else:
                 processing_fps = 0.0
 
             # Profiling metrics
             avg_queue_wait = (
-                sum(self._queue_wait_times) / len(self._queue_wait_times)
-                if self._queue_wait_times
-                else 0.0
+                sum(self._queue_wait_times) / len(self._queue_wait_times) if self._queue_wait_times else 0.0
             )
-            avg_inference = (
-                sum(self._inference_times) / len(self._inference_times)
-                if self._inference_times
-                else 0.0
-            )
+            avg_inference = sum(self._inference_times) / len(self._inference_times) if self._inference_times else 0.0
             avg_signal_emit = (
-                sum(self._signal_emit_times) / len(self._signal_emit_times)
-                if self._signal_emit_times
-                else 0.0
+                sum(self._signal_emit_times) / len(self._signal_emit_times) if self._signal_emit_times else 0.0
             )
             avg_total = (
-                sum(self._total_process_times) / len(self._total_process_times)
-                if self._total_process_times
-                else 0.0
+                sum(self._total_process_times) / len(self._total_process_times) if self._total_process_times else 0.0
             )
             avg_gpu = (
-                sum(self._gpu_inference_times) / len(self._gpu_inference_times)
-                if self._gpu_inference_times
-                else 0.0
+                sum(self._gpu_inference_times) / len(self._gpu_inference_times) if self._gpu_inference_times else 0.0
             )
             avg_proc_overhead = (
                 sum(self._processor_overhead_times) / len(self._processor_overhead_times)
@@ -230,7 +217,7 @@ class DLCLiveProcessor(QObject):
 
         self._worker_thread.join(timeout=2.0)
         if self._worker_thread.is_alive():
-            LOGGER.warning("DLC worker thread did not terminate cleanly")
+            logger.warning("DLC worker thread did not terminate cleanly")
 
         self._worker_thread = None
         self._queue = None
@@ -266,8 +253,9 @@ class DLCLiveProcessor(QObject):
             self.initialized.emit(True)
 
             total_init_time = time.perf_counter() - init_start
-            LOGGER.info(
-                f"DLCLive model initialized successfully (total: {total_init_time:.3f}s, init_inference: {init_inference_time:.3f}s)"
+            logger.info(
+                f"DLCLive model initialized successfully "
+                f"(total: {total_init_time:.3f}s, init_inference: {init_inference_time:.3f}s)"
             )
 
             # Process the initialization frame
@@ -292,7 +280,7 @@ class DLCLiveProcessor(QObject):
                     self._signal_emit_times.append(signal_time)
 
         except Exception as exc:
-            LOGGER.exception("Failed to initialize DLCLive", exc_info=exc)
+            logger.exception("Failed to initialize DLCLive", exc_info=exc)
             self.error.emit(str(exc))
             self.initialized.emit(False)
             return
@@ -321,26 +309,33 @@ class DLCLiveProcessor(QObject):
                 processor_overhead_time = 0.0
                 gpu_inference_time = 0.0
 
+                original_process = None  # bind for finally safety
+
                 if self._processor is not None:
                     # Wrap processor.process() to time it
                     original_process = self._processor.process
                     processor_time_holder = [0.0]  # Use list to allow modification in nested scope
 
-                    def timed_process(pose, **kwargs):
+                    # Bind original_process and holder into defaults to satisfy flake8-bugbear B023
+                    def timed_process(pose, _op=original_process, _holder=processor_time_holder, **kwargs):
                         proc_start = time.perf_counter()
-                        result = original_process(pose, **kwargs)
-                        processor_time_holder[0] = time.perf_counter() - proc_start
-                        return result
+                        try:
+                            return _op(pose, **kwargs)
+                        finally:
+                            _holder[0] = time.perf_counter() - proc_start
 
                     self._processor.process = timed_process
 
-                inference_start = time.perf_counter()
-                pose = self._dlc.get_pose(frame, frame_time=timestamp)
-                inference_time = time.perf_counter() - inference_start
+                try:
+                    inference_start = time.perf_counter()
+                    pose = self._dlc.get_pose(frame, frame_time=timestamp)
+                    inference_time = time.perf_counter() - inference_start
+                finally:
+                    # Always restore the original process method if we wrapped it
+                    if original_process is not None and self._processor is not None:
+                        self._processor.process = original_process
 
-                if self._processor is not None:
-                    # Restore original process method
-                    self._processor.process = original_process
+                if original_process is not None:
                     processor_overhead_time = processor_time_holder[0]
                     gpu_inference_time = inference_time - processor_overhead_time
                 else:
@@ -372,20 +367,79 @@ class DLCLiveProcessor(QObject):
                 # Log profiling every 100 frames
                 frame_count += 1
                 if ENABLE_PROFILING and frame_count % 100 == 0:
-                    LOGGER.info(
+                    logger.info(
                         f"[Profile] Frame {frame_count}: "
-                        f"queue_wait={queue_wait_time*1000:.2f}ms, "
-                        f"inference={inference_time*1000:.2f}ms "
-                        f"(GPU={gpu_inference_time*1000:.2f}ms, processor={processor_overhead_time*1000:.2f}ms), "
-                        f"signal_emit={signal_time*1000:.2f}ms, "
-                        f"total={total_process_time*1000:.2f}ms, "
-                        f"latency={latency*1000:.2f}ms"
+                        f"queue_wait={queue_wait_time * 1000:.2f}ms, "
+                        f"inference={inference_time * 1000:.2f}ms "
+                        f"(GPU={gpu_inference_time * 1000:.2f}ms, processor={processor_overhead_time * 1000:.2f}ms), "
+                        f"signal_emit={signal_time * 1000:.2f}ms, "
+                        f"total={total_process_time * 1000:.2f}ms, "
+                        f"latency={latency * 1000:.2f}ms"
                     )
 
             except Exception as exc:
-                LOGGER.exception("Pose inference failed", exc_info=exc)
+                logger.exception("Pose inference failed", exc_info=exc)
                 self.error.emit(str(exc))
             finally:
                 self._queue.task_done()
 
-        LOGGER.info("DLC worker thread exiting")
+        logger.info("DLC worker thread exiting")
+
+
+class DLCService:
+    """Wrap DLCLiveProcessor lifecycle & configuration."""
+
+    def __init__(self):
+        self._proc = DLCLiveProcessor()
+        self.active = False
+        self.initialized = False
+        self._last_pose: PoseResult | None = None
+        self._processor_info = None
+
+    @property
+    def processor(self):
+        return self._proc._processor
+
+    def configure(self, settings: DLCProcessorSettings, scanned_processors: dict, selected_key) -> bool:
+        processor = None
+        if selected_key is not None and scanned_processors:
+            try:
+                processor = instantiate_from_scan(scanned_processors, selected_key)
+            except Exception as exc:
+                logger.error("Failed to instantiate processor: %s", exc)
+                return False
+        self._proc.configure(settings, processor=processor)
+        return True
+
+    def start(self):
+        self._proc.reset()
+        self.active = True
+        self.initialized = False
+
+    def stop(self):
+        self.active = False
+        self.initialized = False
+        self._proc.reset()
+        self._last_pose = None
+
+    def stats(self) -> ProcessorStats:
+        return self._proc.get_stats()
+
+    def last_pose(self) -> PoseResult | None:
+        return self._last_pose
+
+    # Expose key signals (to let MainWindow connect easily)
+    @property
+    def pose_ready(self):
+        return self._proc.pose_ready
+
+    @property
+    def error(self):
+        return self._proc.error
+
+    @property
+    def initialized(self):
+        return self._proc.initialized
+
+    def enqueue(self, frame, ts):
+        self._proc.enqueue_frame(frame, ts)

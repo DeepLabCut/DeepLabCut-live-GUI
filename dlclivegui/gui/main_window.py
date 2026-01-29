@@ -2,27 +2,20 @@
 
 from __future__ import annotations
 
-import enum
 import importlib.metadata
 import json
 import logging
 import os
-import signal
-import sys
 import time
-from collections import deque
 from pathlib import Path
 
 os.environ["PYLON_CAMEMU"] = "2"
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
-import qdarkstyle
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QFont, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -37,14 +30,12 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
-    QSplashScreen,
     QStatusBar,
     QStyle,
     QVBoxLayout,
     QWidget,
 )
 
-from dlclivegui.camera_config_dialog import CameraConfigDialog
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.config import (
     DEFAULT_CONFIG,
@@ -52,30 +43,24 @@ from dlclivegui.config import (
     BoundingBoxSettings,
     CameraSettings,
     DLCProcessorSettings,
+    ModelPathStore,
     MultiCameraSettings,
     RecordingSettings,
     VisualizationSettings,
 )
-from dlclivegui.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStats
-from dlclivegui.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
+from dlclivegui.gui.camera_config_dialog import CameraConfigDialog
+from dlclivegui.gui.recording_manager import RecordingManager
+from dlclivegui.gui.theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 from dlclivegui.processors.processor_utils import instantiate_from_scan, scan_processor_folder
-from dlclivegui.utils import is_model_file
-from dlclivegui.video_recorder import RecorderStats, VideoRecorder
+from dlclivegui.services.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStats
+from dlclivegui.services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
+from dlclivegui.services.video_recorder import RecorderStats
+from dlclivegui.utils.display import compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
+from dlclivegui.utils.utils import FPSTracker
 
 # logging.basicConfig(level=logging.INFO)
 logging.basicConfig(level=logging.DEBUG)  # FIXME @C-Achard set back to INFO for release
 logger = logging.getLogger("DLCLiveGUI")
-
-ASSETS = Path(__file__).parent / "assets"
-LOGO = str(ASSETS / "logo.png")
-LOGO_ALPHA = str(ASSETS / "logo_transparent.png")
-SPLASH_SCREEN = str(ASSETS / "welcome.png")
-
-
-# auto enum for styles
-class AppStyle(enum.Enum):
-    SYS_DEFAULT = "system"
-    DARK = "dark"
 
 
 class DLCLiveMainWindow(QMainWindow):
@@ -105,6 +90,11 @@ class DLCLiveMainWindow(QMainWindow):
             self._config_path = None
 
         self.settings = QSettings("DeepLabCut", "DLCLiveGUI")
+        self._model_path_store = ModelPathStore(self.settings)
+        self._fps_tracker = FPSTracker()
+        self._rec_manager = RecordingManager()
+        self._dlc = DLCLiveProcessor()
+        self.multi_camera_controller = MultiCameraController()
 
         self._config = config
         self._inference_camera_id: str | None = None  # Camera ID used for inference
@@ -114,9 +104,6 @@ class DLCLiveMainWindow(QMainWindow):
         self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
         self._active_camera_settings: CameraSettings | None = None
-        # self._camera_frame_times: deque[float] = deque(maxlen=240)
-        self._camera_frame_times: dict[str, deque[float]] = {}
-        self._fps_window_seconds = 5.0  # seconds for fps calculation
         self._last_drop_warning = 0.0
         self._last_recorder_summary = "Recorder idle"
         self._display_interval = 1.0 / 25.0
@@ -140,12 +127,8 @@ class DLCLiveMainWindow(QMainWindow):
         self._colormap = "hot"
         self._bbox_color = (0, 0, 255)  # BGR: red
 
-        self.multi_camera_controller = MultiCameraController()
-        self.dlc_processor = DLCLiveProcessor()
-
         # Multi-camera state
         self._multi_camera_mode = False
-        self._multi_camera_recorders: dict[str, VideoRecorder] = {}
         self._multi_camera_frames: dict[str, np.ndarray] = {}
         # DLC pose rendering info for tiled view
         self._dlc_tile_offset: tuple[int, int] = (0, 0)  # (x, y) offset in tiled frame
@@ -193,16 +176,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _apply_theme(self, mode: AppStyle) -> None:
         """Apply the selected theme and update menu action states."""
-        app = QApplication.instance()
-        if mode == AppStyle.DARK:
-            css = qdarkstyle.load_stylesheet_pyside6()
-            app.setStyleSheet(css)
-            self.action_dark_mode.setChecked(True)
-            self.action_light_mode.setChecked(False)
-        else:
-            app.setStyleSheet("")  # empty -> default Qt
-            self.action_dark_mode.setChecked(False)
-            self.action_light_mode.setChecked(True)
+        apply_theme(mode, self.action_dark_mode, self.action_light_mode)
         self._current_style = mode
 
     def _load_icons(self):
@@ -567,9 +541,9 @@ class DLCLiveMainWindow(QMainWindow):
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
         self.multi_camera_controller.initialization_failed.connect(self._on_multi_camera_initialization_failed)
 
-        self.dlc_processor.pose_ready.connect(self._on_pose_ready)
-        self.dlc_processor.error.connect(self._on_dlc_error)
-        self.dlc_processor.initialized.connect(self._on_dlc_initialised)
+        self._dlc.pose_ready.connect(self._on_pose_ready)
+        self._dlc.error.connect(self._on_dlc_error)
+        self._dlc.initialized.connect(self._on_dlc_initialised)
         self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
 
     # ------------------------------------------------------------------ config
@@ -578,7 +552,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._update_active_cameras_label()
 
         dlc = config.dlc
-        resolved_model_path = self._resolve_model_path(dlc.model_path)
+        resolved_model_path = self._model_path_store.resolve(dlc.model_path)
         self.model_path_edit.setText(resolved_model_path)
 
         # self.additional_options_edit.setPlainText(json.dumps(dlc.additional_options, indent=2))
@@ -630,37 +604,6 @@ class DLCLiveMainWindow(QMainWindow):
         if not text:
             return {}
         return json.loads(text)
-
-    def _load_last_model_path(self) -> str | None:
-        """Load and validate the last model path from OS settings."""
-        last_path = self.settings.value("dlc/last_model_path")
-        last_path = str(last_path) if last_path else None
-        logger.debug(f"Loaded last model path from settings: {last_path}")
-        if not last_path:
-            return None
-        try:
-            return last_path if is_model_file(last_path) else None
-        except Exception:
-            logger.debug("Invalid last model path in settings", exc_info=True)
-            pass
-        return None  # invalid or missing
-
-    def _resolve_model_path(self, config_path: str | None) -> str:
-        if config_path and is_model_file(config_path):
-            return config_path
-        persisted = self._load_last_model_path()
-        if persisted and is_model_file(persisted):
-            return persisted
-        return ""
-
-    def _save_last_model_path(self, path: str) -> None:
-        """Persist the last model path only if it looks valid."""
-        try:
-            if path and is_model_file(path):
-                self.settings.setValue("dlc/last_model_path", str(Path(path)))
-                logger.debug(f"Persisted last model path to settings: {path}")
-        except Exception:
-            logger.debug("Ignoring invalid model path persistence", exc_info=True)
 
     def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
         return DLCProcessorSettings(
@@ -753,7 +696,7 @@ class DLCLiveMainWindow(QMainWindow):
         )
         if file_path:
             self.model_path_edit.setText(file_path)
-            self._save_last_model_path(file_path)
+            self._model_path_store.save_if_valid(file_path)
 
     def _action_browse_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Select output directory", str(Path.home()))
@@ -948,7 +891,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._multi_camera_frames = frame_data.frames
         src_id = frame_data.source_camera_id
         if src_id:
-            self._track_camera_frame(src_id)  # Track FPS
+            self._fps_tracker.note_frame(src_id)  # Track FPS
 
         new_running = set(frame_data.frames.keys())
         if new_running != self._running_cams_ids:
@@ -981,95 +924,22 @@ class DLCLiveMainWindow(QMainWindow):
         if is_dlc_camera_frame and dlc_cam_id in frame_data.frames:
             frame = frame_data.frames[dlc_cam_id]
             self._raw_frame = frame
-            self._update_dlc_tile_info(dlc_cam_id, frame, frame_data.frames)
+            self._dlc_tile_offset, self._dlc_tile_size = compute_tile_info(dlc_cam_id, frame, frame_data.frames)
 
         # PRIORITY 1: DLC processing - only enqueue when DLC camera frame arrives!
         if self._dlc_active and is_dlc_camera_frame and dlc_cam_id in frame_data.frames:
             frame = frame_data.frames[dlc_cam_id]
             timestamp = frame_data.timestamps.get(dlc_cam_id, time.time())
-            self.dlc_processor.enqueue_frame(frame, timestamp)
+            self._dlc.enqueue_frame(frame, timestamp)
 
         # PRIORITY 2: Recording (queued, non-blocking)
-        # Only record the frame from the camera that triggered this signal to avoid
-        # writing duplicate timestamps when multiple cameras are running
-        if self._multi_camera_recorders and frame_data.source_camera_id:
-            cam_id = frame_data.source_camera_id
-            if cam_id in self._multi_camera_recorders and cam_id in frame_data.frames:
-                recorder = self._multi_camera_recorders[cam_id]
-                if recorder.is_running:
-                    frame = frame_data.frames[cam_id]
-                    timestamp = frame_data.timestamps.get(cam_id, time.time())
-                    try:
-                        recorder.write(frame, timestamp=timestamp)
-                    except Exception as exc:
-                        logger.warning(f"Failed to write frame for camera {cam_id}: {exc}")
-                        try:
-                            recorder.stop()
-                        except Exception:
-                            logger.exception(f"Failed to stop recorder for camera {cam_id} after write error.")
-                        self._multi_camera_recorders.pop(cam_id, None)
-                        self.statusBar().showMessage(f"Recording stopped for camera {cam_id} due to write error.", 5000)
+        if self._rec_manager.is_active and src_id in frame_data.frames:
+            frame = frame_data.frames[src_id]
+            ts = frame_data.timestamps.get(src_id, time.time())
+            self._rec_manager.write_frame(src_id, frame, ts)
 
         # PRIORITY 3: Mark display dirty (tiling done in display timer)
         self._display_dirty = True
-
-    def _update_dlc_tile_info(self, dlc_cam_id: str, original_frame: np.ndarray, frames: dict[str, np.ndarray]) -> None:
-        """Calculate tile offset and scale for drawing DLC poses on tiled frame."""
-        num_cameras = len(frames)
-        if num_cameras == 0:
-            self._dlc_tile_offset = (0, 0)
-            self._dlc_tile_scale = (1.0, 1.0)
-            return
-
-        # Get original frame dimensions
-        orig_h, orig_w = original_frame.shape[:2]
-
-        # Calculate grid layout (must match _create_tiled_frame logic)
-        if num_cameras == 1:
-            rows, cols = 1, 1
-        elif num_cameras == 2:
-            rows, cols = 1, 2
-        else:
-            rows, cols = 2, 2
-
-        # Calculate tile dimensions using same logic as _create_tiled_frame
-        max_canvas_width = 1200
-        max_canvas_height = 800
-        frame_aspect = orig_w / orig_h if orig_h > 0 else 1.0
-
-        tile_w = max_canvas_width // cols
-        tile_h = max_canvas_height // rows
-        tile_aspect = tile_w / tile_h if tile_h > 0 else 1.0
-
-        if frame_aspect > tile_aspect:
-            tile_h = int(tile_w / frame_aspect)
-        else:
-            tile_w = int(tile_h * frame_aspect)
-
-        tile_w = max(160, tile_w)
-        tile_h = max(120, tile_h)
-
-        # Find the position of the DLC camera in the sorted camera list
-        sorted_cam_ids = sorted(frames.keys())
-        try:
-            dlc_cam_idx = sorted_cam_ids.index(dlc_cam_id)
-        except ValueError:
-            dlc_cam_idx = 0
-
-        # Calculate grid position
-        row = dlc_cam_idx // cols
-        col = dlc_cam_idx % cols
-
-        # Calculate offset (top-left corner of the tile)
-        offset_x = col * tile_w
-        offset_y = row * tile_h
-
-        # Calculate scale factors (always calculate, even for single camera)
-        scale_x = tile_w / orig_w if orig_w > 0 else 1.0
-        scale_y = tile_h / orig_h if orig_h > 0 else 1.0
-
-        self._dlc_tile_offset = (offset_x, offset_y)
-        self._dlc_tile_scale = (scale_x, scale_y)
 
     def _on_multi_camera_started(self) -> None:
         """Handle all cameras started event."""
@@ -1117,69 +987,20 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _start_multi_camera_recording(self) -> None:
         """Start recording from all active cameras."""
-        if self._multi_camera_recorders:
-            return  # Already recording
-
         recording = self._recording_settings_from_ui()
-        if not recording.enabled:
-            self._show_error("Recording is disabled in the configuration.")
-            return
-
         active_cams = self._config.multi_camera.get_active_cameras()
-        if not active_cams:
-            self._show_error("No active cameras configured.")
-            return
+        self._rec_manager.start_all(recording, active_cams, self._multi_camera_frames)
 
-        base_path = recording.output_path()
-        base_stem = base_path.stem
-
-        for cam in active_cams:
-            cam_id = get_camera_id(cam)
-            # Create unique filename for each camera
-            cam_filename = f"{base_stem}_{cam.backend}_cam{cam.index}{base_path.suffix}"
-            cam_path = base_path.parent / cam_filename
-
-            # Get frame from current frames if available
-            frame = self._multi_camera_frames.get(cam_id)
-            frame_size = (frame.shape[0], frame.shape[1]) if frame is not None else None
-
-            recorder = VideoRecorder(
-                cam_path,
-                frame_size=frame_size,
-                frame_rate=float(cam.fps),
-                codec=recording.codec,
-                crf=recording.crf,
-            )
-
-            try:
-                recorder.start()
-                self._multi_camera_recorders[cam_id] = recorder
-                logger.info(f"Started recording camera {cam_id} to {cam_path}")
-            except Exception as exc:
-                self._show_error(f"Failed to start recording for camera {cam_id}: {exc}")
-
-        if self._multi_camera_recorders:
+        if self._rec_manager.is_active:
             self.start_record_button.setEnabled(False)
             self.stop_record_button.setEnabled(True)
-            self.statusBar().showMessage(
-                f"Recording {len(self._multi_camera_recorders)} camera(s) to {recording.directory}",
-                5000,
-            )
+            self.statusBar().showMessage(f"Recording {len(active_cams)} camera(s) to {recording.directory}", 5000)
             self._update_camera_controls_enabled()
 
     def _stop_multi_camera_recording(self) -> None:
-        """Stop recording from all cameras."""
-        if not self._multi_camera_recorders:
+        if not self._rec_manager.is_active:
             return
-
-        for cam_id, recorder in self._multi_camera_recorders.items():
-            try:
-                recorder.stop()
-                logger.info(f"Stopped recording camera {cam_id}")
-            except Exception as exc:
-                logger.warning(f"Error stopping recorder for camera {cam_id}: {exc}")
-
-        self._multi_camera_recorders.clear()
+        self._rec_manager.stop_all()
         self.start_record_button.setEnabled(True)
         self.stop_record_button.setEnabled(False)
         self.statusBar().showMessage("Multi-camera recording stopped", 3000)
@@ -1255,7 +1076,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._raw_frame = None
         self._last_pose = None
         self._multi_camera_frames.clear()
-        self._camera_frame_times.clear()
+        self._fps_tracker.clear()
         self._last_display_time = 0.0
 
         if hasattr(self, "camera_stats_label"):
@@ -1287,7 +1108,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         self.multi_camera_controller.stop()
         self._stop_inference(show_message=False)
-        self._camera_frame_times.clear()
+        self._fps_tracker.clear()
         self._last_display_time = 0.0
         if hasattr(self, "camera_stats_label"):
             self.camera_stats_label.setText("Camera idle")
@@ -1320,8 +1141,8 @@ class DLCLiveMainWindow(QMainWindow):
                 logger.error(error_msg)
                 return False
 
-        self.dlc_processor.configure(settings, processor=processor)
-        self._save_last_model_path(settings.model_path)
+        self._dlc.configure(settings, processor=processor)
+        self._model_path_store.save_if_valid(settings.model_path)
         return True
 
     def _update_inference_buttons(self) -> None:
@@ -1346,7 +1167,7 @@ class DLCLiveMainWindow(QMainWindow):
             widget.setEnabled(allow_changes)
 
     def _update_camera_controls_enabled(self) -> None:
-        multi_cam_recording = bool(self._multi_camera_recorders)
+        multi_cam_recording = self._rec_manager.is_active
 
         # Check if preview is running
         preview_running = self.multi_camera_controller.is_running()
@@ -1364,21 +1185,6 @@ class DLCLiveMainWindow(QMainWindow):
         # Disable loading configurations when preview/recording is active
         if hasattr(self, "load_config_action"):
             self.load_config_action.setEnabled(allow_changes)
-
-    def _track_camera_frame(self, camera_id: str) -> None:
-        now = time.perf_counter()
-        dq = self._camera_frame_times.get(camera_id)
-        if dq is None:
-            # Maxlen sized to about the highest plausible FPS * window
-            # e.g., 240 entries ~ 48 FPS over 5s
-            dq = deque(maxlen=240)
-            self._camera_frame_times[camera_id] = dq
-        dq.append(now)
-
-        # Drop old timestamps outside window
-        window_seconds = self._fps_window_seconds
-        while dq and (now - dq[0]) > window_seconds:
-            dq.popleft()
 
     def _display_frame(self, frame: np.ndarray, *, force: bool = False) -> None:
         if frame is None:
@@ -1399,95 +1205,10 @@ class DLCLiveMainWindow(QMainWindow):
         self._display_dirty = False
 
         # Create tiled frame on demand (moved from camera thread for performance)
-        tiled = self._create_tiled_frame(self._multi_camera_frames)
+        tiled = create_tiled_frame(self._multi_camera_frames)
         if tiled is not None:
             self._current_frame = tiled
             self._update_video_display(tiled)
-
-    def _create_tiled_frame(self, frames: dict[str, np.ndarray]) -> np.ndarray:
-        """Create a tiled frame from camera frames for display."""
-        if not frames:
-            return np.zeros((480, 640, 3), dtype=np.uint8)
-
-        cam_ids = sorted(frames.keys())
-        frames_list = [frames[cam_id] for cam_id in cam_ids]
-        num_frames = len(frames_list)
-
-        if num_frames == 0:
-            return np.zeros((480, 640, 3), dtype=np.uint8)
-
-        # Determine grid layout
-        if num_frames == 1:
-            rows, cols = 1, 1
-        elif num_frames == 2:
-            rows, cols = 1, 2
-        else:
-            rows, cols = 2, 2
-
-        # Maximum canvas size
-        max_canvas_width = 1200
-        max_canvas_height = 800
-
-        # Calculate tile size based on first frame aspect ratio
-        first_frame = frames_list[0]
-        frame_h, frame_w = first_frame.shape[:2]
-        frame_aspect = frame_w / frame_h if frame_h > 0 else 1.0
-
-        tile_w = max_canvas_width // cols
-        tile_h = max_canvas_height // rows
-        tile_aspect = tile_w / tile_h if tile_h > 0 else 1.0
-
-        if frame_aspect > tile_aspect:
-            tile_h = int(tile_w / frame_aspect)
-        else:
-            tile_w = int(tile_h * frame_aspect)
-
-        tile_w = max(160, tile_w)
-        tile_h = max(120, tile_h)
-
-        # Create canvas
-        canvas = np.zeros((rows * tile_h, cols * tile_w, 3), dtype=np.uint8)
-
-        # Place each frame in the grid
-        for idx, frame in enumerate(frames_list[: rows * cols]):
-            row = idx // cols
-            col = idx % cols
-
-            # Ensure frame is 3-channel
-            if frame.ndim == 2:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-            elif frame.shape[2] == 4:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-
-            # Resize to tile size
-            resized = cv2.resize(frame, (tile_w, tile_h))
-
-            # Add camera ID label
-            if idx < len(cam_ids):
-                cv2.putText(
-                    resized,
-                    cam_ids[idx],
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2,
-                )
-
-            # Place in canvas
-            y_start = row * tile_h
-            x_start = col * tile_w
-            canvas[y_start : y_start + tile_h, x_start : x_start + tile_w] = resized
-
-        return canvas
-
-    def _compute_fps(self, times: deque[float]) -> float:
-        if len(times) < 2:
-            return 0.0
-        duration = times[-1] - times[0]
-        if duration <= 0:
-            return 0.0
-        return (len(times) - 1) / duration
 
     def _format_recorder_stats(self, stats: RecorderStats) -> str:
         latency_ms = stats.last_latency * 1000.0
@@ -1550,8 +1271,7 @@ class DLCLiveMainWindow(QMainWindow):
                 lines = []
                 for cam in active_cams:
                     cam_id = get_camera_id(cam)  # e.g., "opencv:0" or "pylon:1"
-                    dq = self._camera_frame_times.get(cam_id, deque())
-                    fps = self._compute_fps(dq)
+                    fps = self._fps_tracker.fps(cam_id)
                     # Make a compact label: name [backend:index] @ fps
                     label = f"{cam.name or cam_id} [{cam.backend}:{cam.index}]"
                     if fps > 0:
@@ -1573,7 +1293,7 @@ class DLCLiveMainWindow(QMainWindow):
         # --- DLC processor stats ---
         if hasattr(self, "dlc_stats_label"):
             if self._dlc_active and self._dlc_initialized:
-                stats = self.dlc_processor.get_stats()
+                stats = self._dlc.get_stats()
                 summary = self._format_dlc_stats(stats)
                 self.dlc_stats_label.setText(summary)
             else:
@@ -1585,38 +1305,8 @@ class DLCLiveMainWindow(QMainWindow):
 
         # --- Recorder stats ---
         if hasattr(self, "recording_stats_label"):
-            # Handle multi-camera recording stats
-            if self._multi_camera_recorders:
-                num_recorders = len(self._multi_camera_recorders)
-                if num_recorders == 1:
-                    # Single camera - show detailed stats
-                    recorder = next(iter(self._multi_camera_recorders.values()))
-                    stats = recorder.get_stats()
-                    if stats:
-                        summary = self._format_recorder_stats(stats)
-                    else:
-                        summary = "Recording..."
-                else:
-                    # Multiple cameras - show aggregated stats with per-camera details
-                    total_written = 0
-                    total_dropped = 0
-                    total_queue = 0
-                    max_latency = 0.0
-                    avg_latencies = []
-                    for recorder in self._multi_camera_recorders.values():
-                        stats = recorder.get_stats()
-                        if stats:
-                            total_written += stats.frames_written
-                            total_dropped += stats.dropped_frames
-                            total_queue += stats.queue_size
-                            max_latency = max(max_latency, stats.last_latency)
-                            avg_latencies.append(stats.average_latency)
-                    avg_latency = sum(avg_latencies) / len(avg_latencies) if avg_latencies else 0.0
-                    summary = (
-                        f"{num_recorders} cams | {total_written} frames | "
-                        f"latency {max_latency * 1000:.1f}ms (avg {avg_latency * 1000:.1f}ms) | "
-                        f"queue {total_queue} | dropped {total_dropped}"
-                    )
+            if self._rec_manager.is_active:
+                summary = self._rec_manager.get_stats_summary()
                 self._last_recorder_summary = summary
                 self.recording_stats_label.setText(summary)
             else:
@@ -1628,8 +1318,8 @@ class DLCLiveMainWindow(QMainWindow):
             self.processor_status_label.setText("Processor: Not active")
             return
 
-        # Get processor instance from dlc_processor
-        processor = self.dlc_processor._processor
+        # Get processor instance from _dlc
+        processor = self._dlc._processor
 
         if processor is None:
             self.processor_status_label.setText("Processor: None loaded")
@@ -1657,7 +1347,7 @@ class DLCLiveMainWindow(QMainWindow):
             if current_vid_recording != self._last_processor_vid_recording:
                 if current_vid_recording:
                     # Start video recording
-                    if not self._multi_camera_recorders:
+                    if not self._rec_manager.is_active:
                         # Get session name from processor
                         session_name = getattr(processor, "session_name", "auto_session")
                         self._auto_record_session_name = session_name
@@ -1671,7 +1361,7 @@ class DLCLiveMainWindow(QMainWindow):
                         logger.info(f"Auto-recording started for session: {session_name}")
                 else:
                     # Stop video recording
-                    if self._multi_camera_recorders:
+                    if self._rec_manager.is_active:
                         self._stop_recording()
                         self.statusBar().showMessage("Auto-stopped recording", 3000)
                         logger.info("Auto-recording stopped")
@@ -1688,7 +1378,7 @@ class DLCLiveMainWindow(QMainWindow):
         if not self._configure_dlc():
             self._update_inference_buttons()
             return
-        self.dlc_processor.reset()
+        self._dlc.reset()
         self._last_pose = None
         self._dlc_active = True
         self._dlc_initialized = False
@@ -1707,7 +1397,7 @@ class DLCLiveMainWindow(QMainWindow):
         was_active = self._dlc_active
         self._dlc_active = False
         self._dlc_initialized = False
-        self.dlc_processor.reset()
+        self._dlc.reset()
         self._last_pose = None
         self._last_processor_vid_recording = False
         self._auto_record_session_name = None
@@ -1758,14 +1448,28 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _update_video_display(self, frame: np.ndarray) -> None:
         display_frame = frame
-        if self.show_predictions_checkbox.isChecked() and self._last_pose and self._last_pose.pose is not None:
-            display_frame = self._draw_pose(frame, self._last_pose.pose)
 
-        # Draw bounding box if enabled
+        if self.show_predictions_checkbox.isChecked() and self._last_pose and self._last_pose.pose is not None:
+            display_frame = draw_pose(
+                frame,
+                self._last_pose.pose,
+                p_cutoff=self._p_cutoff,
+                colormap=self._colormap,
+                offset=self._dlc_tile_offset,
+                scale=self._dlc_tile_scale,
+            )
+
         if self._bbox_enabled:
-            display_frame = self._draw_bbox(display_frame)
+            display_frame = draw_bbox(
+                display_frame,
+                (self._bbox_x0, self._bbox_y0, self._bbox_x1, self._bbox_y1),
+                color_bgr=self._bbox_color,
+                offset=self._dlc_tile_offset,
+                scale=self._dlc_tile_scale,
+            )
 
         rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+
         h, w, ch = rgb.shape
         bytes_per_line = ch * w
         image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
@@ -1792,154 +1496,6 @@ class DLCLiveMainWindow(QMainWindow):
         # Force redraw if preview is running
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
-
-    def _draw_bbox(self, frame: np.ndarray) -> np.ndarray:
-        """Draw bounding box on frame (on first camera tile, scaled like pose)."""
-        overlay = frame.copy()
-
-        # Get tile offset and scale (same as pose rendering)
-        offset_x, offset_y = self._dlc_tile_offset
-        scale_x, scale_y = self._dlc_tile_scale
-
-        # Get bbox coordinates in camera pixel space
-        x0 = self._bbox_x0
-        y0 = self._bbox_y0
-        x1 = self._bbox_x1
-        y1 = self._bbox_y1
-
-        # Validate coordinates
-        if x0 >= x1 or y0 >= y1:
-            return overlay
-
-        # Scale and offset to display coordinates
-        x0_scaled = int(x0 * scale_x + offset_x)
-        y0_scaled = int(y0 * scale_y + offset_y)
-        x1_scaled = int(x1 * scale_x + offset_x)
-        y1_scaled = int(y1 * scale_y + offset_y)
-
-        # Clamp to frame boundaries
-        height, width = frame.shape[:2]
-        x0_scaled = max(0, min(x0_scaled, width - 1))
-        y0_scaled = max(0, min(y0_scaled, height - 1))
-        x1_scaled = max(x0_scaled + 1, min(x1_scaled, width))
-        y1_scaled = max(y0_scaled + 1, min(y1_scaled, height))
-
-        # Draw rectangle with configured color
-        cv2.rectangle(overlay, (x0_scaled, y0_scaled), (x1_scaled, y1_scaled), self._bbox_color, 2)
-
-        return overlay
-
-    def _draw_pose(self, frame: np.ndarray, pose: np.ndarray) -> np.ndarray:
-        """Draw pose predictions on frame using colormap.
-
-        Supports both single-animal poses (shape: num_keypoints x 3) and
-        multi-animal poses (shape: num_animals x num_keypoints x 3).
-        """
-        overlay = frame.copy()
-        pose_arr = np.asarray(pose)
-
-        # Get tile offset and scale for multi-camera mode
-        offset_x, offset_y = self._dlc_tile_offset
-        scale_x, scale_y = self._dlc_tile_scale
-
-        # Calculate scaled radius for the keypoint circles
-        base_radius = 4
-        scaled_radius = max(2, int(base_radius * min(scale_x, scale_y)))
-
-        # Get colormap from config
-        cmap = plt.get_cmap(self._colormap)
-
-        # Detect multi-animal pose: shape (num_animals, num_keypoints, 3)
-        # vs single-animal pose: shape (num_keypoints, 3)
-        if pose_arr.ndim == 3:
-            # Multi-animal pose - use different markers per animal
-            num_animals = pose_arr.shape[0]
-            num_keypoints = pose_arr.shape[1]
-            # Cycle through different marker types for each animal
-            marker_types = [
-                cv2.MARKER_CROSS,
-                cv2.MARKER_TILTED_CROSS,
-                cv2.MARKER_STAR,
-                cv2.MARKER_DIAMOND,
-                cv2.MARKER_SQUARE,
-                cv2.MARKER_TRIANGLE_UP,
-                cv2.MARKER_TRIANGLE_DOWN,
-            ]
-            for animal_idx in range(num_animals):
-                marker = marker_types[animal_idx % len(marker_types)]
-                animal_pose = pose_arr[animal_idx]
-                self._draw_keypoints(
-                    overlay,
-                    animal_pose,
-                    num_keypoints,
-                    cmap,
-                    offset_x,
-                    offset_y,
-                    scale_x,
-                    scale_y,
-                    scaled_radius,
-                    marker=marker,
-                )
-        else:
-            # Single-animal pose - use circles (marker=None)
-            num_keypoints = len(pose_arr)
-            self._draw_keypoints(
-                overlay,
-                pose_arr,
-                num_keypoints,
-                cmap,
-                offset_x,
-                offset_y,
-                scale_x,
-                scale_y,
-                scaled_radius,
-                marker=None,
-            )
-
-        return overlay
-
-    def _draw_keypoints(
-        self,
-        overlay: np.ndarray,
-        keypoints: np.ndarray,
-        num_keypoints: int,
-        cmap,
-        offset_x: int,
-        offset_y: int,
-        scale_x: float,
-        scale_y: float,
-        radius: int,
-        marker: int | None = None,
-    ) -> None:
-        """Draw keypoints for a single animal on the overlay.
-
-        Args:
-            marker: OpenCV marker type (e.g., cv2.MARKER_CROSS). If None, draws circles.
-        """
-        for idx, keypoint in enumerate(keypoints):
-            if len(keypoint) < 2:
-                continue
-            x, y = keypoint[:2]
-            confidence = keypoint[2] if len(keypoint) > 2 else 1.0
-            if np.isnan(x) or np.isnan(y):
-                continue
-            if confidence < self._p_cutoff:
-                continue
-
-            # Apply scale and offset for tiled view
-            x_scaled = int(x * scale_x + offset_x)
-            y_scaled = int(y * scale_y + offset_y)
-
-            # Get color from colormap (cycle through 0 to 1)
-            color_normalized = idx / max(num_keypoints - 1, 1)
-            rgba = cmap(color_normalized)
-            # Convert from RGBA [0, 1] to BGR [0, 255] for OpenCV
-            bgr_color = (int(rgba[2] * 255), int(rgba[1] * 255), int(rgba[0] * 255))
-
-            if marker is None:
-                cv2.circle(overlay, (x_scaled, y_scaled), radius, bgr_color, -1)
-            else:
-                cv2.drawMarker(overlay, (x_scaled, y_scaled), bgr_color, marker, radius * 2, 2)
 
     def _on_dlc_initialised(self, success: bool) -> None:
         if success:
@@ -1978,10 +1534,7 @@ class DLCLiveMainWindow(QMainWindow):
             self.multi_camera_controller.stop(wait=True)
 
         # Stop all multi-camera recorders
-        for recorder in self._multi_camera_recorders.values():
-            if recorder.is_running:
-                recorder.stop()
-        self._multi_camera_recorders.clear()
+        self._rec_manager.stop_all()
 
         # Close the camera dialog if open (ensures its worker thread is canceled)
         if getattr(self, "_cam_dialog", None) is not None and self._cam_dialog.isVisible():
@@ -1991,60 +1544,12 @@ class DLCLiveMainWindow(QMainWindow):
                 pass
             self._cam_dialog = None
 
-        self.dlc_processor.shutdown()
+        self._dlc.shutdown()
         if hasattr(self, "_metrics_timer"):
             self._metrics_timer.stop()
 
         # Remember model path on exit
-        self._save_last_model_path(self.model_path_edit.text().strip())
+        self._model_path_store.save_if_valid(self.model_path_edit.text().strip())
 
         # Close the window
         super().closeEvent(event)
-
-
-def main() -> None:
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-
-    # Enable HiDPI pixmaps (optional but recommended)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-
-    app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(LOGO))
-
-    # Load and scale splash pixmap
-    raw_pixmap = QPixmap(SPLASH_SCREEN)
-    splash_width = 600
-
-    if not raw_pixmap.isNull():
-        aspect_ratio = raw_pixmap.width() / raw_pixmap.height()
-        splash_height = int(splash_width / aspect_ratio)
-        scaled_pixmap = raw_pixmap.scaled(
-            splash_width,
-            splash_height,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
-    else:
-        # Fallback: empty pixmap; you can also use a color fill if desired
-        splash_height = 400
-        scaled_pixmap = QPixmap(splash_width, splash_height)
-        scaled_pixmap.fill(Qt.black)
-
-    # Create splash with the *scaled* pixmap
-    splash = QSplashScreen(scaled_pixmap)
-    splash.show()
-
-    # Let the splash breathe without blocking the event loop
-    def show_main():
-        splash.close()
-        window = DLCLiveMainWindow()
-        window.show()
-
-    # Show main window after 1500 ms
-    QTimer.singleShot(1000, show_main)
-
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":  # pragma: no cover - manual start
-    main()
