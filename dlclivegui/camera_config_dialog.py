@@ -6,8 +6,8 @@ import copy
 import logging
 
 import cv2
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFont, QImage, QPixmap, QTextCursor
+from PySide6.QtCore import QEvent, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFont, QImage, QKeyEvent, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -140,6 +140,7 @@ class CameraConfigDialog(QDialog):
         self.setWindowTitle("Configure Cameras")
         self.setMinimumSize(960, 720)
 
+        self._dlc_camera_id = None
         self.dlc_camera_id: str | None = None
         # Actual/working camera settings
         self._multi_camera_settings = multi_camera_settings if multi_camera_settings else MultiCameraSettings()
@@ -400,8 +401,12 @@ class CameraConfigDialog(QDialog):
         # Dialog buttons
         button_layout = QHBoxLayout()
         self.ok_btn = QPushButton("OK")
+        self.ok_btn.setAutoDefault(False)
+        self.ok_btn.setDefault(False)
         self.ok_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOkButton))
         self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setAutoDefault(False)
+        self.cancel_btn.setDefault(False)
         self.cancel_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
         button_layout.addStretch(1)
         button_layout.addWidget(self.ok_btn)
@@ -415,6 +420,25 @@ class CameraConfigDialog(QDialog):
         main_layout.addLayout(panels_layout)
         main_layout.addLayout(button_layout)
 
+        # Pressing enter on any settings field applies settings
+        self.cam_fps.setKeyboardTracking(False)
+        fields = [
+            self.cam_enabled_checkbox,
+            self.cam_fps,
+            self.cam_exposure,
+            self.cam_gain,
+            self.cam_crop_x0,
+            self.cam_crop_y0,
+            self.cam_crop_x1,
+            self.cam_crop_y1,
+        ]
+        for field in fields:
+            if hasattr(field, "lineEdit"):
+                if hasattr(field.lineEdit(), "returnPressed"):
+                    field.lineEdit().returnPressed.connect(self._apply_camera_settings)
+            if hasattr(field, "installEventFilter"):
+                field.installEventFilter(self)
+
     # Maintain overlay geometry when resizing
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -422,9 +446,26 @@ class CameraConfigDialog(QDialog):
             self._position_loading_overlay()
 
     def eventFilter(self, obj, event):
+        # Keep your existing overlay resize handling
         if obj is self.available_cameras_list and event.type() == event.Type.Resize:
             if self._scan_overlay and self._scan_overlay.isVisible():
                 self._position_scan_overlay()
+            return super().eventFilter(obj, event)
+
+        # Intercept Enter in FPS and crop spinboxes
+        if event.type() == QEvent.KeyPress and isinstance(event, QKeyEvent):
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                if obj in (self.cam_fps, self.cam_crop_x0, self.cam_crop_y0, self.cam_crop_x1, self.cam_crop_y1):
+                    # Commit any pending text → value
+                    try:
+                        obj.interpretText()
+                    except Exception:
+                        pass
+                    # Apply settings to persist crop/FPS to CameraSettings
+                    self._apply_camera_settings()
+                    # Consume so OK isn't triggered
+                    return True
+
         return super().eventFilter(obj, event)
 
     def _position_scan_overlay(self) -> None:
@@ -471,6 +512,10 @@ class CameraConfigDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.scan_started.connect(lambda _: setattr(self, "_dialog_active", True))
         self.scan_finished.connect(lambda: setattr(self, "_dialog_active", False))
+        for sb in (self.cam_fps, self.cam_crop_x0, self.cam_crop_y0, self.cam_crop_x1, self.cam_crop_y1):
+            if hasattr(sb, "valueChanged"):
+                sb.valueChanged.connect(lambda _=None: self.apply_settings_btn.setEnabled(True))
+        self.cam_rotation.currentIndexChanged.connect(lambda _: self.apply_settings_btn.setEnabled(True))
 
     def _populate_from_settings(self) -> None:
         """Populate the dialog from existing settings."""
@@ -609,6 +654,7 @@ class CameraConfigDialog(QDialog):
         item = self.active_cameras_list.item(row)
         cam = item.data(Qt.ItemDataRole.UserRole)
         if cam:
+            self.apply_settings_btn.setEnabled(True)
             self._load_camera_to_form(cam)
 
     # -------------------------------
@@ -627,10 +673,15 @@ class CameraConfigDialog(QDialog):
         cam.crop_y1 = int(self.cam_crop_y1.value())
 
     def _needs_preview_reopen(self, cam: CameraSettings) -> bool:
-        """Return True if changes require reopening the backend (non-FPS fields)."""
         if not (self._preview_active and self._preview_backend):
             return False
-        # Compare fields that cannot be applied without reopening
+
+        # FPS: for OpenCV, treat FPS changes as requiring reopen.
+        if self._is_backend_opencv(cam.backend):
+            prev_fps = getattr(self._preview_backend.settings, "fps", None)
+            if isinstance(prev_fps, (int, float)) and abs(cam.fps - float(prev_fps)) > 0.1:
+                return True
+
         return any(
             [
                 cam.exposure != getattr(self._preview_backend.settings, "exposure", cam.exposure),
@@ -647,16 +698,14 @@ class CameraConfigDialog(QDialog):
         )
 
     def _backend_actual_fps(self) -> float | None:
-        """Read backend's reconciled FPS safely (prefers property, falls back to settings)."""
+        """Return backend's actual FPS if known; for OpenCV do NOT fall back to settings.fps."""
         if not self._preview_backend:
             return None
         try:
-            # property-style attribute
             actual = getattr(self._preview_backend, "actual_fps", None)
-            if not actual:
-                # reconciled settings
-                actual = getattr(self._preview_backend.settings, "fps", None)
-            return float(actual) if isinstance(actual, (int, float)) else None
+            if isinstance(actual, (int, float)) and actual > 0:
+                return float(actual)
+            return None
         except Exception:
             return None
 
@@ -668,14 +717,17 @@ class CameraConfigDialog(QDialog):
         self._preview_timer.start(interval_ms)
 
     def _reconcile_fps_from_backend(self, cam: CameraSettings) -> None:
-        """
-        Clamp UI & settings to device-supported FPS when using OpenCV.
-        This implements your snippet but contained in one method.
-        """
+        """Clamp UI/settings to measured device FPS when we can actually measure it."""
         if not self._is_backend_opencv(cam.backend):
             return
+
         actual = self._backend_actual_fps()
-        if isinstance(actual, (int, float)) and actual > 0 and abs(cam.fps - actual) > 0.5:
+        if actual is None:
+            # OpenCV can't reliably report FPS; do not overwrite user's requested value.
+            self._append_status("[Info] OpenCV can't reliably report actual FPS; keeping requested value.")
+            return
+
+        if abs(cam.fps - actual) > 0.5:
             cam.fps = actual
             self.cam_fps.setValue(actual)
             self._append_status(f"[Info] FPS adjusted to device-supported ~{actual:.2f}.")
@@ -805,33 +857,37 @@ class CameraConfigDialog(QDialog):
         self._refresh_camera_labels()
 
     def _apply_camera_settings(self) -> None:
-        if self._current_edit_index is None:
-            return
-        row = self._current_edit_index
-        if row < 0 or row >= len(self._working_settings.cameras):
-            return
+        try:
+            for sb in (self.cam_fps, self.cam_crop_x0, self.cam_crop_y0, self.cam_crop_x1, self.cam_crop_y1):
+                try:
+                    sb.interpretText()
+                except Exception:
+                    pass
+            if self._current_edit_index is None:
+                return
+            row = self._current_edit_index
+            if row < 0 or row >= len(self._working_settings.cameras):
+                return
 
-        cam = self._working_settings.cameras[row]
+            cam = self._working_settings.cameras[row]
+            self._write_form_to_cam(cam)
 
-        # 1) Write form to camera settings
-        self._write_form_to_cam(cam)
-        # 2) Decide if we must reopen (non-FPS changes)
-        must_reopen = self._needs_preview_reopen(cam)
+            must_reopen = self._needs_preview_reopen(cam)
 
-        # 3) If preview is active:
-        if self._preview_active:
-            if must_reopen:
-                # Reopen only when necessary (rotation/crop/exposure/gain)
-                self._stop_preview()
-                self._start_preview()
-            else:
-                # FPS-only change: let backend reconcile & adjust cadence
-                self._reconcile_fps_from_backend(cam)
-                if not self._backend_actual_fps():
-                    self._append_status("[Info] FPS will reconcile automatically during preview.")
+            if self._preview_active:
+                if must_reopen:
+                    self._stop_preview()
+                    self._start_preview()
+                else:
+                    self._reconcile_fps_from_backend(cam)
+                    if not self._backend_actual_fps():
+                        self._append_status("[Info] FPS will reconcile automatically during preview.")
 
-        # 4) Refresh list row
-        self._update_active_list_item(row, cam)
+            self._update_active_list_item(row, cam)
+
+        except Exception as exc:
+            LOGGER.exception("Apply camera settings failed")
+            QMessageBox.warning(self, "Apply Settings Error", str(exc))
 
     def _update_button_states(self) -> None:
         active_row = self.active_cameras_list.currentRow()
@@ -846,7 +902,7 @@ class CameraConfigDialog(QDialog):
 
     def _on_ok_clicked(self) -> None:
         self._stop_preview()
-        active = self._multi_camera_settings.get_active_cameras()
+        active = self._working_settings.get_active_cameras()
         if self._working_settings.cameras and not active:
             QMessageBox.warning(self, "No Active Cameras", "Please enable at least one camera or remove all cameras.")
             return
@@ -1002,13 +1058,6 @@ class CameraConfigDialog(QDialog):
             else:
                 raise TypeError(f"Unexpected success payload type: {type(payload)}")
 
-            # FPS reconciliation + cadence (single source of truth)
-            actual_fps = self._backend_actual_fps()
-            if isinstance(actual_fps, (int, float)) and actual_fps > 0:
-                self.cam_fps.setValue(actual_fps)
-                self._append_status(f"Camera opened at ~{actual_fps:.2f} FPS.")
-                self._adjust_preview_timer_for_fps(actual_fps)
-
             # Start preview UX
             self._append_status("Starting preview…")
             self._preview_active = True
@@ -1023,26 +1072,44 @@ class CameraConfigDialog(QDialog):
             self._preview_timer.timeout.connect(self._update_preview)
             self._preview_timer.start(40)
 
+            # FPS reconciliation + cadence (single source of truth)
+            actual_fps = self._backend_actual_fps()
+            if actual_fps:
+                self._adjust_preview_timer_for_fps(actual_fps)
+
+            self.apply_settings_btn.setEnabled(True)
         except Exception as exc:
             self._on_loader_error(str(exc))
 
     def _on_loader_error(self, error: str) -> None:
         self._append_status(f"Error: {error}")
-        LOGGER.error(f"Failed to start preview: {error}")
-        QMessageBox.warning(self, "Preview Error", f"Failed to start camera preview:\n{error}")
+        LOGGER.exception("Failed to start preview")
+        self._preview_active = False
+        self._loading_active = False
         self._hide_loading_overlay()
         self.preview_group.setVisible(False)
+        self._set_preview_button_loading(False)
+        self._update_button_states()
+        QMessageBox.warning(self, "Preview Error", f"Failed to start camera preview:\n{error}")
 
     def _on_loader_canceled(self) -> None:
         self._append_status("Loading canceled.")
         self._hide_loading_overlay()
 
-    def _on_loader_finished(self) -> None:
-        # Reset loading state and preview button iff not already running preview
+    def _on_loader_finished(self):
         self._loading_active = False
-        if not self._preview_active:
-            self._set_preview_button_loading(False)
         self._loader = None
+
+        # If preview ended successfully, ensure Stop Preview is shown
+        if self._preview_active:
+            self.preview_btn.setText("Stop Preview")
+            self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        else:
+            # Otherwise show Start Preview
+            self.preview_btn.setText("Start Preview")
+            self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+
+        # ALWAYS refresh button states
         self._update_button_states()
 
     # -------------------------------

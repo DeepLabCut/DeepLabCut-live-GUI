@@ -12,7 +12,8 @@ import numpy as np
 
 from .base import CameraBackend
 
-LOG = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # FIXME @C-Achard remove before release
 
 
 class OpenCVCameraBackend(CameraBackend):
@@ -76,7 +77,7 @@ class OpenCVCameraBackend(CameraBackend):
             and platform.system() == "Windows"
             and self._alt_index_probe
         ):
-            LOG.debug("Primary index failed; trying alternate endpoint (index+1) with same backend.")
+            logger.debug("Primary index failed; trying alternate endpoint (index+1) with same backend.")
             self._capture = self._try_open(index + 1, backend_flag)
 
         if not self._capture or not self._capture.isOpened():
@@ -87,7 +88,7 @@ class OpenCVCameraBackend(CameraBackend):
         # MSMF hint for slow systems
         if platform.system() == "Windows" and backend_flag == getattr(cv2, "CAP_MSMF", cv2.CAP_ANY):
             if os.environ.get("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS") is None:
-                LOG.debug(
+                logger.debug(
                     "MSMF selected. If open is slow, consider setting "
                     "OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS=0 before importing cv2."
                 )
@@ -97,7 +98,7 @@ class OpenCVCameraBackend(CameraBackend):
     def read(self) -> tuple[np.ndarray | None, float]:
         """Robust frame read: return (None, ts) on transient failures; never raises."""
         if self._capture is None:
-            LOG.warning("OpenCVCameraBackend.read() called before open()")
+            logger.warning("OpenCVCameraBackend.read() called before open()")
             return None, time.time()
         try:
             if not self._capture.grab():
@@ -107,7 +108,7 @@ class OpenCVCameraBackend(CameraBackend):
                 return None, time.time()
             return frame, time.time()
         except Exception as exc:
-            LOG.debug(f"OpenCV read transient error: {exc}")
+            logger.debug(f"OpenCV read transient error: {exc}")
             return None, time.time()
 
     def close(self) -> None:
@@ -160,7 +161,7 @@ class OpenCVCameraBackend(CameraBackend):
             try:
                 return (int(resolution[0]), int(resolution[1]))
             except (ValueError, TypeError):
-                LOG.debug(f"Invalid resolution values: {resolution}, defaulting to 720x540")
+                logger.debug(f"Invalid resolution values: {resolution}, defaulting to 720x540")
                 return (720, 540)
         return (720, 540)
 
@@ -169,7 +170,7 @@ class OpenCVCameraBackend(CameraBackend):
         if platform.system() == "Windows":
             if (width, height) in self.UVC_FALLBACK_MODES:
                 return (width, height)
-            LOG.debug(f"Normalizing unsupported resolution {width}x{height} to 1280x720 on Windows.")
+            logger.debug(f"Normalizing unsupported resolution {width}x{height} to 1280x720 on Windows.")
             return self.UVC_FALLBACK_MODES[0]
         return (width, height)
 
@@ -222,13 +223,13 @@ class OpenCVCameraBackend(CameraBackend):
 
         # --- FOURCC (Windows benefits from setting this first) ---
         self._codec_str = self._read_codec_string()
-        LOG.info(f"Camera using codec: {self._codec_str}")
+        logger.info(f"Camera using codec: {self._codec_str}")
 
         if platform.system() == "Windows" and not self._mjpg_attempted:
             self._maybe_enable_mjpg()
             self._mjpg_attempted = True
             self._codec_str = self._read_codec_string()
-            LOG.info(f"Camera codec after MJPG attempt: {self._codec_str}")
+            logger.info(f"Camera codec after MJPG attempt: {self._codec_str}")
 
         # --- Resolution (normalize non-standard on Windows) ---
         req_w, req_h = self._resolution
@@ -245,14 +246,14 @@ class OpenCVCameraBackend(CameraBackend):
         # Handle mismatch quickly with a few known-good UVC fallbacks (Windows only)
         if platform.system() == "Windows" and self._actual_width and self._actual_height:
             if (self._actual_width, self._actual_height) != (req_w, req_h) and not self._fast_start:
-                LOG.warning(
+                logger.warning(
                     f"Resolution mismatch: requested {req_w}x{req_h}, got {self._actual_width}x{self._actual_height}"
                 )
                 for fw, fh in self.UVC_FALLBACK_MODES:
                     if (fw, fh) == (self._actual_width, self._actual_height):
                         break  # already at a fallback
                     if self._set_resolution_if_needed(fw, fh, reconfigure_only=True):
-                        LOG.info(f"Switched to supported resolution {fw}x{fh}")
+                        logger.info(f"Switched to supported resolution {fw}x{fh}")
                         self._actual_width, self._actual_height = fw, fh
                         break
                 self._resolution = (self._actual_width or req_w, self._actual_height or req_h)
@@ -260,7 +261,7 @@ class OpenCVCameraBackend(CameraBackend):
             # Non-Windows: accept actual as-is
             self._resolution = (self._actual_width or req_w, self._actual_height or req_h)
 
-        LOG.info(f"Camera configured with resolution: {self._resolution[0]}x{self._resolution[1]}")
+        logger.info(f"Camera configured with resolution: {self._resolution[0]}x{self._resolution[1]}")
 
         # --- FPS ---
         requested_fps = float(self.settings.fps or 0.0)
@@ -268,19 +269,25 @@ class OpenCVCameraBackend(CameraBackend):
             current_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
             if current_fps <= 0.0 or abs(current_fps - requested_fps) > 0.1:
                 if not self._capture.set(cv2.CAP_PROP_FPS, requested_fps):
-                    LOG.debug(f"Device ignored FPS set to {requested_fps:.2f}")
+                    logger.debug(f"Device ignored FPS set to {requested_fps:.2f}")
             self._actual_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
         else:
             self._actual_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
 
         # Log any mismatch
         if self._actual_fps and requested_fps and abs(self._actual_fps - requested_fps) > 0.1:
-            LOG.warning(f"FPS mismatch: requested {requested_fps:.2f}, got {self._actual_fps:.2f}")
+            logger.warning(f"FPS mismatch: requested {requested_fps:.2f}, got {self._actual_fps:.2f}")
 
         # Always reconcile the settings with what we measured/obtained
         if self._actual_fps:
             self.settings.fps = float(self._actual_fps)
-            LOG.info(f"Camera configured with FPS: {self._actual_fps:.2f}")
+            logger.info(f"Camera configured with FPS: {self._actual_fps:.2f}")
+        logger.debug(
+            "CAP_PROP_FPS requested=%s set_ok=%s get=%s",
+            self.settings.fps,
+            self._capture.set(cv2.CAP_PROP_FPS, float(self.settings.fps)),
+            self._capture.get(cv2.CAP_PROP_FPS),
+        )
 
         # --- Extra properties (safe whitelist) ---
         for prop, value in self.settings.properties.items():
@@ -289,16 +296,16 @@ class OpenCVCameraBackend(CameraBackend):
             try:
                 prop_id = int(prop)
             except (TypeError, ValueError):
-                LOG.debug(f"Ignoring non-numeric property ID: {prop}")
+                logger.debug(f"Ignoring non-numeric property ID: {prop}")
                 continue
             if prop_id not in self.SAFE_PROP_IDS:
-                LOG.debug(f"Skipping unsupported/unsafe property {prop_id}")
+                logger.debug(f"Skipping unsupported/unsafe property {prop_id}")
                 continue
             try:
                 if not self._capture.set(prop_id, float(value)):
-                    LOG.debug(f"Device ignored property {prop_id} -> {value}")
+                    logger.debug(f"Device ignored property {prop_id} -> {value}")
             except Exception as exc:
-                LOG.debug(f"Failed to set property {prop_id} -> {value}: {exc}")
+                logger.debug(f"Failed to set property {prop_id} -> {value}: {exc}")
 
     # ----------------------------
     # Lower-level helpers
@@ -322,13 +329,13 @@ class OpenCVCameraBackend(CameraBackend):
             if self._capture.set(cv2.CAP_PROP_FOURCC, fourcc_mjpg):
                 verify = self._read_codec_string()
                 if verify and verify.upper().startswith("MJPG"):
-                    LOG.info("MJPG enabled successfully.")
+                    logger.info("MJPG enabled successfully.")
                 else:
-                    LOG.debug(f"MJPG set reported success, but codec is '{verify}'")
+                    logger.debug(f"MJPG set reported success, but codec is '{verify}'")
             else:
-                LOG.debug("Device rejected MJPG FourCC set.")
+                logger.debug("Device rejected MJPG FourCC set.")
         except Exception as exc:
-            LOG.debug(f"MJPG enable attempt raised: {exc}")
+            logger.debug(f"MJPG enable attempt raised: {exc}")
 
     def _set_resolution_if_needed(self, width: int, height: int, reconfigure_only: bool = False) -> bool:
         """Set width/height only if different.
@@ -344,9 +351,9 @@ class OpenCVCameraBackend(CameraBackend):
             set_w_ok = self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
             set_h_ok = self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
             if not set_w_ok:
-                LOG.debug(f"Failed to set frame width to {width}")
+                logger.debug(f"Failed to set frame width to {width}")
             if not set_h_ok:
-                LOG.debug(f"Failed to set frame height to {height}")
+                logger.debug(f"Failed to set frame height to {height}")
 
         try:
             self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
