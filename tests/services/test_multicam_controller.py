@@ -1,8 +1,9 @@
 # tests/services/test_multicam_controller.py
 import pytest
 
+from dlclivegui.cameras.factory import CameraFactory
 from dlclivegui.config import CameraSettings
-from dlclivegui.services.multi_camera_controller import MultiCameraController
+from dlclivegui.services.multi_camera_controller import MultiCameraController, get_camera_id
 
 
 @pytest.mark.unit
@@ -34,3 +35,60 @@ def test_start_and_frames(qtbot, patch_factory):
     finally:
         with qtbot.waitSignal(mc.all_stopped, timeout=2000):
             mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_rotation_and_crop(qtbot, patch_factory):
+    mc = MultiCameraController()
+
+    # 64x48 frame; rotate 90 => 48x64 then crop to 32x32 box
+    cam = CameraSettings(
+        name="C",
+        backend="opencv",
+        index=0,
+        enabled=True,
+        rotation=90,
+        crop_x0=0,
+        crop_y0=0,
+        crop_x1=32,
+        crop_y1=32,
+    ).apply_defaults()
+
+    last_shape = {"shape": None}
+
+    def on_ready(mfd):
+        f = mfd.frames.get(get_camera_id(cam))
+        if f is not None:
+            last_shape["shape"] = f.shape
+
+    mc.frame_ready.connect(on_ready)
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([cam])
+
+        # Wait until a rotated+cropped frame arrives
+        qtbot.waitUntil(lambda: last_shape["shape"] is not None, timeout=2000)
+
+        # Expect height=32, width=32, 3 channels
+        assert last_shape["shape"] == (32, 32, 3)
+
+    finally:
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_initialization_failure(qtbot, monkeypatch):
+    # Make factory.create raise
+    def _create(_settings):
+        raise RuntimeError("no device")
+
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(_create))
+
+    mc = MultiCameraController()
+    cam = CameraSettings(name="C", backend="opencv", index=0, enabled=True)
+
+    # Expect initialization_failed with the camera id
+    with qtbot.waitSignals([mc.initialization_failed, mc.all_stopped], timeout=2000) as _:
+        mc.start([cam])
