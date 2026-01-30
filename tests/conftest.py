@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 
+from dlclivegui.cameras import CameraFactory
+from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.utils.config_models import DLCProcessorSettingsModel
 
@@ -30,9 +34,45 @@ class FakeDLCLive:
         return np.ones((2, 2), dtype=float)
 
 
+class FakeBackend(CameraBackend):
+    def __init__(self, settings):
+        super().__init__(settings)
+        self._opened = False
+        self._counter = 0
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return True
+
+    def open(self) -> None:
+        self._opened = True
+
+    def read(self):
+        # Produce a deterministic small frame
+        if not self._opened:
+            raise RuntimeError("not opened")
+        self._counter += 1
+        frame = np.zeros((48, 64, 3), dtype=np.uint8)
+        ts = time.time()
+        return frame, ts
+
+    def close(self) -> None:
+        self._opened = False
+
+    def stop(self) -> None:
+        pass
+
+
 # ---------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------
+@pytest.fixture
+def patch_factory(monkeypatch):
+    def _create(settings):
+        return FakeBackend(settings)
+
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(_create))
+    return _create
 
 
 @pytest.fixture
