@@ -29,6 +29,9 @@ def test_fake_backend_e2e():
         def close(self):
             self._opened = False
 
+        def stop(self):
+            pass
+
     mod.FakeBackend = FakeBackend
     sys.modules["fake_mod"] = mod
     base.register_backend_direct("fake2", FakeBackend)

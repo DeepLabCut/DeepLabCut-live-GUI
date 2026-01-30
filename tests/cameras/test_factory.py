@@ -9,41 +9,6 @@ from dlclivegui.config import CameraSettings
 
 
 @pytest.mark.unit
-def test_create_uses_backend_class():
-    """Ensure CameraFactory.create instantiates correct backend class."""
-
-    # Create fake module + backend class
-    fake_mod = types.ModuleType("fake_backend_mod")
-
-    class FakeBackend(base.CameraBackend):
-        opened = False
-        closed = False
-
-        def open(self):
-            FakeBackend.opened = True
-
-        def read(self):
-            return None, 0.0
-
-        def close(self):
-            FakeBackend.closed = True
-
-    fake_mod.FakeBackend = FakeBackend
-    sys.modules["fake_backend_mod"] = fake_mod
-    base.register_backend_direct("fake", FakeBackend)
-
-    settings = CameraSettings(backend="fake", index=0)
-    backend = CameraFactory.create(settings)
-
-    assert isinstance(backend, FakeBackend)
-    backend.open()
-    backend.close()
-
-    assert FakeBackend.opened is True
-    assert FakeBackend.closed is True
-
-
-@pytest.mark.unit
 def test_check_camera_available_quick_ping():
     mod = types.ModuleType("mock_mod")
 
@@ -97,6 +62,9 @@ def test_detect_cameras():
             return None, 0
 
         def close(self):
+            pass
+
+        def stop(self):
             pass
 
     mod.DetectBackend = DetectBackend

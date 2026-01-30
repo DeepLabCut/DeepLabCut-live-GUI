@@ -406,7 +406,11 @@ class DLCLiveProcessor(QObject):
                 logger.exception("Pose inference failed", exc_info=exc)
                 self.error.emit(str(exc))
             finally:
-                self._queue.task_done()
+                if item is not _SENTINEL:
+                    try:
+                        self._queue.task_done()
+                    except ValueError:
+                        pass
 
         logger.info("DLC worker thread exiting")
 
