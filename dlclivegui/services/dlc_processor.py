@@ -3,7 +3,6 @@
 # dlclivegui/services/dlc_processor.py
 from __future__ import annotations
 
-import copy
 import logging
 import queue
 import threading
@@ -15,7 +14,7 @@ from typing import Any
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from dlclivegui.config import DLCProcessorSettings
+# from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.processors.processor_utils import instantiate_from_scan
 from dlclivegui.utils.config_models import DLCProcessorSettingsModel
 
@@ -31,9 +30,7 @@ except Exception as e:  # pragma: no cover - handled gracefully
     DLCLive = None  # type: ignore[assignment]
 
 
-def ensure_dc_dlc(settings: DLCProcessorSettings | DLCProcessorSettingsModel) -> DLCProcessorSettings:
-    if isinstance(settings, DLCProcessorSettings):
-        return copy.deepcopy(settings)
+def ensure_dc_dlc(settings: DLCProcessorSettingsModel) -> DLCProcessorSettingsModel:
     if isinstance(settings, DLCProcessorSettingsModel):
         settings = DLCProcessorSettingsModel.model_validate(settings)
         data = settings.model_dump()
@@ -43,7 +40,7 @@ def ensure_dc_dlc(settings: DLCProcessorSettings | DLCProcessorSettingsModel) ->
             data["dynamic"] = (dyn.enabled, dyn.margin, dyn.max_missing_frames)
         elif isinstance(dyn, dict) and {"enabled", "margin", "max_missing_frames"} <= set(dyn):
             data["dynamic"] = (dyn["enabled"], dyn["margin"], dyn["max_missing_frames"])
-        return DLCProcessorSettings(**data)
+        return DLCProcessorSettingsModel(**data)
     raise TypeError("Unsupported DLC settings type")
 
 
@@ -86,7 +83,7 @@ class DLCLiveProcessor(QObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self._settings = DLCProcessorSettings()
+        self._settings = DLCProcessorSettingsModel()
         self._dlc: Any | None = None
         self._processor: Any | None = None
         self._queue: queue.Queue[Any] | None = None
@@ -110,9 +107,7 @@ class DLCLiveProcessor(QObject):
         self._gpu_inference_times: deque[float] = deque(maxlen=60)
         self._processor_overhead_times: deque[float] = deque(maxlen=60)
 
-    def configure(
-        self, settings: DLCProcessorSettings | DLCProcessorSettingsModel, processor: Any | None = None
-    ) -> None:
+    def configure(self, settings: DLCProcessorSettingsModel, processor: Any | None = None) -> None:
         self._settings = ensure_dc_dlc(settings)
         self._processor = processor
 
@@ -444,7 +439,7 @@ class DLCService:
     def enqueue(self, frame, ts):
         self._proc.enqueue_frame(frame, ts)
 
-    def configure(self, settings: DLCProcessorSettings, scanned_processors: dict, selected_key) -> bool:
+    def configure(self, settings: DLCProcessorSettingsModel, scanned_processors: dict, selected_key) -> bool:
         processor = None
         if selected_key is not None and scanned_processors:
             try:

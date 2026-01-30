@@ -5,27 +5,34 @@ import pytest
 from PySide6.QtCore import Qt
 
 from dlclivegui.cameras import CameraFactory
-from dlclivegui.config import (
-    DEFAULT_CONFIG,
-    ApplicationSettings,
-    CameraSettings,
-    MultiCameraSettings,
-)
 from dlclivegui.gui.main_window import DLCLiveMainWindow
+
+# from dlclivegui.config import (
+#     DEFAULT_CONFIG,
+#     ApplicationSettings,
+#     CameraSettings,
+#     MultiCameraSettings,
+# )
+from dlclivegui.utils.config_models import (
+    DEFAULT_CONFIG,
+    ApplicationSettingsModel,
+    CameraSettingsModel,
+    MultiCameraSettingsModel,
+)
 from tests.conftest import FakeBackend, FakeDLCLive  # noqa: F401
 
 # ---------- Test helpers: application configuration with two fake cameras ----------
 
 
 @pytest.fixture
-def app_config_two_cams(tmp_path) -> ApplicationSettings:
+def app_config_two_cams(tmp_path) -> ApplicationSettingsModel:
     """An app config with two enabled cameras (fake backend) and writable recording dir."""
-    cfg = ApplicationSettings.from_dict(DEFAULT_CONFIG.to_dict())
+    cfg = ApplicationSettingsModel.from_dict(DEFAULT_CONFIG.to_dict())
 
-    cam_a = CameraSettings(name="CamA", backend="fake", index=0, enabled=True, fps=30.0)
-    cam_b = CameraSettings(name="CamB", backend="fake", index=1, enabled=True, fps=30.0)
+    cam_a = CameraSettingsModel(name="CamA", backend="fake", index=0, enabled=True, fps=30.0)
+    cam_b = CameraSettingsModel(name="CamB", backend="fake", index=1, enabled=True, fps=30.0)
 
-    cfg.multi_camera = MultiCameraSettings(cameras=[cam_a, cam_b], max_cameras=4, tile_layout="auto")
+    cfg.multi_camera = MultiCameraSettingsModel(cameras=[cam_a, cam_b], max_cameras=4, tile_layout="auto")
     cfg.camera = cam_a  # kept for backward-compat single-camera access in UI
 
     cfg.recording.directory = str(tmp_path / "videos")
@@ -43,7 +50,7 @@ def _patch_camera_factory(monkeypatch):
     We patch at the central creation point used by the controller.
     """
 
-    def _create_stub(settings: CameraSettings):
+    def _create_stub(settings: CameraSettingsModel):
         # FakeBackend ignores 'backend' and produces deterministic frames
         return FakeBackend(settings)
 

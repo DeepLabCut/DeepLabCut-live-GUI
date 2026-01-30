@@ -75,6 +75,9 @@ def temp_backends_pkg(tmp_path, monkeypatch):
         monkeypatch.setattr(cam_factory, "_BACKENDS_IMPORTED", False, raising=False)
         monkeypatch.setattr(cam_factory, "_BUILTIN_BACKEND_PACKAGES", (pkg_name,), raising=False)
 
+        sys.modules.pop(pkg_name, None)
+        sys.modules.pop(f"{pkg_name}.fake_backend", None)
+
         yield pkg_name
     finally:
         # Cleanup sys.path

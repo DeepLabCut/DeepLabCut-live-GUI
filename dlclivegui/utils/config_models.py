@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-Backend = Literal["gentl", "opencv", "basler", "aravis"]  # extend as needed
 Rotation = Literal[0, 90, 180, 270]
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
 Precision = Literal["FP32", "FP16"]
@@ -17,7 +16,7 @@ class CameraSettingsModel(BaseModel):
     name: str = "Camera 0"
     index: int = 0
     fps: float = 25.0
-    backend: Backend = "gentl"
+    backend: str = "opencv"
     exposure: int = 500  # 0=auto else µs
     gain: float = 10.0  # 0.0=auto else value
     crop_x0: int = 0
@@ -60,8 +59,19 @@ class CameraSettingsModel(BaseModel):
         return (self.crop_x0, self.crop_y0, self.crop_x1, self.crop_y1)
 
     @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CameraSettingsModel:
+        return cls(**data)
+
+    @classmethod
     def from_defaults(cls) -> CameraSettingsModel:
         return cls()
+
+    def apply_defaults(self) -> CameraSettingsModel:
+        default = self.from_defaults()
+        for field in CameraSettingsModel.model_fields:
+            if getattr(self, field) in (None, 0, 0.0):
+                setattr(self, field, getattr(default, field))
+        return self
 
 
 class MultiCameraSettingsModel(BaseModel):

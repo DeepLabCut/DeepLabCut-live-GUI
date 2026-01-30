@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
 from dataclasses import dataclass
 from threading import Event, Lock
 
@@ -14,31 +13,11 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
-from dlclivegui.cameras.config_adapters import CameraSettingsLike, ensure_dc_camera
-from dlclivegui.config import CameraSettings
-from dlclivegui.utils.config_models import MultiCameraSettingsModel
+
+# from dlclivegui.config import CameraSettings
+from dlclivegui.utils.config_models import CameraSettingsModel
 
 LOGGER = logging.getLogger(__name__)
-
-
-def list_of_dc_cameras(
-    payload: Sequence[CameraSettingsLike] | MultiCameraSettingsModel,
-) -> list[CameraSettings]:
-    """
-    Convert either:
-      - a list/tuple of CameraSettingsLike, or
-      - a MultiCameraSettingsModel
-    into a list[CameraSettings] (dataclass), applying defaults.
-    """
-    if MultiCameraSettingsModel is not None and isinstance(payload, MultiCameraSettingsModel):
-        # Use only enabled cameras (honor the model’s method)
-        cams = payload.get_active_cameras()
-        return [ensure_dc_camera(c) for c in cams]
-
-    if isinstance(payload, (list, tuple)):
-        return [ensure_dc_camera(c) for c in payload]
-
-    raise TypeError("Expected a list of CameraSettings-like objects or MultiCameraSettingsModel.")
 
 
 @dataclass
@@ -59,10 +38,10 @@ class SingleCameraWorker(QObject):
     started = Signal(str)  # camera_id
     stopped = Signal(str)  # camera_id
 
-    def __init__(self, camera_id: str, settings: CameraSettingsLike):
+    def __init__(self, camera_id: str, settings: CameraSettingsModel):
         super().__init__()
         self._camera_id = camera_id
-        self._settings = ensure_dc_camera(settings)
+        self._settings = settings
         self._stop_event = Event()
         self._backend: CameraBackend | None = None
         self._max_consecutive_errors = 5
@@ -122,10 +101,9 @@ class SingleCameraWorker(QObject):
         self._stop_event.set()
 
 
-def get_camera_id(settings: CameraSettingsLike) -> str:
+def get_camera_id(settings: CameraSettingsModel) -> str:
     """Generate a unique camera ID from settings."""
-    dc = ensure_dc_camera(settings)
-    return f"{dc.backend}:{dc.index}"
+    return f"{settings.backend}:{settings.index}"
 
 
 class MultiCameraController(QObject):
@@ -146,7 +124,7 @@ class MultiCameraController(QObject):
         super().__init__()
         self._workers: dict[str, SingleCameraWorker] = {}
         self._threads: dict[str, QThread] = {}
-        self._settings: dict[str, CameraSettings] = {}
+        self._settings: dict[str, CameraSettingsModel] = {}
         self._frames: dict[str, np.ndarray] = {}
         self._timestamps: dict[str, float] = {}
         self._frame_lock = Lock()
@@ -163,20 +141,13 @@ class MultiCameraController(QObject):
         """Get the number of active cameras."""
         return len(self._started_cameras)
 
-    def start(self, camera_settings: list[CameraSettingsLike]) -> None:
+    def start(self, camera_settings: list[CameraSettingsModel]) -> None:
         """Start multiple cameras; accepts dataclasses, pydantic models, or dicts."""
         if self._running:
             LOGGER.warning("Multi-camera controller already running")
             return
 
-        # Normalize and limit
-        try:
-            dc_list = list_of_dc_cameras(camera_settings)
-        except TypeError:
-            # fallback if plain list contained dataclasses or dicts only
-            dc_list = [ensure_dc_camera(cs) for cs in camera_settings]
-
-        active_settings = [s for s in dc_list if s.enabled][: self.MAX_CAMERAS]
+        active_settings = [s for s in camera_settings if s.enabled][: self.MAX_CAMERAS]
         if not active_settings:
             LOGGER.warning("No active cameras to start")
             return
@@ -191,7 +162,7 @@ class MultiCameraController(QObject):
         for settings in active_settings:
             self._start_camera(settings)
 
-    def _start_camera(self, settings: CameraSettingsLike) -> None:
+    def _start_camera(self, settings: CameraSettingsModel) -> None:
         """Start a single camera."""
         cam_id = get_camera_id(settings)
         if cam_id in self._workers:
@@ -199,9 +170,8 @@ class MultiCameraController(QObject):
             return
 
         # Normalize and store the dataclass once
-        dc = ensure_dc_camera(settings)
-        self._settings[cam_id] = dc
-
+        self._settings[cam_id] = settings
+        dc = self._settings[cam_id]
         worker = SingleCameraWorker(cam_id, dc)
         thread = QThread()
         worker.moveToThread(thread)

@@ -1,24 +1,17 @@
 import numpy as np
 import pytest
 
-from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.services.dlc_processor import (
     DLCLiveProcessor,
     ProcessorStats,
 )
 
+# from dlclivegui.config import DLCProcessorSettings
+from dlclivegui.utils.config_models import DLCProcessorSettingsModel
+
 # ---------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_configure_accepts_dataclass(settings_dc, monkeypatch_dlclive):
-    proc = DLCLiveProcessor()
-    proc.configure(settings_dc)
-
-    assert proc._settings.model_path == "dummy.pt"
-    assert proc._processor is None
 
 
 @pytest.mark.unit
@@ -27,14 +20,14 @@ def test_configure_accepts_pydantic(settings_model, monkeypatch_dlclive):
     proc.configure(settings_model)
 
     # Should have normalized to dataclass internally
-    assert isinstance(proc._settings, DLCProcessorSettings)
+    assert isinstance(proc._settings, DLCProcessorSettingsModel)
     assert proc._settings.model_path == "dummy.pt"
 
 
 @pytest.mark.unit
-def test_worker_initializes_on_first_frame(qtbot, monkeypatch_dlclive, settings_dc):
+def test_worker_initializes_on_first_frame(qtbot, monkeypatch_dlclive, settings_model):
     proc = DLCLiveProcessor()
-    proc.configure(settings_dc)
+    proc.configure(settings_model)
 
     try:
         # First enqueued frame triggers worker start + initialization.
@@ -53,9 +46,9 @@ def test_worker_initializes_on_first_frame(qtbot, monkeypatch_dlclive, settings_
 
 
 @pytest.mark.unit
-def test_worker_processes_frames(qtbot, monkeypatch_dlclive, settings_dc):
+def test_worker_processes_frames(qtbot, monkeypatch_dlclive, settings_model):
     proc = DLCLiveProcessor()
-    proc.configure(settings_dc)
+    proc.configure(settings_model)
 
     try:
         frame = np.zeros((64, 64, 3), dtype=np.uint8)
@@ -80,9 +73,9 @@ def test_worker_processes_frames(qtbot, monkeypatch_dlclive, settings_dc):
 
 
 @pytest.mark.unit
-def test_queue_full_drops_frames(qtbot, monkeypatch_dlclive, settings_dc):
+def test_queue_full_drops_frames(qtbot, monkeypatch_dlclive, settings_model):
     proc = DLCLiveProcessor()
-    proc.configure(settings_dc)
+    proc.configure(settings_model)
 
     try:
         frame = np.zeros((32, 32, 3), dtype=np.uint8)
@@ -116,7 +109,7 @@ def test_error_signal_on_initialization_failure(qtbot, monkeypatch):
     monkeypatch.setattr(dlc_processor, "DLCLive", FailingDLCLive)
 
     proc = DLCLiveProcessor()
-    proc.configure(DLCProcessorSettings(model_path="fail.pt"))
+    proc.configure(DLCProcessorSettingsModel(model_path="fail.pt"))
 
     try:
         frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -141,9 +134,9 @@ def test_error_signal_on_initialization_failure(qtbot, monkeypatch):
 
 
 @pytest.mark.unit
-def test_stats_computation(qtbot, monkeypatch_dlclive, settings_dc):
+def test_stats_computation(qtbot, monkeypatch_dlclive, settings_model):
     proc = DLCLiveProcessor()
-    proc.configure(settings_dc)
+    proc.configure(settings_model)
 
     try:
         frame = np.zeros((64, 64, 3), dtype=np.uint8)

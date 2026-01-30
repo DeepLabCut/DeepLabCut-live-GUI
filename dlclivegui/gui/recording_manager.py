@@ -6,9 +6,11 @@ import time
 
 import numpy as np
 
-from dlclivegui.config import CameraSettings, RecordingSettings
 from dlclivegui.services.multi_camera_controller import get_camera_id
 from dlclivegui.services.video_recorder import RecorderStats, VideoRecorder
+
+# from dlclivegui.config import CameraSettings, RecordingSettings
+from dlclivegui.utils.config_models import CameraSettingsModel, RecordingSettingsModel
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +33,10 @@ class RecordingManager:
         return self._recorders.pop(cam_id, default)
 
     def start_all(
-        self, recording: RecordingSettings, active_cams: list[CameraSettings], current_frames: dict[str, np.ndarray]
+        self,
+        recording: RecordingSettingsModel,
+        active_cams: list[CameraSettingsModel],
+        current_frames: dict[str, np.ndarray],
     ) -> None:
         if self._recorders:
             return

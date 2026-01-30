@@ -6,7 +6,9 @@ import numpy as np
 import pytest
 
 from dlclivegui.cameras import CameraFactory, base
-from dlclivegui.config import CameraSettings
+
+# from dlclivegui.config import CameraSettings
+from dlclivegui.utils.config_models import CameraSettingsModel
 
 
 @pytest.mark.functional
@@ -36,7 +38,7 @@ def test_fake_backend_e2e():
     sys.modules["fake_mod"] = mod
     base.register_backend_direct("fake2", FakeBackend)
 
-    s = CameraSettings(backend="fake2", name="X")
+    s = CameraSettingsModel(backend="fake2", name="X")
     cam = CameraFactory.create(s)
     cam.open()
     frame, ts = cam.read()

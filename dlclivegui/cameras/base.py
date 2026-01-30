@@ -63,11 +63,10 @@ class CameraBackend(ABC):
         """Return whether the backend can be used on this system."""
         return True
 
-    @abstractmethod
-    def stop(self) -> None:
-        """Request a graceful stop."""
+    def stop(self) -> None:  # noqa B027
+        """Optional: Request a graceful stop. No-op by default."""
         # Subclasses may override when they need to interrupt blocking reads.
-        raise NotImplementedError
+        pass
 
     def device_name(self) -> str:
         """Return a human readable name for the device currently in use."""

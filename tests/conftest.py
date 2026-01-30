@@ -9,7 +9,8 @@ import pytest
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
-from dlclivegui.config import DLCProcessorSettings
+
+# from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.utils.config_models import DLCProcessorSettingsModel
 
 # ---------------------------------------------------------------------
@@ -86,12 +87,6 @@ def monkeypatch_dlclive(monkeypatch):
 
     monkeypatch.setattr(dlc_processor, "DLCLive", FakeDLCLive)
     return FakeDLCLive
-
-
-@pytest.fixture
-def settings_dc():
-    """A standard DLCProcessorSettings dataclass for tests."""
-    return DLCProcessorSettings(model_path="dummy.pt")
 
 
 @pytest.fixture
