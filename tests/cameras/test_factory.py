@@ -1,0 +1,109 @@
+# tests/cameras/test_factory_basic.py
+import sys
+import types
+
+import pytest
+
+from dlclivegui.cameras import CameraFactory, DetectedCamera, base
+from dlclivegui.config import CameraSettings
+
+
+@pytest.mark.unit
+def test_create_uses_backend_class():
+    """Ensure CameraFactory.create instantiates correct backend class."""
+
+    # Create fake module + backend class
+    fake_mod = types.ModuleType("fake_backend_mod")
+
+    class FakeBackend(base.CameraBackend):
+        opened = False
+        closed = False
+
+        def open(self):
+            FakeBackend.opened = True
+
+        def read(self):
+            return None, 0.0
+
+        def close(self):
+            FakeBackend.closed = True
+
+    fake_mod.FakeBackend = FakeBackend
+    sys.modules["fake_backend_mod"] = fake_mod
+    base.register_backend_direct("fake", FakeBackend)
+
+    settings = CameraSettings(backend="fake", index=0)
+    backend = CameraFactory.create(settings)
+
+    assert isinstance(backend, FakeBackend)
+    backend.open()
+    backend.close()
+
+    assert FakeBackend.opened is True
+    assert FakeBackend.closed is True
+
+
+@pytest.mark.unit
+def test_check_camera_available_quick_ping():
+    mod = types.ModuleType("mock_mod")
+
+    class MockBackend(base.CameraBackend):
+        @classmethod
+        def is_available(cls):
+            return True
+
+        @staticmethod
+        def quick_ping(i):
+            return i == 0
+
+        def open(self):
+            pass
+
+        def read(self):
+            return None, 0.0
+
+        def close(self):
+            pass
+
+    mod.MockBackend = MockBackend
+    sys.modules["mock_mod"] = mod
+    base.register_backend_direct("mock", MockBackend)
+
+    ok, msg = CameraFactory.check_camera_available(CameraSettings(backend="mock", index=0))
+    assert ok is True
+
+    ok, msg = CameraFactory.check_camera_available(CameraSettings(backend="mock", index=3))
+    assert ok is False
+
+
+@pytest.mark.unit
+def test_detect_cameras():
+    mod = types.ModuleType("detect_mod")
+
+    class DetectBackend(base.CameraBackend):
+        @classmethod
+        def is_available(cls):
+            return True
+
+        @staticmethod
+        def quick_ping(i):
+            return i in (0, 2)  # pretend devices 0 and 2 exist
+
+        def open(self):
+            if self.settings.index not in (0, 2):
+                raise RuntimeError("no device")
+
+        def read(self):
+            return None, 0
+
+        def close(self):
+            pass
+
+    mod.DetectBackend = DetectBackend
+    sys.modules["detect_mod"] = mod
+    base.register_backend_direct("detect", DetectBackend)
+
+    detected = CameraFactory.detect_cameras("detect", max_devices=4)
+    assert isinstance(detected, list)
+    assert [c.index for c in detected] == [0, 2]
+    assert all(isinstance(c, DetectedCamera) for c in detected)
