@@ -979,7 +979,8 @@ class DLCLiveMainWindow(QMainWindow):
         """Handle error from a camera in multi-camera mode."""
         self._show_warning(f"Camera {camera_id} error: {message}\nRecording stopped.")
         self._refresh_dlc_camera_list_running()
-        # self._stop_inference() # We now gracefully switch DLC camera if needed
+        if self.dlc_camera_combo.count() <= 1:
+            self._stop_inference()  # We now gracefully switch DLC camera if needed, but if none left, stop inference
         self._stop_recording()
 
     def _on_multi_camera_initialization_failed(self, failures: list) -> None:

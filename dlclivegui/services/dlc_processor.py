@@ -8,6 +8,7 @@ import queue
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,20 +29,6 @@ try:  # pragma: no cover - optional dependency
 except Exception as e:  # pragma: no cover - handled gracefully
     logger.error(f"dlclive package could not be imported: {e}")
     DLCLive = None  # type: ignore[assignment]
-
-
-def ensure_dc_dlc(settings: DLCProcessorSettingsModel) -> DLCProcessorSettingsModel:
-    if isinstance(settings, DLCProcessorSettingsModel):
-        settings = DLCProcessorSettingsModel.model_validate(settings)
-        data = settings.model_dump()
-        dyn = data.get("dynamic")
-        # Convert DynamicCropModel -> tuple expected by dataclass
-        if hasattr(dyn, "enabled"):
-            data["dynamic"] = (dyn.enabled, dyn.margin, dyn.max_missing_frames)
-        elif isinstance(dyn, dict) and {"enabled", "margin", "max_missing_frames"} <= set(dyn):
-            data["dynamic"] = (dyn["enabled"], dyn["margin"], dyn["max_missing_frames"])
-        return DLCProcessorSettingsModel(**data)
-    raise TypeError("Unsupported DLC settings type")
 
 
 @dataclass
@@ -71,7 +58,7 @@ class ProcessorStats:
     avg_processor_overhead: float = 0.0  # Socket processor overhead
 
 
-_SENTINEL = object()
+# _SENTINEL = object()
 
 
 class DLCLiveProcessor(QObject):
@@ -80,6 +67,7 @@ class DLCLiveProcessor(QObject):
     pose_ready = Signal(object)
     error = Signal(str)
     initialized = Signal(bool)
+    frame_processed = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -108,7 +96,7 @@ class DLCLiveProcessor(QObject):
         self._processor_overhead_times: deque[float] = deque(maxlen=60)
 
     def configure(self, settings: DLCProcessorSettingsModel, processor: Any | None = None) -> None:
-        self._settings = ensure_dc_dlc(settings)
+        self._settings = settings
         self._processor = processor
 
     def reset(self) -> None:
@@ -135,25 +123,22 @@ class DLCLiveProcessor(QObject):
         self._initialized = False
 
     def enqueue_frame(self, frame: np.ndarray, timestamp: float) -> None:
-        if not self._initialized and self._worker_thread is None:
-            # Start worker thread with initialization
+        # Start worker on first frame
+        if self._worker_thread is None:
             self._start_worker(frame.copy(), timestamp)
             return
 
-        # Don't count dropped frames until processor is initialized
-        if not self._initialized:
+        # As long as worker and queue are ready, ALWAYS enqueue
+        if self._queue is None:
             return
 
-        if self._queue is not None:
-            try:
-                # Non-blocking put - drop frame if queue is full
-                self._queue.put_nowait((frame.copy(), timestamp, time.perf_counter()))
-                with self._stats_lock:
-                    self._frames_enqueued += 1
-            except queue.Full:
-                logger.debug("DLC queue full, dropping frame")
-                with self._stats_lock:
-                    self._frames_dropped += 1
+        try:
+            self._queue.put_nowait((frame.copy(), timestamp, time.perf_counter()))
+            with self._stats_lock:
+                self._frames_enqueued += 1
+        except queue.Full:
+            with self._stats_lock:
+                self._frames_dropped += 1
 
     def get_stats(self) -> ProcessorStats:
         """Get current processing statistics."""
@@ -225,12 +210,8 @@ class DLCLiveProcessor(QObject):
             return
 
         self._stop_event.set()
-        if self._queue is not None:
-            try:
-                self._queue.put_nowait(_SENTINEL)
-            except queue.Full:
-                pass
 
+        # Just wait for the timed get() loop to observe the flag and drain
         self._worker_thread.join(timeout=2.0)
         if self._worker_thread.is_alive():
             logger.warning("DLC worker thread did not terminate cleanly")
@@ -238,16 +219,91 @@ class DLCLiveProcessor(QObject):
         self._worker_thread = None
         self._queue = None
 
+    @contextmanager
+    def _timed_processor(self):
+        """
+        If a socket processor is attached, temporarily wrap its .process()
+        to measure processor overhead time independently of GPU inference.
+        Yields a one-element list [processor_overhead_seconds] or None when no processor.
+        Always restores the original .process reference.
+        """
+        if self._processor is None:
+            yield None
+            return
+
+        original = self._processor.process
+        holder = [0.0]
+
+        def timed_process(pose, _op=original, _holder=holder, **kwargs):
+            start = time.perf_counter()
+            try:
+                return _op(pose, **kwargs)
+            finally:
+                _holder[0] = time.perf_counter() - start
+
+        self._processor.process = timed_process
+        try:
+            yield holder
+        finally:
+            # Restore even if inference/errors occur
+            self._processor.process = original
+
+    def _process_frame(
+        self,
+        frame: np.ndarray,
+        timestamp: float,
+        enqueue_time: float,
+        *,
+        queue_wait_time: float = 0.0,
+    ) -> None:
+        """
+        Single source of truth for: inference -> (optional) processor timing -> signal emit -> stats.
+        Updates: frames_processed, latency, processing timeline, profiling metrics.
+        """
+        # Time GPU inference (and processor overhead when present)
+        with self._timed_processor() as proc_holder:
+            inference_start = time.perf_counter()
+            pose = self._dlc.get_pose(frame, frame_time=timestamp)
+            inference_time = time.perf_counter() - inference_start
+
+        processor_overhead = 0.0
+        gpu_inference_time = inference_time
+        if proc_holder is not None:
+            processor_overhead = proc_holder[0]
+            gpu_inference_time = max(0.0, inference_time - processor_overhead)
+
+        # Emit pose (measure signal overhead)
+        signal_start = time.perf_counter()
+        self.pose_ready.emit(PoseResult(pose=pose, timestamp=timestamp))
+        signal_time = time.perf_counter() - signal_start
+
+        end_ts = time.perf_counter()
+        latency = end_ts - enqueue_time
+        total_process_time = end_ts - (end_ts - (inference_time + signal_time))  # keep for completeness
+
+        with self._stats_lock:
+            self._frames_processed += 1
+            self._latencies.append(latency)
+            self._processing_times.append(end_ts)
+            if ENABLE_PROFILING:
+                self._queue_wait_times.append(queue_wait_time)
+                self._inference_times.append(inference_time)
+                self._signal_emit_times.append(signal_time)
+                self._total_process_times.append(total_process_time)
+                self._gpu_inference_times.append(gpu_inference_time)
+                self._processor_overhead_times.append(processor_overhead)
+
+        self.frame_processed.emit()
+
     def _worker_loop(self, init_frame: np.ndarray, init_timestamp: float) -> None:
         try:
-            # Initialize model
+            # -------- Initialization (unchanged) --------
             if DLCLive is None:
                 raise RuntimeError("The 'dlclive' package is required for pose estimation.")
             if not self._settings.model_path:
                 raise RuntimeError("No DLCLive model path configured.")
 
             init_start = time.perf_counter()
-
             dyn = self._settings.dynamic
             if not isinstance(dyn, (list, tuple)) or len(dyn) != 3:
                 try:
@@ -255,6 +311,7 @@ class DLCLiveProcessor(QObject):
                 except Exception as e:
                     raise RuntimeError("Invalid dynamic crop settings format.") from e
             enabled, margin, max_missing = dyn
+
             options = {
                 "model_path": self._settings.model_path,
                 "model_type": self._settings.model_type,
@@ -264,13 +321,12 @@ class DLCLiveProcessor(QObject):
                 "precision": self._settings.precision,
                 "single_animal": self._settings.single_animal,
             }
-            # Add device if specified in settings
             if self._settings.device is not None:
-                # FIXME @C-Achard make sure this is ok for tf
-                # maybe add smth in utils or config to validate device strings
                 options["device"] = self._settings.device
+
             self._dlc = DLCLive(**options)
 
+            # First inference to initialize
             init_inference_start = time.perf_counter()
             self._dlc.init_inference(init_frame)
             init_inference_time = time.perf_counter() - init_inference_start
@@ -280,30 +336,15 @@ class DLCLiveProcessor(QObject):
 
             total_init_time = time.perf_counter() - init_start
             logger.info(
-                f"DLCLive model initialized successfully "
-                f"(total: {total_init_time:.3f}s, init_inference: {init_inference_time:.3f}s)"
+                "DLCLive model initialized successfully (total: %.3fs, init_inference: %.3fs)",
+                total_init_time,
+                init_inference_time,
             )
 
-            # Process the initialization frame
-            enqueue_time = time.perf_counter()
-
-            inference_start = time.perf_counter()
-            pose = self._dlc.get_pose(init_frame, frame_time=init_timestamp)
-            inference_time = time.perf_counter() - inference_start
-
-            signal_start = time.perf_counter()
-            self.pose_ready.emit(PoseResult(pose=pose, timestamp=init_timestamp))
-            signal_time = time.perf_counter() - signal_start
-
-            process_time = time.perf_counter()
-
+            # Emit pose for init frame & update stats (not dequeued)
+            self._process_frame(init_frame, init_timestamp, time.perf_counter(), queue_wait_time=0.0)
             with self._stats_lock:
                 self._frames_enqueued += 1
-                self._frames_processed += 1
-                self._processing_times.append(process_time)
-                if ENABLE_PROFILING:
-                    self._inference_times.append(inference_time)
-                    self._signal_emit_times.append(signal_time)
 
         except Exception as exc:
             logger.exception("Failed to initialize DLCLive", exc_info=exc)
@@ -311,107 +352,50 @@ class DLCLiveProcessor(QObject):
             self.initialized.emit(False)
             return
 
-        # Main processing loop
-        frame_count = 0
-        while not self._stop_event.is_set():
-            loop_start = time.perf_counter()
+        # -------- Main processing loop: stop-flag + timed get + drain --------
+        # NOTE: We never exit early unless _stop_event is set.
+        while True:
+            # If stop requested, only exit when queue is empty
+            if self._stop_event.is_set():
+                if self._queue is not None:
+                    try:
+                        frame, ts, enq = self._queue.get_nowait()
+                    except queue.Empty:
+                        # NOW it is safe to exit
+                        break
+                    else:
+                        # Still work to do, process one
+                        try:
+                            self._process_frame(frame, ts, enq, queue_wait_time=0.0)
+                        except Exception as exc:
+                            logger.exception("Pose inference failed", exc_info=exc)
+                            self.error.emit(str(exc))
+                        finally:
+                            try:
+                                self._queue.task_done()
+                            except ValueError:
+                                pass
+                        continue  # check stop_event again WITHOUT breaking
 
-            # Time spent waiting for queue
-            queue_wait_start = time.perf_counter()
+            # Normal operation: timed get
             try:
-                item = self._queue.get(timeout=0.1)
+                wait_start = time.perf_counter()
+                item = self._queue.get(timeout=0.05)
+                queue_wait_time = time.perf_counter() - wait_start
             except queue.Empty:
                 continue
-            queue_wait_time = time.perf_counter() - queue_wait_start
-
-            if item is _SENTINEL:
-                break
-
-            frame, timestamp, enqueue_time = item
 
             try:
-                # Time the inference - we need to separate GPU from processor overhead
-                # If processor exists, wrap its process method to time it separately
-                processor_overhead_time = 0.0
-                gpu_inference_time = 0.0
-
-                original_process = None  # bind for finally safety
-
-                if self._processor is not None:
-                    # Wrap processor.process() to time it
-                    original_process = self._processor.process
-                    processor_time_holder = [0.0]  # Use list to allow modification in nested scope
-
-                    # Bind original_process and holder into defaults to satisfy flake8-bugbear B023
-                    def timed_process(pose, _op=original_process, _holder=processor_time_holder, **kwargs):
-                        proc_start = time.perf_counter()
-                        try:
-                            return _op(pose, **kwargs)
-                        finally:
-                            _holder[0] = time.perf_counter() - proc_start
-
-                    self._processor.process = timed_process
-
-                try:
-                    inference_start = time.perf_counter()
-                    pose = self._dlc.get_pose(frame, frame_time=timestamp)
-                    inference_time = time.perf_counter() - inference_start
-                finally:
-                    # Always restore the original process method if we wrapped it
-                    if original_process is not None and self._processor is not None:
-                        self._processor.process = original_process
-
-                if original_process is not None:
-                    processor_overhead_time = processor_time_holder[0]
-                    gpu_inference_time = inference_time - processor_overhead_time
-                else:
-                    # No processor, all time is GPU inference
-                    gpu_inference_time = inference_time
-
-                # Time the signal emission
-                signal_start = time.perf_counter()
-                self.pose_ready.emit(PoseResult(pose=pose, timestamp=timestamp))
-                signal_time = time.perf_counter() - signal_start
-
-                end_process = time.perf_counter()
-                total_process_time = end_process - loop_start
-                latency = end_process - enqueue_time
-
-                with self._stats_lock:
-                    self._frames_processed += 1
-                    self._latencies.append(latency)
-                    self._processing_times.append(end_process)
-
-                    if ENABLE_PROFILING:
-                        self._queue_wait_times.append(queue_wait_time)
-                        self._inference_times.append(inference_time)
-                        self._signal_emit_times.append(signal_time)
-                        self._total_process_times.append(total_process_time)
-                        self._gpu_inference_times.append(gpu_inference_time)
-                        self._processor_overhead_times.append(processor_overhead_time)
-
-                # Log profiling every 100 frames
-                frame_count += 1
-                if ENABLE_PROFILING and frame_count % 100 == 0:
-                    logger.info(
-                        f"[Profile] Frame {frame_count}: "
-                        f"queue_wait={queue_wait_time * 1000:.2f}ms, "
-                        f"inference={inference_time * 1000:.2f}ms "
-                        f"(GPU={gpu_inference_time * 1000:.2f}ms, processor={processor_overhead_time * 1000:.2f}ms), "
-                        f"signal_emit={signal_time * 1000:.2f}ms, "
-                        f"total={total_process_time * 1000:.2f}ms, "
-                        f"latency={latency * 1000:.2f}ms"
-                    )
-
+                frame, ts, enq = item
+                self._process_frame(frame, ts, enq, queue_wait_time=queue_wait_time)
             except Exception as exc:
                 logger.exception("Pose inference failed", exc_info=exc)
                 self.error.emit(str(exc))
             finally:
-                if item is not _SENTINEL:
-                    try:
-                        self._queue.task_done()
-                    except ValueError:
-                        pass
+                try:
+                    self._queue.task_done()
+                except ValueError:
+                    pass
 
         logger.info("DLC worker thread exiting")
 
