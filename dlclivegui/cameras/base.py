@@ -5,8 +5,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from ..config import CameraSettings
-from .config_adapters import CameraSettingsLike, ensure_dc_camera  # NEW
+from ..utils.config_models import CameraSettingsModel
 
 _BACKEND_REGISTRY: dict[str, type[CameraBackend]] = {}
 
@@ -50,9 +49,9 @@ def reset_backends():
 class CameraBackend(ABC):
     """Abstract base class for camera backends."""
 
-    def __init__(self, settings: CameraSettingsLike):  # CHANGED
+    def __init__(self, settings: CameraSettingsModel):
         # Normalize to dataclass so all backends stay unchanged
-        self.settings: CameraSettings = ensure_dc_camera(settings)  # NEW
+        self.settings: CameraSettingsModel = settings
 
     @classmethod
     def name(cls) -> str:
@@ -68,6 +67,7 @@ class CameraBackend(ABC):
     def stop(self) -> None:
         """Request a graceful stop."""
         # Subclasses may override when they need to interrupt blocking reads.
+        raise NotImplementedError
 
     def device_name(self) -> str:
         """Return a human readable name for the device currently in use."""
@@ -76,11 +76,14 @@ class CameraBackend(ABC):
     @abstractmethod
     def open(self) -> None:
         """Open the capture device."""
+        raise NotImplementedError
 
     @abstractmethod
     def read(self) -> tuple[np.ndarray, float]:
         """Read a frame and return the image with a timestamp."""
+        raise NotImplementedError
 
     @abstractmethod
     def close(self) -> None:
         """Release the capture device."""
+        raise NotImplementedError

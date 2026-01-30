@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import copy
+import importlib
+import pkgutil
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from ..config import CameraSettings
-from .base import _BACKEND_REGISTRY as BACKENDS
-from .base import CameraBackend
-from .config_adapters import CameraSettingsLike, ensure_dc_camera
+from ..utils.config_models import CameraSettingsModel
+from .base import _BACKEND_REGISTRY, CameraBackend
 
 
 @dataclass
@@ -71,14 +71,49 @@ def _suppress_opencv_logging():
         yield
 
 
-def _sanitize_for_probe(settings: CameraSettingsLike) -> CameraSettings:
+# Lazy loader for backends (ensures @register_backend runs)
+_BUILTIN_BACKEND_PACKAGES = (
+    "dlclivegui.cameras.backends",  # import every submodule once
+)
+_BACKENDS_IMPORTED = False
+
+
+def _ensure_backends_loaded() -> None:
+    """Import all built-in backend modules once so their decorators run."""
+    global _BACKENDS_IMPORTED
+    if _BACKENDS_IMPORTED:
+        return
+
+    for pkg_name in _BUILTIN_BACKEND_PACKAGES:
+        try:
+            pkg = importlib.import_module(pkg_name)
+        except Exception:
+            # Package might not exist (fine if all backends are third-party via tests/plugins)
+            continue
+
+        # Import every submodule of the package (triggers decorator side-effects)
+        pkg_path = getattr(pkg, "__path__", None)
+        if not pkg_path:
+            continue
+
+        for _finder, mod_name, _is_pkg in pkgutil.iter_modules(pkg_path, prefix=pkg_name + "."):
+            try:
+                importlib.import_module(mod_name)
+            except Exception:
+                # Ignore misconfigured/optional backends; they just won't register
+                continue
+
+    _BACKENDS_IMPORTED = True
+
+
+def _sanitize_for_probe(settings: CameraSettingsModel) -> CameraSettingsModel:
     """
     Return a light, side-effect-minimized dataclass copy for availability probes.
     - Zero FPS (let driver pick default)
     - Keep only 'api' hint in properties, force fast_start=True
     - Do not change 'enabled'
     """
-    dc = ensure_dc_camera(settings)  # normalize first
+    dc = settings
     probe = copy.deepcopy(dc)
     probe.fps = 0.0  # don't force FPS during probe
     props = probe.properties if isinstance(probe.properties, dict) else {}
@@ -96,13 +131,15 @@ class CameraFactory:
     @staticmethod
     def backend_names() -> Iterable[str]:
         """Return the identifiers of all known backends."""
-        return tuple(BACKENDS.keys())
+        _ensure_backends_loaded()
+        return tuple(_BACKEND_REGISTRY.keys())
 
     @staticmethod
     def available_backends() -> dict[str, bool]:
         """Return a mapping of backend names to availability flags."""
+        _ensure_backends_loaded()
         availability: dict[str, bool] = {}
-        for name in BACKENDS:
+        for name in _BACKEND_REGISTRY:
             try:
                 backend_cls = CameraFactory._resolve_backend(name)
             except RuntimeError:
@@ -139,6 +176,7 @@ class CameraFactory:
         list of :class:`DetectedCamera`
             Sorted list of detected cameras with human readable labels (partial if canceled).
         """
+        _ensure_backends_loaded()
 
         def _canceled() -> bool:
             return bool(should_cancel and should_cancel())
@@ -187,7 +225,7 @@ class CameraFactory:
                         # Definitely not present, skip heavy open
                         continue
 
-                    settings = CameraSettings(
+                    settings = CameraSettingsModel(
                         name=f"Probe {index}",
                         index=index,
                         fps=30.0,
@@ -227,9 +265,9 @@ class CameraFactory:
         return detected
 
     @staticmethod
-    def create(settings: CameraSettingsLike) -> CameraBackend:
+    def create(settings: CameraSettingsModel) -> CameraBackend:
         """Instantiate a backend for ``settings``."""
-        dc = ensure_dc_camera(settings)
+        dc = settings
         backend_name = (dc.backend or "opencv").lower()
         try:
             backend_cls = CameraFactory._resolve_backend(backend_name)
@@ -243,9 +281,9 @@ class CameraFactory:
         return backend_cls(dc)
 
     @staticmethod
-    def check_camera_available(settings: CameraSettingsLike) -> tuple[bool, str]:
+    def check_camera_available(settings: CameraSettingsModel) -> tuple[bool, str]:
         """Check if a camera is present/accessible without pushing heavy settings like FPS."""
-        dc = ensure_dc_camera(settings)
+        dc = settings
         backend_name = (dc.backend or "opencv").lower()
 
         try:
@@ -286,6 +324,6 @@ class CameraFactory:
     @staticmethod
     def _resolve_backend(name: str) -> type[CameraBackend]:
         try:
-            return BACKENDS[name.lower()]
+            return _BACKEND_REGISTRY[name.lower()]
         except KeyError as exc:
             raise RuntimeError("Backend %s not registered", name) from exc

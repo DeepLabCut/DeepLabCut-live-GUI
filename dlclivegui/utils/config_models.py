@@ -1,20 +1,11 @@
 # config_models.py
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-
-from dlclivegui.config import (
-    ApplicationSettings,
-    BoundingBoxSettings,
-    CameraSettings,
-    DLCProcessorSettings,
-    MultiCameraSettings,
-    RecordingSettings,
-    VisualizationSettings,
-)
 
 Backend = Literal["gentl", "opencv", "basler", "aravis"]  # extend as needed
 Rotation = Literal[0, 90, 180, 270]
@@ -68,6 +59,10 @@ class CameraSettingsModel(BaseModel):
             return None
         return (self.crop_x0, self.crop_y0, self.crop_x1, self.crop_y1)
 
+    @classmethod
+    def from_defaults(cls) -> CameraSettingsModel:
+        return cls()
+
 
 class MultiCameraSettingsModel(BaseModel):
     cameras: list[CameraSettingsModel] = Field(default_factory=list)
@@ -82,6 +77,35 @@ class MultiCameraSettingsModel(BaseModel):
         if len(self.get_active_cameras()) > self.max_cameras:
             raise ValueError("Number of enabled cameras exceeds max_cameras.")
         return self
+
+    def add_camera(self, camera: CameraSettingsModel) -> bool:
+        """Add a new camera if under max_cameras limit."""
+        if len(self.cameras) >= self.max_cameras:
+            return False
+        self.cameras.append(camera)
+        return True
+
+    def remove_camera(self, index: int) -> bool:
+        """Remove camera at given index."""
+        if 0 <= index < len(self.cameras):
+            del self.cameras[index]
+            return True
+        return False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MultiCameraSettingsModel:
+        cameras_data = data.get("cameras", [])
+        cameras = [CameraSettingsModel(**cam) for cam in cameras_data]
+        max_cameras = data.get("max_cameras", 4)
+        tile_layout = data.get("tile_layout", "auto")
+        return cls(cameras=cameras, max_cameras=max_cameras, tile_layout=tile_layout)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cameras": [cam.model_dump() for cam in self.cameras],
+            "max_cameras": self.max_cameras,
+            "tile_layout": self.tile_layout,
+        }
 
 
 class DynamicCropModel(BaseModel):
@@ -137,6 +161,12 @@ class VisualizationSettingsModel(BaseModel):
     colormap: str = "hot"
     bbox_color: tuple[int, int, int] = (0, 0, 255)
 
+    def get_bbox_color_bgr(self) -> tuple[int, int, int]:
+        """Get bounding box color in BGR format"""
+        if isinstance(self.bbox_color, (list, tuple)) and len(self.bbox_color) == 3:
+            return tuple(int(c) for c in self.bbox_color)
+        return (0, 0, 255)  # default red
+
 
 class RecordingSettingsModel(BaseModel):
     enabled: bool = False
@@ -145,6 +175,30 @@ class RecordingSettingsModel(BaseModel):
     container: Literal["mp4", "avi", "mov"] = "mp4"
     codec: str = "libx264"
     crf: int = Field(default=23, ge=0, le=51)
+
+    def output_path(self) -> Path:
+        """Return the absolute output path for recordings."""
+
+        directory = Path(self.directory).expanduser().resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        name = Path(self.filename)
+        if name.suffix:
+            filename = name
+        else:
+            filename = name.with_suffix(f".{self.container}")
+        return directory / filename
+
+    def writegear_options(self, fps: float) -> dict[str, Any]:
+        """Return compression parameters for WriteGear."""
+
+        fps_value = float(fps) if fps else 30.0
+        codec_value = (self.codec or "libx264").strip() or "libx264"
+        crf_value = int(self.crf) if self.crf is not None else 23
+        return {
+            "-input_framerate": f"{fps_value:.6f}",
+            "-vcodec": codec_value,
+            "-crf": str(crf_value),
+        }
 
 
 class ApplicationSettingsModel(BaseModel):
@@ -157,26 +211,60 @@ class ApplicationSettingsModel(BaseModel):
     bbox: BoundingBoxSettingsModel = Field(default_factory=BoundingBoxSettingsModel)
     visualization: VisualizationSettingsModel = Field(default_factory=VisualizationSettingsModel)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ApplicationSettingsModel:
+        camera_data = data.get("camera", {})
+        multi_camera_data = data.get("multi_camera", {})
+        dlc_data = data.get("dlc", {})
+        recording_data = data.get("recording", {})
+        bbox_data = data.get("bbox", {})
+        visualization_data = data.get("visualization", {})
 
-def dc_to_model(dc_cfg: ApplicationSettings) -> ApplicationSettingsModel:
-    # Use your current dc.to_dict() then validate; preserves defaults + coercion
-    return ApplicationSettingsModel.model_validate(dc_cfg.to_dict())
+        camera = CameraSettingsModel(**camera_data)
+        multi_camera = MultiCameraSettingsModel.from_dict(multi_camera_data)
+        dlc = DLCProcessorSettingsModel(**dlc_data)
+        recording = RecordingSettingsModel(**recording_data)
+        bbox = BoundingBoxSettingsModel(**bbox_data)
+        visualization = VisualizationSettingsModel(**visualization_data)
+
+        return cls(
+            camera=camera,
+            multi_camera=multi_camera,
+            dlc=dlc,
+            recording=recording,
+            bbox=bbox,
+            visualization=visualization,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "camera": self.camera.model_dump(),
+            "multi_camera": self.multi_camera.to_dict(),
+            "dlc": self.dlc.model_dump(),
+            "recording": self.recording.model_dump(),
+            "bbox": self.bbox.model_dump(),
+            "visualization": self.visualization.model_dump(),
+        }
+
+    @classmethod
+    def load(cls, path: Path | str) -> ApplicationSettingsModel:
+        """Load configuration from ``path``."""
+
+        file_path = Path(path).expanduser()
+        if not file_path.exists():
+            raise FileNotFoundError(f"Configuration file not found: {file_path}")
+        with file_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return cls.from_dict(data)
+
+    def save(self, path: Path | str) -> None:
+        """Persist configuration to ``path``."""
+
+        file_path = Path(path).expanduser()
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with file_path.open("w", encoding="utf-8") as handle:
+            json.dump(self.to_dict(), handle, indent=2)
 
 
-def model_to_dc(model: ApplicationSettingsModel) -> ApplicationSettings:
-    # Build dataclasses from validated data
-    cam_dc = CameraSettings(**model.camera.model_dump())
-    mc_dc = MultiCameraSettings.from_dict(model.multi_camera.model_dump())
-    dlc_dc = DLCProcessorSettings(**model.dlc.model_dump())
-    rec_dc = RecordingSettings(**model.recording.model_dump())
-    bbox_dc = BoundingBoxSettings(**model.bbox.model_dump())
-    viz_dc = VisualizationSettings(**model.visualization.model_dump())
-
-    return ApplicationSettings(
-        camera=cam_dc,
-        multi_camera=mc_dc,
-        dlc=dlc_dc,
-        recording=rec_dc,
-        bbox=bbox_dc,
-        visualization=viz_dc,
-    )
+DEFAULT_CONFIG = ApplicationSettingsModel()
