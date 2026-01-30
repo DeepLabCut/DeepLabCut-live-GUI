@@ -134,6 +134,9 @@ class DynamicCropModel(BaseModel):
             return v
         return cls()
 
+    def to_tuple(self) -> tuple[bool, float, int]:
+        return (self.enabled, self.margin, self.max_missing_frames)
+
 
 class DLCProcessorSettingsModel(BaseModel):
     model_path: str = ""

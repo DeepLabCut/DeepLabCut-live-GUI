@@ -255,6 +255,12 @@ class CameraConfigDialog(QDialog):
             self.backend_combo.addItem(label, backend)
         if self.backend_combo.count() == 0:
             raise RuntimeError("No camera backends are registered!")
+        # Switch to first available backend
+        for i in range(self.backend_combo.count()):
+            backend = self.backend_combo.itemData(i)
+            if availability.get(backend, False):
+                self.backend_combo.setCurrentIndex(i)
+                break
         backend_layout.addWidget(self.backend_combo)
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
@@ -777,6 +783,17 @@ class CameraConfigDialog(QDialog):
         self.cam_crop_y1.setValue(cam.crop_y1)
         self.apply_settings_btn.setEnabled(True)
 
+    def _write_form_to_cam(self, cam: CameraSettingsModel) -> None:
+        cam.enabled = bool(self.cam_enabled_checkbox.isChecked())
+        cam.fps = float(self.cam_fps.value())
+        cam.exposure = int(self.cam_exposure.value())
+        cam.gain = float(self.cam_gain.value())
+        cam.rotation = int(self.cam_rotation.currentData() or 0)
+        cam.crop_x0 = int(self.cam_crop_x0.value())
+        cam.crop_y0 = int(self.cam_crop_y0.value())
+        cam.crop_x1 = int(self.cam_crop_x1.value())
+        cam.crop_y1 = int(self.cam_crop_y1.value())
+
     def _clear_settings_form(self) -> None:
         self.cam_enabled_checkbox.setChecked(True)
         self.cam_name_label.setText("")
@@ -894,7 +911,7 @@ class CameraConfigDialog(QDialog):
             if self._preview_active and self._preview_backend:
                 prev_model = getattr(self._preview_backend, "settings", None)
                 if prev_model:
-                    must_reopen = self._needs_preview_reopen(new_model, prev_model)
+                    must_reopen = self._needs_preview_reopen(new_model)
 
             if self._preview_active:
                 if must_reopen:

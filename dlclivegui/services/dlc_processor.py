@@ -248,7 +248,13 @@ class DLCLiveProcessor(QObject):
 
             init_start = time.perf_counter()
 
-            enabled, margin, max_missing = self._settings.dynamic
+            dyn = self._settings.dynamic
+            if not isinstance(dyn, (list, tuple)) or len(dyn) != 3:
+                try:
+                    dyn = dyn.to_tuple()
+                except Exception as e:
+                    raise RuntimeError("Invalid dynamic crop settings format.") from e
+            enabled, margin, max_missing = dyn
             options = {
                 "model_path": self._settings.model_path,
                 "model_type": self._settings.model_type,
