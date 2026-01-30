@@ -32,22 +32,19 @@ def main() -> None:
             Qt.SmoothTransformation,
         )
     else:
-        # Fallback: empty pixmap; you can also use a color fill if desired
+        # Fallback: empty pixmap
         splash_height = 400
         scaled_pixmap = QPixmap(splash_width, splash_height)
         scaled_pixmap.fill(Qt.black)
 
-    # Create splash with the *scaled* pixmap
     splash = QSplashScreen(scaled_pixmap)
     splash.show()
 
-    # Let the splash breathe without blocking the event loop
     def show_main():
         splash.close()
         window = DLCLiveMainWindow()
         window.show()
 
-    # Show main window after 1500 ms
     QTimer.singleShot(1000, show_main)
 
     sys.exit(app.exec())

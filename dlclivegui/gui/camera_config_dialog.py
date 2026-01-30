@@ -1052,7 +1052,7 @@ class CameraConfigDialog(QDialog):
                 self._preview_backend = payload
             elif isinstance(payload, CameraSettings):
                 cam_settings = payload
-                self._append_status("Opening camera on main thread…")
+                self._append_status("Opening camera…")
                 self._preview_backend = CameraFactory.create(cam_settings)
                 self._preview_backend.open()
             else:

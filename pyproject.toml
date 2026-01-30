@@ -68,7 +68,7 @@ Documentation = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
 "Bug Tracker" = "https://github.com/DeepLabCut/DeepLabCut-live-GUI/issues"
 
 [project.scripts]
-dlclivegui = "dlclivegui.gui:main"
+dlclivegui = "dlclivegui:main"
 
 [tool.setuptools]
 include-package-data = true
