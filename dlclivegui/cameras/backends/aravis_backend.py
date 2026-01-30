@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional, Tuple
 
 import cv2
 import numpy as np
 
-from .base import CameraBackend
+from ..base import CameraBackend, register_backend
 
 LOG = logging.getLogger(__name__)
 
@@ -25,20 +24,21 @@ except Exception:  # pragma: no cover - optional dependency
     ARAVIS_AVAILABLE = False
 
 
+@register_backend("aravis")
 class AravisCameraBackend(CameraBackend):
     """Capture frames from GenICam-compatible devices via Aravis."""
 
     def __init__(self, settings):
         super().__init__(settings)
         props = settings.properties
-        self._camera_id: Optional[str] = props.get("camera_id")
+        self._camera_id: str | None = props.get("camera_id")
         self._pixel_format: str = props.get("pixel_format", "Mono8")
         self._timeout: int = int(props.get("timeout", 2000000))  # microseconds
         self._n_buffers: int = int(props.get("n_buffers", 10))
 
         self._camera = None
         self._stream = None
-        self._device_label: Optional[str] = None
+        self._device_label: str | None = None
 
     @classmethod
     def is_available(cls) -> bool:
@@ -83,9 +83,7 @@ class AravisCameraBackend(CameraBackend):
         else:
             index = int(self.settings.index or 0)
             if index < 0 or index >= n_devices:
-                raise RuntimeError(
-                    f"Camera index {index} out of range for {n_devices} Aravis device(s)"
-                )
+                raise RuntimeError(f"Camera index {index} out of range for {n_devices} Aravis device(s)")
             camera_id = Aravis.get_device_id(index)
             self._camera = Aravis.Camera.new(camera_id)
             if self._camera is None:
@@ -113,7 +111,7 @@ class AravisCameraBackend(CameraBackend):
         # Start acquisition
         self._camera.start_acquisition()
 
-    def read(self) -> Tuple[np.ndarray, float]:
+    def read(self) -> tuple[np.ndarray, float]:
         """Read a frame from the camera."""
         if self._camera is None or self._stream is None:
             raise RuntimeError("Aravis camera not initialized")
@@ -320,7 +318,7 @@ class AravisCameraBackend(CameraBackend):
         except Exception as e:
             LOG.warning(f"Failed to set frame rate to {self.settings.fps}: {e}")
 
-    def _resolve_device_label(self) -> Optional[str]:
+    def _resolve_device_label(self) -> str | None:
         """Get a human-readable device label."""
         if self._camera is None:
             return None

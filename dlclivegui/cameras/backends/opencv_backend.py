@@ -10,12 +10,13 @@ import time
 import cv2
 import numpy as np
 
-from .base import CameraBackend
+from ..base import CameraBackend, register_backend
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # FIXME @C-Achard remove before release
 
 
+@register_backend("opencv")
 class OpenCVCameraBackend(CameraBackend):
     """
     Platform-aware OpenCV backend:

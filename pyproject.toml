@@ -26,11 +26,12 @@ classifiers = [
 ]
 
 dependencies = [
-    # "deeplabcut-live", # might be missing timm and scipy
+    "deeplabcut-live", # might be missing timm and scipy
     "PySide6",
     "qdarkstyle",
     "numpy",
     "opencv-python",
+    "pydantic>=2.0",
     "vidgear[core]",
     "matplotlib",
 ]
@@ -50,9 +51,7 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-mock>=3.10",
     "pytest-qt>=4.2",
-    "black>=23.0",
-    "flake8>=6.0",
-    "mypy>=1.0",
+    "pre-commit",
 ]
 test = [
     "pytest>=7.0",
@@ -84,12 +83,12 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
-    "-v",
     "--strict-markers",
-    "--tb=short",
-    "--cov=dlclivegui",
-    "--cov-report=term-missing",
-    "--cov-report=html",
+    "--strict-config",
+    "--disable-warnings",
+    # "--maxfail=1",
+    "-ra",
+    "-q",
 ]
 markers = [
     "unit: Unit tests for individual components",

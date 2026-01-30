@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional, Tuple
 
 import numpy as np
 
-from .base import CameraBackend
+from ..base import CameraBackend, register_backend
 
 LOG = logging.getLogger(__name__)
 
@@ -18,17 +17,16 @@ except Exception:  # pragma: no cover - optional dependency
     pylon = None  # type: ignore
 
 
+@register_backend("basler")
 class BaslerCameraBackend(CameraBackend):
     """Capture frames from Basler cameras using the Pylon SDK."""
 
     def __init__(self, settings):
         super().__init__(settings)
-        self._camera: Optional["pylon.InstantCamera"] = None
-        self._converter: Optional["pylon.ImageFormatConverter"] = None
+        self._camera: pylon.InstantCamera | None = None
+        self._converter: pylon.ImageFormatConverter | None = None
         # Parse resolution with defaults (720x540)
-        self._resolution: Tuple[int, int] = self._parse_resolution(
-            settings.properties.get("resolution")
-        )
+        self._resolution: tuple[int, int] = self._parse_resolution(settings.properties.get("resolution"))
 
     @classmethod
     def is_available(cls) -> bool:
@@ -118,13 +116,13 @@ class BaslerCameraBackend(CameraBackend):
         except Exception:
             pass
 
-    def read(self) -> Tuple[np.ndarray, float]:
+    def read(self) -> tuple[np.ndarray, float]:
         if self._camera is None or self._converter is None:
             raise RuntimeError("Basler camera not opened")
         try:
             grab_result = self._camera.RetrieveResult(100, pylon.TimeoutHandling_ThrowException)
         except Exception as exc:
-            raise RuntimeError(f"Failed to retrieve image from Basler camera: {exc}")
+            raise RuntimeError("Failed to retrieve image from Basler camera.") from exc
         if not grab_result.GrabSucceeded():
             grab_result.Release()
             raise RuntimeError("Basler camera did not return an image")
@@ -161,30 +159,24 @@ class BaslerCameraBackend(CameraBackend):
         return factory.EnumerateDevices()
 
     def _select_device(self, devices):
-        serial = self.settings.properties.get("serial") or self.settings.properties.get(
-            "serial_number"
-        )
+        serial = self.settings.properties.get("serial") or self.settings.properties.get("serial_number")
         if serial:
             for device in devices:
                 if getattr(device, "GetSerialNumber", None) and device.GetSerialNumber() == serial:
                     return device
         index = int(self.settings.index)
         if index < 0 or index >= len(devices):
-            raise RuntimeError(
-                f"Camera index {index} out of range for {len(devices)} Basler device(s)"
-            )
+            raise RuntimeError(f"Camera index {index} out of range for {len(devices)} Basler device(s)")
         return devices[index]
 
     def _rotate(self, frame: np.ndarray, angle: float) -> np.ndarray:
         try:
             from imutils import rotate_bound  # pragma: no cover - optional
         except Exception as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "Rotation requested for Basler camera but imutils is not installed"
-            ) from exc
+            raise RuntimeError("Rotation requested for Basler camera but imutils is not installed") from exc
         return rotate_bound(frame, angle)
 
-    def _parse_resolution(self, resolution) -> Tuple[int, int]:
+    def _parse_resolution(self, resolution) -> tuple[int, int]:
         """Parse resolution setting.
 
         Args:
@@ -205,6 +197,6 @@ class BaslerCameraBackend(CameraBackend):
         return (720, 540)
 
     @staticmethod
-    def _settings_value(key: str, source: dict, fallback: Optional[float] = None):
+    def _settings_value(key: str, source: dict, fallback: float | None = None):
         value = source.get(key, fallback)
         return None if value is None else value

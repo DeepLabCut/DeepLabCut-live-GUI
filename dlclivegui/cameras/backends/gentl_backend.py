@@ -6,12 +6,12 @@ import glob
 import logging
 import os
 import time
-from typing import Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 import cv2
 import numpy as np
 
-from .base import CameraBackend
+from ..base import CameraBackend, register_backend
 
 LOG = logging.getLogger(__name__)
 
@@ -27,10 +27,11 @@ except Exception:  # pragma: no cover - optional dependency
     HarvesterTimeoutError = TimeoutError  # type: ignore
 
 
+@register_backend("gentl")
 class GenTLCameraBackend(CameraBackend):
     """Capture frames from GenTL-compatible devices via Harvesters."""
 
-    _DEFAULT_CTI_PATTERNS: Tuple[str, ...] = (
+    _DEFAULT_CTI_PATTERNS: tuple[str, ...] = (
         r"C:\\Program Files\\The Imaging Source Europe GmbH\\IC4 GenTL Driver for USB3Vision Devices *\\bin\\*.cti",
         r"C:\\Program Files\\The Imaging Source Europe GmbH\\TIS Grabber\\bin\\win64_x64\\*.cti",
         r"C:\\Program Files\\The Imaging Source Europe GmbH\\TIS Camera SDK\\bin\\win64_x64\\*.cti",
@@ -40,28 +41,22 @@ class GenTLCameraBackend(CameraBackend):
     def __init__(self, settings):
         super().__init__(settings)
         props = settings.properties
-        self._cti_file: Optional[str] = props.get("cti_file")
-        self._serial_number: Optional[str] = props.get("serial_number") or props.get("serial")
+        self._cti_file: str | None = props.get("cti_file")
+        self._serial_number: str | None = props.get("serial_number") or props.get("serial")
         self._pixel_format: str = props.get("pixel_format", "Mono8")
         self._rotate: int = int(props.get("rotate", 0)) % 360
-        self._crop: Optional[Tuple[int, int, int, int]] = self._parse_crop(props.get("crop"))
+        self._crop: tuple[int, int, int, int] | None = self._parse_crop(props.get("crop"))
         # Check settings first (from config), then properties (for backward compatibility)
-        self._exposure: Optional[float] = (
-            settings.exposure if settings.exposure else props.get("exposure")
-        )
-        self._gain: Optional[float] = settings.gain if settings.gain else props.get("gain")
+        self._exposure: float | None = settings.exposure if settings.exposure else props.get("exposure")
+        self._gain: float | None = settings.gain if settings.gain else props.get("gain")
         self._timeout: float = float(props.get("timeout", 2.0))
-        self._cti_search_paths: Tuple[str, ...] = self._parse_cti_paths(
-            props.get("cti_search_paths")
-        )
+        self._cti_search_paths: tuple[str, ...] = self._parse_cti_paths(props.get("cti_search_paths"))
         # Parse resolution (width, height) with defaults
-        self._resolution: Optional[Tuple[int, int]] = self._parse_resolution(
-            props.get("resolution")
-        )
+        self._resolution: tuple[int, int] | None = self._parse_resolution(props.get("resolution"))
 
         self._harvester = None
         self._acquirer = None
-        self._device_label: Optional[str] = None
+        self._device_label: str | None = None
 
     @classmethod
     def is_available(cls) -> bool:
@@ -100,8 +95,7 @@ class GenTLCameraBackend(CameraBackend):
     def open(self) -> None:
         if Harvester is None:  # pragma: no cover - optional dependency
             raise RuntimeError(
-                "The 'harvesters' package is required for the GenTL backend. "
-                "Install it via 'pip install harvesters'."
+                "The 'harvesters' package is required for the GenTL backend. Install it via 'pip install harvesters'."
             )
 
         self._harvester = Harvester()
@@ -118,16 +112,12 @@ class GenTLCameraBackend(CameraBackend):
             available = self._available_serials()
             matches = [s for s in available if serial in s]
             if not matches:
-                raise RuntimeError(
-                    f"Camera with serial '{serial}' not found. Available cameras: {available}"
-                )
+                raise RuntimeError(f"Camera with serial '{serial}' not found. Available cameras: {available}")
             serial = matches[0]
         else:
             device_count = len(self._harvester.device_info_list)
             if index < 0 or index >= device_count:
-                raise RuntimeError(
-                    f"Camera index {index} out of range for {device_count} GenTL device(s)"
-                )
+                raise RuntimeError(f"Camera index {index} out of range for {device_count} GenTL device(s)")
 
         self._acquirer = self._create_acquirer(serial, index)
 
@@ -170,7 +160,7 @@ class GenTLCameraBackend(CameraBackend):
 
         self._acquirer.start()
 
-    def read(self) -> Tuple[np.ndarray, float]:
+    def read(self) -> tuple[np.ndarray, float]:
         if self._acquirer is None:
             raise RuntimeError("GenTL image acquirer not initialised")
 
@@ -228,7 +218,7 @@ class GenTLCameraBackend(CameraBackend):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _parse_cti_paths(self, value) -> Tuple[str, ...]:
+    def _parse_cti_paths(self, value) -> tuple[str, ...]:
         if value is None:
             return self._DEFAULT_CTI_PATTERNS
         if isinstance(value, str):
@@ -237,12 +227,12 @@ class GenTLCameraBackend(CameraBackend):
             return tuple(str(item) for item in value)
         return self._DEFAULT_CTI_PATTERNS
 
-    def _parse_crop(self, crop) -> Optional[Tuple[int, int, int, int]]:
+    def _parse_crop(self, crop) -> tuple[int, int, int, int] | None:
         if isinstance(crop, (list, tuple)) and len(crop) == 4:
             return tuple(int(v) for v in crop)
         return None
 
-    def _parse_resolution(self, resolution) -> Optional[Tuple[int, int]]:
+    def _parse_resolution(self, resolution) -> tuple[int, int] | None:
         """Parse resolution setting.
 
         Args:
@@ -264,7 +254,7 @@ class GenTLCameraBackend(CameraBackend):
         return (720, 540)
 
     @staticmethod
-    def _search_cti_file(patterns: Tuple[str, ...]) -> Optional[str]:
+    def _search_cti_file(patterns: tuple[str, ...]) -> str | None:
         """Search for a CTI file using the given patterns.
 
         Returns the first CTI file found, or None if none found.
@@ -288,23 +278,23 @@ class GenTLCameraBackend(CameraBackend):
             )
         return cti_file
 
-    def _available_serials(self) -> List[str]:
+    def _available_serials(self) -> list[str]:
         assert self._harvester is not None
-        serials: List[str] = []
+        serials: list[str] = []
         for info in self._harvester.device_info_list:
             serial = getattr(info, "serial_number", "")
             if serial:
                 serials.append(serial)
         return serials
 
-    def _create_acquirer(self, serial: Optional[str], index: int):
+    def _create_acquirer(self, serial: str | None, index: int):
         assert self._harvester is not None
         methods = [
             getattr(self._harvester, "create", None),
             getattr(self._harvester, "create_image_acquirer", None),
         ]
         methods = [m for m in methods if m is not None]
-        errors: List[str] = []
+        errors: list[str] = []
         device_info = None
         if not serial:
             device_list = self._harvester.device_info_list
@@ -347,15 +337,12 @@ class GenTLCameraBackend(CameraBackend):
                 node_map.PixelFormat.value = self._pixel_format
                 actual = node_map.PixelFormat.value
                 if actual != self._pixel_format:
-                    LOG.warning(
-                        f"Pixel format mismatch: requested '{self._pixel_format}', got '{actual}'"
-                    )
+                    LOG.warning(f"Pixel format mismatch: requested '{self._pixel_format}', got '{actual}'")
                 else:
                     LOG.info(f"Pixel format set to '{actual}'")
             else:
                 LOG.warning(
-                    f"Pixel format '{self._pixel_format}' not in available formats: "
-                    f"{node_map.PixelFormat.symbolics}"
+                    f"Pixel format '{self._pixel_format}' not in available formats: {node_map.PixelFormat.symbolics}"
                 )
         except Exception as e:
             LOG.warning(f"Failed to set pixel format '{self._pixel_format}': {e}")
@@ -442,10 +429,7 @@ class GenTLCameraBackend(CameraBackend):
             else:
                 LOG.info(f"Resolution set to {actual_width}x{actual_height}")
         else:
-            LOG.warning(
-                f"Could not verify resolution setting "
-                f"(width={actual_width}, height={actual_height})"
-            )
+            LOG.warning(f"Could not verify resolution setting (width={actual_width}, height={actual_height})")
 
     def _configure_exposure(self, node_map) -> None:
         if self._exposure is None:
@@ -585,7 +569,7 @@ class GenTLCameraBackend(CameraBackend):
 
         return frame.copy()
 
-    def _resolve_device_label(self, node_map) -> Optional[str]:
+    def _resolve_device_label(self, node_map) -> str | None:
         candidates = [
             ("DeviceModelName", "DeviceSerialNumber"),
             ("DeviceDisplayName", "DeviceSerialNumber"),

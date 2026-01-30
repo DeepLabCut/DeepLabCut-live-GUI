@@ -1,7 +1,9 @@
 """DLCLive integration helpers."""
 
+# dlclivegui/services/dlc_processor.py
 from __future__ import annotations
 
+import copy
 import logging
 import queue
 import threading
@@ -15,6 +17,7 @@ from PySide6.QtCore import QObject, Signal
 
 from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.processors.processor_utils import instantiate_from_scan
+from dlclivegui.utils.config_models import DLCProcessorSettingsModel
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,22 @@ try:  # pragma: no cover - optional dependency
 except Exception as e:  # pragma: no cover - handled gracefully
     logger.error(f"dlclive package could not be imported: {e}")
     DLCLive = None  # type: ignore[assignment]
+
+
+def ensure_dc_dlc(settings: DLCProcessorSettings | DLCProcessorSettingsModel) -> DLCProcessorSettings:
+    if isinstance(settings, DLCProcessorSettings):
+        return copy.deepcopy(settings)
+    if isinstance(settings, DLCProcessorSettingsModel):
+        settings = DLCProcessorSettingsModel.model_validate(settings)
+        data = settings.model_dump()
+        dyn = data.get("dynamic")
+        # Convert DynamicCropModel -> tuple expected by dataclass
+        if hasattr(dyn, "enabled"):
+            data["dynamic"] = (dyn.enabled, dyn.margin, dyn.max_missing_frames)
+        elif isinstance(dyn, dict) and {"enabled", "margin", "max_missing_frames"} <= set(dyn):
+            data["dynamic"] = (dyn["enabled"], dyn["margin"], dyn["max_missing_frames"])
+        return DLCProcessorSettings(**data)
+    raise TypeError("Unsupported DLC settings type")
 
 
 @dataclass
@@ -91,8 +110,10 @@ class DLCLiveProcessor(QObject):
         self._gpu_inference_times: deque[float] = deque(maxlen=60)
         self._processor_overhead_times: deque[float] = deque(maxlen=60)
 
-    def configure(self, settings: DLCProcessorSettings, processor: Any | None = None) -> None:
-        self._settings = settings
+    def configure(
+        self, settings: DLCProcessorSettings | DLCProcessorSettingsModel, processor: Any | None = None
+    ) -> None:
+        self._settings = ensure_dc_dlc(settings)
         self._processor = processor
 
     def reset(self) -> None:
@@ -231,17 +252,21 @@ class DLCLiveProcessor(QObject):
                 raise RuntimeError("No DLCLive model path configured.")
 
             init_start = time.perf_counter()
+
+            enabled, margin, max_missing = self._settings.dynamic
             options = {
                 "model_path": self._settings.model_path,
                 "model_type": self._settings.model_type,
                 "processor": self._processor,
-                "dynamic": list(self._settings.dynamic),
+                "dynamic": [enabled, margin, max_missing],
                 "resize": self._settings.resize,
                 "precision": self._settings.precision,
                 "single_animal": self._settings.single_animal,
             }
             # Add device if specified in settings
             if self._settings.device is not None:
+                # FIXME @C-Achard make sure this is ok for tf
+                # maybe add smth in utils or config to validate device strings
                 options["device"] = self._settings.device
             self._dlc = DLCLive(**options)
 
@@ -392,13 +417,28 @@ class DLCService:
     def __init__(self):
         self._proc = DLCLiveProcessor()
         self.active = False
-        self.initialized = False
         self._last_pose: PoseResult | None = None
         self._processor_info = None
 
     @property
     def processor(self):
         return self._proc._processor
+
+    # Expose key signals (to let MainWindow connect easily)
+    @property
+    def pose_ready(self):
+        return self._proc.pose_ready
+
+    @property
+    def error(self):
+        return self._proc.error
+
+    @property
+    def initialized(self):
+        return self._proc.initialized
+
+    def enqueue(self, frame, ts):
+        self._proc.enqueue_frame(frame, ts)
 
     def configure(self, settings: DLCProcessorSettings, scanned_processors: dict, selected_key) -> bool:
         processor = None
@@ -427,19 +467,3 @@ class DLCService:
 
     def last_pose(self) -> PoseResult | None:
         return self._last_pose
-
-    # Expose key signals (to let MainWindow connect easily)
-    @property
-    def pose_ready(self):
-        return self._proc.pose_ready
-
-    @property
-    def error(self):
-        return self._proc.error
-
-    @property
-    def initialized(self):
-        return self._proc.initialized
-
-    def enqueue(self, frame, ts):
-        self._proc.enqueue_frame(frame, ts)

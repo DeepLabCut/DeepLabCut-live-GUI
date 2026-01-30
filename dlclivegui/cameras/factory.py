@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import copy
-import importlib
-from collections.abc import Callable, Iterable  # CHANGED
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 
 from ..config import CameraSettings
+from .base import _BACKEND_REGISTRY as BACKENDS
 from .base import CameraBackend
+from .config_adapters import CameraSettingsLike, ensure_dc_camera
+
+
+@dataclass
+class DetectedCamera:
+    """Information about a camera discovered during probing."""
+
+    index: int
+    label: str
 
 
 def _opencv_get_log_level(cv2):
@@ -62,30 +71,15 @@ def _suppress_opencv_logging():
         yield
 
 
-@dataclass
-class DetectedCamera:
-    """Information about a camera discovered during probing."""
-
-    index: int
-    label: str
-
-
-_BACKENDS: dict[str, tuple[str, str]] = {
-    "opencv": ("dlclivegui.cameras.opencv_backend", "OpenCVCameraBackend"),
-    "basler": ("dlclivegui.cameras.basler_backend", "BaslerCameraBackend"),
-    "gentl": ("dlclivegui.cameras.gentl_backend", "GenTLCameraBackend"),
-    "aravis": ("dlclivegui.cameras.aravis_backend", "AravisCameraBackend"),
-}
-
-
-def _sanitize_for_probe(settings: CameraSettings) -> CameraSettings:
+def _sanitize_for_probe(settings: CameraSettingsLike) -> CameraSettings:
     """
-    Return a light, side-effect-minimized copy of CameraSettings for availability probes.
+    Return a light, side-effect-minimized dataclass copy for availability probes.
     - Zero FPS (let driver pick default)
     - Keep only 'api' hint in properties, force fast_start=True
     - Do not change 'enabled'
     """
-    probe = copy.deepcopy(settings)
+    dc = ensure_dc_camera(settings)  # normalize first
+    probe = copy.deepcopy(dc)
     probe.fps = 0.0  # don't force FPS during probe
     props = probe.properties if isinstance(probe.properties, dict) else {}
     api = props.get("api")
@@ -102,13 +96,13 @@ class CameraFactory:
     @staticmethod
     def backend_names() -> Iterable[str]:
         """Return the identifiers of all known backends."""
-        return tuple(_BACKENDS.keys())
+        return tuple(BACKENDS.keys())
 
     @staticmethod
     def available_backends() -> dict[str, bool]:
         """Return a mapping of backend names to availability flags."""
         availability: dict[str, bool] = {}
-        for name in _BACKENDS:
+        for name in BACKENDS:
             try:
                 backend_cls = CameraFactory._resolve_backend(name)
             except RuntimeError:
@@ -122,8 +116,8 @@ class CameraFactory:
         backend: str,
         max_devices: int = 10,
         *,
-        should_cancel: Callable[[], bool] | None = None,  # NEW
-        progress_cb: Callable[[str], None] | None = None,  # NEW
+        should_cancel: Callable[[], bool] | None = None,
+        progress_cb: Callable[[str], None] | None = None,
     ) -> list[DetectedCamera]:
         """Probe ``backend`` for available cameras.
 
@@ -233,9 +227,10 @@ class CameraFactory:
         return detected
 
     @staticmethod
-    def create(settings: CameraSettings) -> CameraBackend:
+    def create(settings: CameraSettingsLike) -> CameraBackend:
         """Instantiate a backend for ``settings``."""
-        backend_name = (settings.backend or "opencv").lower()
+        dc = ensure_dc_camera(settings)
+        backend_name = (dc.backend or "opencv").lower()
         try:
             backend_cls = CameraFactory._resolve_backend(backend_name)
         except RuntimeError as exc:  # pragma: no cover - runtime configuration
@@ -245,12 +240,13 @@ class CameraFactory:
                 f"Camera backend '{backend_name}' is not available. "
                 "Ensure the required drivers and Python packages are installed."
             )
-        return backend_cls(settings)
+        return backend_cls(dc)
 
     @staticmethod
-    def check_camera_available(settings: CameraSettings) -> tuple[bool, str]:
+    def check_camera_available(settings: CameraSettingsLike) -> tuple[bool, str]:
         """Check if a camera is present/accessible without pushing heavy settings like FPS."""
-        backend_name = (settings.backend or "opencv").lower()
+        dc = ensure_dc_camera(settings)
+        backend_name = (dc.backend or "opencv").lower()
 
         try:
             backend_cls = CameraFactory._resolve_backend(backend_name)
@@ -260,17 +256,15 @@ class CameraFactory:
         if not backend_cls.is_available():
             return False, f"Backend '{backend_name}' is not available (missing drivers/packages)"
 
-        # Prefer quick presence test if the backend provides it (e.g., OpenCV.quick_ping)
+        # Prefer quick presence test
         if hasattr(backend_cls, "quick_ping"):
             try:
                 with _suppress_opencv_logging():
-                    idx = int(settings.index)
-                    # Most backends expose quick_ping(index [, backend_flag])
+                    idx = int(dc.index)
                     ok = False
                     try:
                         ok = backend_cls.quick_ping(idx)  # type: ignore[attr-defined]
                     except TypeError:
-                        # Fallback signature with backend flag if required by the specific backend
                         ok = backend_cls.quick_ping(idx, None)  # type: ignore[attr-defined]
                     if ok:
                         return True, ""
@@ -278,9 +272,9 @@ class CameraFactory:
             except Exception as exc:
                 return False, f"Quick probe failed: {exc}"
 
-        # 2) Fallback: try a very lightweight open/close with sanitized settings
+        # Fallback: lightweight open/close with sanitized settings
         try:
-            probe_settings = _sanitize_for_probe(settings)
+            probe_settings = _sanitize_for_probe(dc)
             backend_instance = backend_cls(probe_settings)
             with _suppress_opencv_logging():
                 backend_instance.open()
@@ -292,14 +286,6 @@ class CameraFactory:
     @staticmethod
     def _resolve_backend(name: str) -> type[CameraBackend]:
         try:
-            module_name, class_name = _BACKENDS[name]
+            return BACKENDS[name.lower()]
         except KeyError as exc:
-            raise RuntimeError("backend not registered") from exc
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError as exc:
-            raise RuntimeError(str(exc)) from exc
-        backend_cls = getattr(module, class_name)
-        if not issubclass(backend_cls, CameraBackend):  # pragma: no cover - safety
-            raise RuntimeError(f"Backend '{name}' does not implement CameraBackend")
-        return backend_cls
+            raise RuntimeError("Backend %s not registered", name) from exc
