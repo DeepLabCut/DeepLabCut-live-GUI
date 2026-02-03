@@ -1,4 +1,4 @@
-# dlclivegui/gui/app.py (or your launcher)
+# dlclivegui/gui/main.py
 from __future__ import annotations
 
 import signal
@@ -42,7 +42,8 @@ def main() -> None:
         splash = show_splash(cfg)
 
         def show_main():
-            splash.close()
+            if splash is not None:
+                splash.close()
             # Keep a reference to avoid premature GC
             app._main_window = DLCLiveMainWindow()
             app._main_window.show()

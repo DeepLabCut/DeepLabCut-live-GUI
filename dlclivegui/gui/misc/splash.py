@@ -31,10 +31,8 @@ def build_splash_pixmap(cfg: SplashConfig) -> QPixmap:
         return raw.scaled(cfg.width, target_h, mode, Qt.SmoothTransformation)
 
     # Fallback when the image file is invalid/missing
-    target_h = cfg.height or 400
-    pm = QPixmap(cfg.width, target_h)
-    pm.fill(cfg.bg_color)
-    return pm
+    # If this happens, disable the splash
+    return None
 
 
 def show_splash(cfg: SplashConfig) -> QSplashScreen:
@@ -43,6 +41,8 @@ def show_splash(cfg: SplashConfig) -> QSplashScreen:
     The caller is responsible for closing it.
     """
     pm = build_splash_pixmap(cfg)
+    if pm is None:
+        return None
     splash = QSplashScreen(pm)
     splash.show()
     return splash

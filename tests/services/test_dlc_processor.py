@@ -62,6 +62,7 @@ def test_worker_processes_frames(qtbot, monkeypatch_dlclive, settings_model):
         # Enqueue more frames; wait for at least one more pose
         for i in range(10):
             proc.enqueue_frame(frame, timestamp=2.0 + i)
+            qtbot.wait(5)  # ms
 
         # FIXME @C-Achard this still fails randomly
         # the timeout has to be surprisingly large here
