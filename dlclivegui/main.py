@@ -1,51 +1,56 @@
+# dlclivegui/gui/app.py (or your launcher)
+from __future__ import annotations
+
 import signal
 import sys
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QIcon, QPixmap
-from PySide6.QtWidgets import QApplication, QSplashScreen
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QApplication
 
 from dlclivegui.gui.main_window import DLCLiveMainWindow
-from dlclivegui.gui.theme import LOGO, SPLASH_SCREEN
+from dlclivegui.gui.misc.splash import SplashConfig, show_splash
+from dlclivegui.gui.theme import (
+    LOGO,
+    SHOW_SPLASH,
+    SPLASH_KEEP_ASPECT,
+    SPLASH_SCREEN,
+    SPLASH_SCREEN_DURATION_MS,
+    SPLASH_SCREEN_HEIGHT,
+    SPLASH_SCREEN_WIDTH,
+)
 
 
 def main() -> None:
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    # Enable HiDPI pixmaps (optional but recommended)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # HiDPI pixmaps
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(LOGO))
 
-    # Load and scale splash pixmap
-    raw_pixmap = QPixmap(SPLASH_SCREEN)
-    splash_width = 600
-
-    if not raw_pixmap.isNull():
-        aspect_ratio = raw_pixmap.width() / raw_pixmap.height()
-        splash_height = int(splash_width / aspect_ratio)
-        scaled_pixmap = raw_pixmap.scaled(
-            splash_width,
-            splash_height,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
+    if SHOW_SPLASH:
+        cfg = SplashConfig(
+            enabled=True,
+            image=SPLASH_SCREEN,
+            width=SPLASH_SCREEN_WIDTH,
+            height=SPLASH_SCREEN_HEIGHT,
+            duration_ms=SPLASH_SCREEN_DURATION_MS,
+            keep_aspect=SPLASH_KEEP_ASPECT,
         )
+        splash = show_splash(cfg)
+
+        def show_main():
+            splash.close()
+            # Keep a reference to avoid premature GC
+            app._main_window = DLCLiveMainWindow()
+            app._main_window.show()
+
+        QTimer.singleShot(cfg.duration_ms, show_main)
     else:
-        # Fallback: empty pixmap
-        splash_height = 400
-        scaled_pixmap = QPixmap(splash_width, splash_height)
-        scaled_pixmap.fill(Qt.black)
-
-    splash = QSplashScreen(scaled_pixmap)
-    splash.show()
-
-    def show_main():
-        splash.close()
-        window = DLCLiveMainWindow()
-        window.show()
-
-    QTimer.singleShot(1000, show_main)
+        app._main_window = DLCLiveMainWindow()
+        app._main_window.show()
 
     sys.exit(app.exec())
 

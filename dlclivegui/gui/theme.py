@@ -12,6 +12,12 @@ ASSETS = Path(__file__).parent.parent / "assets"
 LOGO = str(ASSETS / "logo.png")
 LOGO_ALPHA = str(ASSETS / "logo_transparent.png")
 SPLASH_SCREEN = str(ASSETS / "welcome.png")
+#### Splash screen config
+SHOW_SPLASH = True
+SPLASH_SCREEN_WIDTH = 600
+SPLASH_SCREEN_HEIGHT = 400
+SPLASH_SCREEN_DURATION_MS = 1000
+SPLASH_KEEP_ASPECT = True
 
 
 class AppStyle(enum.Enum):
