@@ -635,10 +635,20 @@ class CameraConfigDialog(QDialog):
 
     def _on_scan_result(self, cams: list) -> None:
         self._detected_cameras = cams or []
+        self.available_cameras_list.clear()  # replace list contents
+
+        if not self._detected_cameras:
+            placeholder = QListWidgetItem("No cameras detected.")
+            placeholder.setFlags(Qt.ItemIsEnabled)
+            self.available_cameras_list.addItem(placeholder)
+            return
+
         for cam in self._detected_cameras:
             item = QListWidgetItem(f"{cam.label} (index {cam.index})")
             item.setData(Qt.ItemDataRole.UserRole, cam)
             self.available_cameras_list.addItem(item)
+
+        self.available_cameras_list.setCurrentRow(0)
 
     def _on_scan_error(self, msg: str) -> None:
         QMessageBox.warning(self, "Camera Scan", f"Failed to detect cameras:\n{msg}")
