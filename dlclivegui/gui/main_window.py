@@ -51,7 +51,12 @@ from dlclivegui.config import (
 from dlclivegui.gui.camera_config_dialog import CameraConfigDialog
 from dlclivegui.gui.recording_manager import RecordingManager
 from dlclivegui.gui.theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
-from dlclivegui.processors.processor_utils import instantiate_from_scan, scan_processor_folder
+from dlclivegui.processors.processor_utils import (
+    default_processors_dir,
+    instantiate_from_scan,
+    scan_processor_folder,
+    scan_processor_package,
+)
 from dlclivegui.services.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStats
 from dlclivegui.services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
 from dlclivegui.services.video_recorder import RecorderStats
@@ -375,7 +380,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Processor selection
         processor_path_layout = QHBoxLayout()
         self.processor_folder_edit = QLineEdit()
-        self.processor_folder_edit.setText(str(Path(__file__).parent.joinpath("processors")))
+        self.processor_folder_edit.setText(default_processors_dir())
         processor_path_layout.addWidget(self.processor_folder_edit)
 
         self.browse_processor_folder_button = QPushButton("Browse...")
@@ -739,40 +744,31 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _action_browse_processor_folder(self) -> None:
         """Browse for processor folder."""
-        current_path = self.processor_folder_edit.text() or "./processors"
+        current_path = self.processor_folder_edit.text() or default_processors_dir()
         directory = QFileDialog.getExistingDirectory(self, "Select processor folder", current_path)
         if directory:
             self.processor_folder_edit.setText(directory)
             self._refresh_processors()
 
     def _refresh_processors(self) -> None:
-        """Scan processor folder and populate dropdown."""
-        folder_path = self.processor_folder_edit.text() or "./processors"
-
-        # Clear existing items (keep "No Processor")
         self.processor_combo.clear()
         self.processor_combo.addItem("No Processor", None)
 
-        # Scan folder
-        try:
-            self._scanned_processors = scan_processor_folder(folder_path)
-            self._processor_keys = list(self._scanned_processors.keys())
+        selected_folder = self.processor_folder_edit.text().strip()
+        if Path(selected_folder).exists():
+            self._scanned_processors = scan_processor_folder(selected_folder)
+        else:
+            self._scanned_processors = scan_processor_package("dlclivegui.processors")
+        self._processor_keys = list(self._scanned_processors.keys())
 
-            # Populate dropdown
-            for key in self._processor_keys:
-                info = self._scanned_processors[key]
-                display_name = f"{info['name']} ({info['file']})"
-                self.processor_combo.addItem(display_name, key)
+        for key in self._processor_keys:
+            info = self._scanned_processors[key]
+            display_name = f"{info['name']} ({info['file']})"
+            self.processor_combo.addItem(display_name, key)
 
-            status_msg = f"Found {len(self._processor_keys)} processor(s) in {folder_path}"
-            self.statusBar().showMessage(status_msg, 3000)
-
-        except Exception as e:
-            error_msg = f"Error scanning processors: {e}"
-            self.statusBar().showMessage(error_msg, 5000)
-            logger.error(error_msg)
-            self._scanned_processors = {}
-            self._processor_keys = []
+        self.statusBar().showMessage(
+            f"Found {len(self._processor_keys)} processor(s) in package dlclivegui.processors", 3000
+        )
 
     # ------------------------------------------------------------------ multi-camera
     def _open_camera_config_dialog(self) -> None:

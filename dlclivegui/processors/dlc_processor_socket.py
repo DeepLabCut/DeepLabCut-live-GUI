@@ -17,9 +17,19 @@ _handler = logging.StreamHandler()
 _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 LOG.addHandler(_handler)
 
-
 # Registry for GUI discovery
 PROCESSOR_REGISTRY = {}
+
+
+def register_processor(cls):
+    registry_key = getattr(cls, "PROCESSOR_ID", cls.__name__)
+    if registry_key in PROCESSOR_REGISTRY:
+        raise ValueError(
+            f"Duplicate processor registration key '{registry_key}': "
+            f"{PROCESSOR_REGISTRY[registry_key].__name__} vs {cls.__name__}"
+        )
+    PROCESSOR_REGISTRY[registry_key] = cls
+    return cls
 
 
 class OneEuroFilter:
@@ -61,39 +71,15 @@ class OneEuroFilter:
         return x_hat
 
 
-class BaseProcessor_socket(Processor):
+# @register_processor # Not registering base class in the GUI
+class BaseProcessorSocket(Processor):
     """
-    Base DLC Processor with multi-client broadcasting support.
-
-    Handles network connections, timing, and data logging.
-    Subclasses should implement custom pose processing logic.
+    Patched version with safe Windows socket cleanup.
     """
 
-    # Metadata for GUI discovery
     PROCESSOR_NAME = "Base Socket Processor"
     PROCESSOR_DESCRIPTION = "Base class for socket-based processors with multi-client support"
-    PROCESSOR_PARAMS = {
-        "bind": {
-            "type": "tuple",
-            "default": ("0.0.0.0", 6000),
-            "description": "Server address (host, port)",
-        },
-        "authkey": {
-            "type": "bytes",
-            "default": b"secret password",
-            "description": "Authentication key for clients",
-        },
-        "use_perf_counter": {
-            "type": "bool",
-            "default": False,
-            "description": "Use time.perf_counter() instead of time.time()",
-        },
-        "save_original": {
-            "type": "bool",
-            "default": False,
-            "description": "Save raw pose arrays for analysis",
-        },
-    }
+    PROCESSOR_PARAMS = {}
 
     def __init__(
         self,
@@ -102,55 +88,51 @@ class BaseProcessor_socket(Processor):
         use_perf_counter=False,
         save_original=False,
     ):
-        """
-        Initialize base processor with socket server.
-
-        Args:
-            bind: (host, port) tuple for server binding
-            authkey: Authentication key for client connections
-            use_perf_counter: If True, use time.perf_counter() instead of time.time()
-            save_original: If True, save raw pose arrays for analysis
-        """
         super().__init__()
 
-        # Network setup
         self.address = bind
         self.authkey = authkey
         self.listener = Listener(bind, authkey=authkey)
+
+        # Important: grab underlying socket and enforce timeout
+        try:
+            self.listener._listener.settimeout(1.0)
+        except Exception:
+            pass
+
         self._stop = Event()
         self.conns = set()
 
-        # Start accept loop in background
-        Thread(target=self._accept_loop, name="DLCAccept", daemon=True).start()
+        Thread(target=self._accept_loop, daemon=True).start()
 
-        # Timing function
         self.timing_func = time.perf_counter if use_perf_counter else time.time
         self.start_time = self.timing_func()
 
-        # Data storage
         self.time_stamp = deque()
         self.step = deque()
         self.frame_time = deque()
         self.pose_time = deque()
-        self.original_pose = deque()
+        self.original_pose = deque() if save_original else None
 
         self._session_name = "test_session"
         self.filename = None
-        self._recording = Event()  # Thread-safe recording flag
-        self._vid_recording = Event()  # Thread-safe video recording flag
 
-        # State
+        self._recording = Event()
+        self._vid_recording = Event()
+
         self.curr_step = 0
         self.save_original = save_original
 
+    # --------------------------------------------------------------------------------------
+    # PROPERTIES
+    # --------------------------------------------------------------------------------------
+
     @property
     def recording(self):
-        """Thread-safe recording flag."""
         return self._recording.is_set()
 
     @property
     def video_recording(self):
-        """Thread-safe video recording flag."""
         return self._vid_recording.is_set()
 
     @property
@@ -162,54 +144,100 @@ class BaseProcessor_socket(Processor):
         self._session_name = name
         self.filename = f"{name}_dlc_processor_data.pkl"
 
+    # --------------------------------------------------------------------------------------
+    # ACCEPT LOOP
+    # --------------------------------------------------------------------------------------
+
     def _accept_loop(self):
-        """Background thread to accept new client connections."""
         LOG.debug(f"DLC Processor listening on {self.address[0]}:{self.address[1]}")
+
         while not self._stop.is_set():
             try:
-                c = self.listener.accept()
+                conn = self.listener.accept()
+
+                # Apply safe timeout to client socket
+                try:
+                    conn._socket.settimeout(1.0)
+                except Exception:
+                    pass
+
                 LOG.debug(f"Client connected from {self.listener.last_accepted}")
-                self.conns.add(c)
-                # Start RX loop for this connection (in case clients send data)
-                Thread(target=self._rx_loop, args=(c,), name="DLCRX", daemon=True).start()
-            except (OSError, EOFError):
+                self.conns.add(conn)
+
+                Thread(target=self._rx_loop, args=(conn,), daemon=True).start()
+
+            except (TimeoutError, OSError, EOFError):
+                if self._stop.is_set():
+                    break
+
+    # --------------------------------------------------------------------------------------
+    # RECEIVE LOOP
+    # --------------------------------------------------------------------------------------
+
+    def _rx_loop(self, conn):
+        while not self._stop.is_set():
+            try:
+                # Force check for socket death
+                if conn.poll(0.1):
+                    msg = conn.recv()
+                    self._handle_client_message(msg)
+                    continue
+
+                # Check if socket is still open
+                if getattr(conn._socket, "_closed", False):
+                    raise EOFError
+
+            except (EOFError, OSError, ConnectionError, BrokenPipeError):
                 break
 
-    def _rx_loop(self, c):
-        """Background thread to handle receive from a client (detects disconnects)."""
-        while not self._stop.is_set():
-            try:
-                if c.poll(0.05):
-                    msg = c.recv()
-                    # Handle control messages from client
-                    self._handle_client_message(msg)
-            except (EOFError, OSError, BrokenPipeError):
-                break
-        try:
-            c.close()
-        except Exception:
-            pass
-        self.conns.discard(c)
+        self._close_conn(conn)
         LOG.info("Client disconnected")
 
+    # --------------------------------------------------------------------------------------
+    # SOCKET CLOSE HELPERS
+    # --------------------------------------------------------------------------------------
+
+    def _close_conn(self, conn):
+        """Force-close client connection."""
+        try:
+            conn._socket.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+        self.conns.discard(conn)
+
+    def _close_listener(self):
+        """Close both outer and inner listener sockets."""
+        try:
+            self.listener._listener.close()  # Raw OS socket
+        except Exception:
+            pass
+        try:
+            self.listener.close()  # Python wrapper
+        except Exception:
+            pass
+
+    # --------------------------------------------------------------------------------------
+    # HANDLE MESSAGES
+    # --------------------------------------------------------------------------------------
+
     def _handle_client_message(self, msg):
-        """Handle control messages from clients."""
         if not isinstance(msg, dict):
             return
 
         cmd = msg.get("cmd")
         if cmd == "set_session_name":
-            session_name = msg.get("session_name", "default_session")
-            self.session_name = session_name
-            LOG.info(f"Session name set to: {session_name}")
+            self.session_name = msg.get("session_name", "default_session")
 
         elif cmd == "start_recording":
-            self._vid_recording.set()
             self._recording.set()
-            # Clear all data queues
+            self._vid_recording.set()
             self._clear_data_queues()
             self.curr_step = 0
-            LOG.info("Recording started, data queues cleared")
+            LOG.info("Recording started")
 
         elif cmd == "stop_recording":
             self._recording.clear()
@@ -217,88 +245,67 @@ class BaseProcessor_socket(Processor):
             LOG.info("Recording stopped")
 
         elif cmd == "save":
-            filename = msg.get("filename", self.filename)
-            save_code = self.save(filename)
-            LOG.info(f"Save {'successful' if save_code == 1 else 'failed'}: {filename}")
+            file = msg.get("filename", self.filename)
+            self.save(file)
 
-        elif cmd == "start_video":
-            # Placeholder for video recording start
-            self._vid_recording.set()
-            LOG.info("Start video recording command received")
+    # --------------------------------------------------------------------------------------
+    # STOP / SHUTDOWN
+    # --------------------------------------------------------------------------------------
 
-        elif cmd == "set_filter":
-            # Handle filter enable/disable (subclasses override if they support filtering)
-            use_filter = msg.get("use_filter", False)
-            if hasattr(self, "use_filter"):
-                self.use_filter = bool(use_filter)
-                # Reset filters to reinitialize with new setting
-                if hasattr(self, "filters"):
-                    self.filters = None
-                LOG.info(f"Filtering {'enabled' if use_filter else 'disabled'}")
-            else:
-                LOG.warning("set_filter command not supported by this processor")
+    def stop(self):
+        """Gracefully stop listener and clients."""
 
-        elif cmd == "set_filter_params":
-            # Handle filter parameter updates (subclasses override if they support filtering)
-            filter_kwargs = msg.get("filter_kwargs", {})
-            if hasattr(self, "filter_kwargs"):
-                # Update filter parameters
-                self.filter_kwargs.update(filter_kwargs)
-                # Reset filters to reinitialize with new parameters
-                if hasattr(self, "filters"):
-                    self.filters = None
-                LOG.info(f"Filter parameters updated: {filter_kwargs}")
-            else:
-                LOG.warning("set_filter_params command not supported by this processor")
+        if self._stop.is_set():
+            return
 
-    def _clear_data_queues(self):
-        """Clear all data storage queues. Override in subclasses to clear additional queues."""
-        self.time_stamp.clear()
-        self.step.clear()
-        self.frame_time.clear()
-        self.pose_time.clear()
-        if self.save_original:
-            self.original_pose.clear()
+        LOG.info("Stopping processor...")
+        self._stop.set()
+
+        for conn in list(self.conns):
+            self._close_conn(conn)
+
+        self._close_listener()
+
+        # Windows needs a longer delay for TIME_WAIT cleanup
+        if socket.gethostname().lower().endswith(".local") or True:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                time.sleep(0.3)  # increased from 0.1
+
+        LOG.info("Processor stopped")
+
+    def __del__(self):
+        try:
+            self.stop()
+        except Exception:
+            pass
+
+    # --------------------------------------------------------------------------------------
+    # BROADCAST
+    # --------------------------------------------------------------------------------------
 
     def broadcast(self, payload):
-        """Send payload to all connected clients."""
         dead = []
-        for c in list(self.conns):
+        for conn in list(self.conns):
             try:
-                c.send(payload)
-            except (EOFError, OSError, BrokenPipeError):
-                dead.append(c)
-        for c in dead:
-            try:
-                c.close()
+                conn.send(payload)
             except Exception:
-                pass
-            self.conns.discard(c)
+                dead.append(conn)
+
+        for conn in dead:
+            self._close_conn(conn)
+
+    # --------------------------------------------------------------------------------------
+    # PROCESS
+    # --------------------------------------------------------------------------------------
 
     def process(self, pose, **kwargs):
-        """
-        Process pose and broadcast to clients.
-
-        This base implementation just saves original pose and broadcasts it.
-        Subclasses should override to add custom processing.
-
-        Args:
-            pose: DLC pose array (N_keypoints x 3) with [x, y, confidence]
-            **kwargs: Additional metadata (frame_time, pose_time, etc.)
-
-        Returns:
-            pose: Unmodified pose array
-        """
         curr_time = self.timing_func()
 
-        # Save original pose if requested
         if self.save_original:
             self.original_pose.append(pose.copy())
 
-        # Update step counter
-        self.curr_step = self.curr_step + 1
+        self.curr_step += 1
 
-        # Store metadata (only if recording)
         if self.recording:
             self.time_stamp.append(curr_time)
             self.step.append(self.curr_step)
@@ -306,71 +313,51 @@ class BaseProcessor_socket(Processor):
             if "pose_time" in kwargs:
                 self.pose_time.append(kwargs["pose_time"])
 
-        # Broadcast raw pose to all connected clients
         payload = [curr_time, pose]
         self.broadcast(payload)
-
         return pose
 
-    def stop(self):
-        """Stop the processor and close all connections."""
-        LOG.info("Stopping processor...")
+    # --------------------------------------------------------------------------------------
+    # UTILITIES
+    # --------------------------------------------------------------------------------------
 
-        # Signal stop to all threads
-        self._stop.set()
-
-        # Close all client connections first
-        for c in list(self.conns):
-            try:
-                c.close()
-            except Exception:
-                pass
-            self.conns.discard(c)
-
-        # Close the listener socket
-        if hasattr(self, "listener") and self.listener:
-            try:
-                self.listener.close()
-            except Exception as e:
-                LOG.debug(f"Error closing listener: {e}")
-
-        # Give the OS time to release the socket on Windows
-        # This prevents WinError 10048 when restarting
-        time.sleep(0.1)
-
-        LOG.info("Processor stopped, all connections closed")
+    def _clear_data_queues(self):
+        self.time_stamp.clear()
+        self.step.clear()
+        self.frame_time.clear()
+        self.pose_time.clear()
+        if self.save_original:
+            self.original_pose.clear()
 
     def save(self, file=None):
-        """Save logged data to file."""
-        save_code = 0
-        if file:
-            LOG.info(f"Saving data to {file}")
-            try:
-                save_dict = self.get_data()
-                path2save = Path(__file__).parent.parent.parent / "data" / file
-                LOG.info(f"Path should be {path2save}")
-                pickle.dump(save_dict, open(path2save, "wb"))
-                save_code = 1
-            except Exception as e:
-                LOG.error(f"Save failed: {e}")
-                save_code = -1
-        return save_code
+        if not file:
+            return 0
+        try:
+            save_dict = self.get_data()
+            path2save = Path(__file__).parent.parent.parent / "data" / file
+            path2save.parent.mkdir(parents=True, exist_ok=True)
+            with open(path2save, "wb") as f:
+                pickle.dump(save_dict, f)
+            LOG.info(f"Saved data to {path2save}")
+            return 1
+        except Exception as e:
+            LOG.error(f"Save failed: {e}")
+            return -1
 
     def get_data(self):
-        """Get logged data as dictionary."""
-        save_dict = dict()
-        if self.save_original:
-            save_dict["original_pose"] = np.array(self.original_pose)
-        save_dict["start_time"] = self.start_time
-        save_dict["time_stamp"] = np.array(self.time_stamp)
-        save_dict["step"] = np.array(self.step)
-        save_dict["frame_time"] = np.array(self.frame_time)
-        save_dict["pose_time"] = np.array(self.pose_time) if self.pose_time else None
-        save_dict["use_perf_counter"] = self.timing_func == time.perf_counter
-        return save_dict
+        return {
+            "start_time": self.start_time,
+            "time_stamp": np.array(self.time_stamp),
+            "step": np.array(self.step),
+            "frame_time": np.array(self.frame_time),
+            "pose_time": np.array(self.pose_time) if self.pose_time else None,
+            "use_perf_counter": self.timing_func == time.perf_counter,
+            "original_pose": np.array(self.original_pose) if self.save_original else None,
+        }
 
 
-class MyProcessor_socket(BaseProcessor_socket):
+@register_processor
+class MyProcessorSocket(BaseProcessorSocket):
     """
     DLC Processor with pose calculations (center, heading, head angle) and optional filtering.
 
@@ -384,9 +371,7 @@ class MyProcessor_socket(BaseProcessor_socket):
 
     # Metadata for GUI discovery
     PROCESSOR_NAME = "Mouse Pose Processor"
-    PROCESSOR_DESCRIPTION = (
-        "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
-    )
+    PROCESSOR_DESCRIPTION = "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
     PROCESSOR_PARAMS = {
         "bind": {
             "type": "tuple",
@@ -426,7 +411,7 @@ class MyProcessor_socket(BaseProcessor_socket):
         authkey=b"secret password",
         use_perf_counter=False,
         use_filter=False,
-        filter_kwargs={},
+        filter_kwargs: dict | None = None,
         save_original=False,
     ):
         """
@@ -455,7 +440,7 @@ class MyProcessor_socket(BaseProcessor_socket):
 
         # Filtering
         self.use_filter = use_filter
-        self.filter_kwargs = filter_kwargs
+        self.filter_kwargs = filter_kwargs if filter_kwargs is not None else {}
         self.filters = None  # Will be initialized on first pose
 
     def _clear_data_queues(self):
@@ -579,7 +564,8 @@ class MyProcessor_socket(BaseProcessor_socket):
         return save_dict
 
 
-class MyProcessorTorchmodels_socket(BaseProcessor_socket):
+@register_processor
+class MyProcessorTorchmodelsSocket(BaseProcessorSocket):
     """
     DLC Processor with pose calculations (center, heading, head angle) and optional filtering.
 
@@ -593,9 +579,7 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
 
     # Metadata for GUI discovery
     PROCESSOR_NAME = "Mouse Pose with less keypoints"
-    PROCESSOR_DESCRIPTION = (
-        "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
-    )
+    PROCESSOR_DESCRIPTION = "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
     PROCESSOR_PARAMS = {
         "bind": {
             "type": "tuple",
@@ -635,7 +619,7 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
         authkey=b"secret password",
         use_perf_counter=False,
         use_filter=False,
-        filter_kwargs={},
+        filter_kwargs: dict | None = None,
         save_original=False,
         p_cutoff=0.4,
     ):
@@ -667,7 +651,7 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
 
         # Filtering
         self.use_filter = use_filter
-        self.filter_kwargs = filter_kwargs
+        self.filter_kwargs = filter_kwargs if filter_kwargs is not None else {}
         self.filters = None  # Will be initialized on first pose
 
     def _clear_data_queues(self):
@@ -799,12 +783,6 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
         return save_dict
 
 
-# Register processors for GUI discovery
-PROCESSOR_REGISTRY["BaseProcessor_socket"] = BaseProcessor_socket
-PROCESSOR_REGISTRY["MyProcessor_socket"] = MyProcessor_socket
-PROCESSOR_REGISTRY["MyProcessorTorchmodels_socket"] = MyProcessorTorchmodels_socket
-
-
 def get_available_processors():
     """
     Get list of available processor classes.
@@ -820,15 +798,15 @@ def get_available_processors():
                 }
             }
     """
-    processors = {}
-    for class_name, processor_class in PROCESSOR_REGISTRY.items():
-        processors[class_name] = {
-            "class": processor_class,
-            "name": getattr(processor_class, "PROCESSOR_NAME", class_name),
-            "description": getattr(processor_class, "PROCESSOR_DESCRIPTION", ""),
-            "params": getattr(processor_class, "PROCESSOR_PARAMS", {}),
+    return {
+        name: {
+            "class": cls,
+            "name": getattr(cls, "PROCESSOR_NAME", name),
+            "description": getattr(cls, "PROCESSOR_DESCRIPTION", ""),
+            "params": getattr(cls, "PROCESSOR_PARAMS", {}),
         }
-    return processors
+        for name, cls in PROCESSOR_REGISTRY.items()
+    }
 
 
 def instantiate_processor(class_name, **kwargs):
@@ -836,7 +814,7 @@ def instantiate_processor(class_name, **kwargs):
     Instantiate a processor by class name with given parameters.
 
     Args:
-        class_name: Name of the processor class (e.g., "MyProcessor_socket")
+        class_name: Name of the processor class (e.g., "MyProcessorSocket")
         **kwargs: Parameters to pass to the processor constructor
 
     Returns:
@@ -848,6 +826,4 @@ def instantiate_processor(class_name, **kwargs):
     if class_name not in PROCESSOR_REGISTRY:
         available = ", ".join(PROCESSOR_REGISTRY.keys())
         raise ValueError(f"Unknown processor '{class_name}'. Available: {available}")
-
-    processor_class = PROCESSOR_REGISTRY[class_name]
-    return processor_class(**kwargs)
+    return PROCESSOR_REGISTRY[class_name](**kwargs)
