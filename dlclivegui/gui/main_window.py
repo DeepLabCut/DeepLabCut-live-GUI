@@ -696,17 +696,41 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage(f"Saved configuration to {path}", 5000)
 
     def _action_browse_model(self) -> None:
-        # Use model_directory from config, default to current directory
-        start_dir = self._config.dlc.model_directory or "."
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select DLCLive model file",
-            start_dir,
-            "Model files (*.pt *.pth *.pb);;All files (*.*)",
+        # Prefer persisted last-used directory, then config.dlc.model_directory, then home
+        start_dir = self._model_path_store.suggest_start_dir(self._config.dlc.model_directory)
+        preselect = self._model_path_store.suggest_selected_file()
+
+        dlg = QFileDialog(self, "Select DLCLive model file")
+        dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
+        dlg.setNameFilters(
+            [
+                "Model files (*.pt *.pth *.pb)",
+                "PyTorch models (*.pt *.pth)",
+                "TensorFlow models (*.pb)",
+                "All files (*.*)",
+            ]
         )
-        if file_path:
+        dlg.setDirectory(start_dir)
+
+        # Preselect last used model if it exists (optional but nice)
+        if preselect:
+            dlg.selectFile(preselect)
+
+        if dlg.exec():
+            selected = dlg.selectedFiles()
+            if not selected:
+                return
+            file_path = selected[0]
             self.model_path_edit.setText(file_path)
+
+            # Persist model path + directory
             self._model_path_store.save_if_valid(file_path)
+
+            # Optional: update config so next startup uses this directory too
+            try:
+                self._config.dlc.model_directory = str(Path(file_path).parent)
+            except Exception:
+                pass
 
     def _action_browse_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Select output directory", str(Path.home()))
@@ -934,7 +958,7 @@ class DLCLiveMainWindow(QMainWindow):
         if is_dlc_camera_frame and dlc_cam_id in frame_data.frames:
             frame = frame_data.frames[dlc_cam_id]
             self._raw_frame = frame
-            self._dlc_tile_offset, self._dlc_tile_size = compute_tile_info(dlc_cam_id, frame, frame_data.frames)
+            self._dlc_tile_offset, self._dlc_tile_scale = compute_tile_info(dlc_cam_id, frame, frame_data.frames)
 
         # PRIORITY 1: DLC processing - only enqueue when DLC camera frame arrives!
         if self._dlc_active and is_dlc_camera_frame and dlc_cam_id in frame_data.frames:

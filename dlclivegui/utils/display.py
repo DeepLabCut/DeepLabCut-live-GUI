@@ -6,10 +6,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def create_tiled_frame(frames: dict[str, np.ndarray], max_canvas: tuple[int, int] = (1200, 800)) -> np.ndarray:
-    """Create a tiled canvas (1x1, 1x2, or 2x2) with camera-id labels."""
+def compute_tiling_geometry(
+    frames: dict[str, np.ndarray],
+    max_canvas: tuple[int, int] = (1200, 800),
+) -> tuple[list[str], int, int, int, int]:
+    """Compute consistent tiling geometry for both tiling and overlay transforms.
+
+    Returns:
+        (sorted_cam_ids, rows, cols, tile_w, tile_h)
+
+    Notes:
+    - We intentionally base tile aspect on the first frame in sorted_cam_ids,
+      because create_tiled_frame uses the same ordering. This guarantees that
+      compute_tile_info() and create_tiled_frame() agree on tile_w/tile_h.
+    - If frames have different aspect ratios, they will be resized (possibly distorted)
+      to the same tile size. Overlay scale then matches that same resize.
+    """
     if not frames:
-        return np.zeros((480, 640, 3), dtype=np.uint8)
+        return ([], 1, 1, 640, 480)
 
     cam_ids = sorted(frames.keys())
     frames_list = [frames[cid] for cid in cam_ids]
@@ -23,44 +37,62 @@ def create_tiled_frame(frames: dict[str, np.ndarray], max_canvas: tuple[int, int
         rows, cols = 2, 2
 
     max_w, max_h = max_canvas
+
+    # Reference aspect is based on the first frame in sorted order (matches tiler).
     h0, w0 = frames_list[0].shape[:2]
-    frame_aspect = w0 / h0 if h0 > 0 else 1.0
+    frame_aspect = (w0 / h0) if h0 > 0 else 1.0
 
     tile_w = max_w // cols
     tile_h = max_h // rows
-    tile_aspect = tile_w / tile_h if tile_h > 0 else 1.0
 
+    # Adjust tile size to keep the *reference* aspect ratio.
+    tile_aspect = (tile_w / tile_h) if tile_h > 0 else 1.0
     if frame_aspect > tile_aspect:
         tile_h = int(tile_w / frame_aspect)
     else:
         tile_w = int(tile_h * frame_aspect)
 
-    tile_w = max(160, tile_w)
-    tile_h = max(120, tile_h)
+    tile_w = max(160, int(tile_w))
+    tile_h = max(120, int(tile_h))
+
+    return cam_ids, rows, cols, tile_w, tile_h
+
+
+def create_tiled_frame(frames: dict[str, np.ndarray], max_canvas: tuple[int, int] = (1200, 800)) -> np.ndarray:
+    """Create a tiled canvas (1x1, 1x2, or 2x2) with camera-id labels.
+
+    Uses compute_tiling_geometry() so tile_w/tile_h are consistent with compute_tile_info().
+    """
+    if not frames:
+        return np.zeros((480, 640, 3), dtype=np.uint8)
+
+    cam_ids, rows, cols, tile_w, tile_h = compute_tiling_geometry(frames, max_canvas=max_canvas)
 
     canvas = np.zeros((rows * tile_h, cols * tile_w, 3), dtype=np.uint8)
 
-    for idx, frame in enumerate(frames_list[: rows * cols]):
-        row = idx // cols
-        col = idx % cols
+    # Only show up to rows*cols cameras
+    for idx, cam_id in enumerate(cam_ids[: rows * cols]):
+        frame = frames[cam_id]
 
         if frame.ndim == 2:
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         elif frame.shape[2] == 4:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
-        resized = cv2.resize(frame, (tile_w, tile_h))
-        if idx < len(cam_ids):
-            cv2.putText(
-                resized,
-                cam_ids[idx],
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
-                2,
-            )
+        resized = cv2.resize(frame, (tile_w, tile_h), interpolation=cv2.INTER_AREA)
 
+        cv2.putText(
+            resized,
+            cam_id,
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2,
+        )
+
+        row = idx // cols
+        col = idx % cols
         y0 = row * tile_h
         x0 = col * tile_w
         canvas[y0 : y0 + tile_h, x0 : x0 + tile_w] = resized
@@ -74,37 +106,20 @@ def compute_tile_info(
     frames: dict[str, np.ndarray],
     max_canvas: tuple[int, int] = (1200, 800),
 ) -> tuple[tuple[int, int], tuple[float, float]]:
-    """Return ((offset_x, offset_y), (scale_x, scale_y)) for overlaying on the tiled view."""
-    num_cameras = len(frames)
-    if num_cameras == 0:
+    """Return ((offset_x, offset_y), (scale_x, scale_y)) for overlaying on the tiled view.
+
+    Critical robustness fix:
+    - Tile dimensions are computed from the same reference used by create_tiled_frame()
+      (first frame in sorted order), so offsets/scales match the actual tiling.
+    """
+    if not frames:
         return (0, 0), (1.0, 1.0)
 
-    orig_h, orig_w = original_frame.shape[:2]
-    if num_cameras == 1:
-        rows, cols = 1, 1
-    elif num_cameras == 2:
-        rows, cols = 1, 2
-    else:
-        rows, cols = 2, 2
+    cam_ids, rows, cols, tile_w, tile_h = compute_tiling_geometry(frames, max_canvas=max_canvas)
 
-    max_w, max_h = max_canvas
-    frame_aspect = orig_w / orig_h if orig_h > 0 else 1.0
-
-    tile_w = max_w // cols
-    tile_h = max_h // rows
-    tile_aspect = tile_w / tile_h if tile_h > 0 else 1.0
-
-    if frame_aspect > tile_aspect:
-        tile_h = int(tile_w / frame_aspect)
-    else:
-        tile_w = int(tile_h * frame_aspect)
-
-    tile_w = max(160, tile_w)
-    tile_h = max(120, tile_h)
-
-    sorted_cam_ids = sorted(frames.keys())
+    # Which tile contains the DLC camera?
     try:
-        dlc_cam_idx = sorted_cam_ids.index(dlc_cam_id)
+        dlc_cam_idx = cam_ids.index(dlc_cam_id)
     except ValueError:
         dlc_cam_idx = 0
 
@@ -113,8 +128,9 @@ def compute_tile_info(
     offset_x = col * tile_w
     offset_y = row * tile_h
 
-    scale_x = tile_w / orig_w if orig_w > 0 else 1.0
-    scale_y = tile_h / orig_h if orig_h > 0 else 1.0
+    orig_h, orig_w = original_frame.shape[:2]
+    scale_x = (tile_w / orig_w) if orig_w > 0 else 1.0
+    scale_y = (tile_h / orig_h) if orig_h > 0 else 1.0
 
     return (offset_x, offset_y), (scale_x, scale_y)
 
