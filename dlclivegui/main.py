@@ -4,7 +4,7 @@ from __future__ import annotations
 import signal
 import sys
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -24,8 +24,8 @@ from dlclivegui.gui.theme import (
 def main() -> None:
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    # HiDPI pixmaps
-    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
+    # HiDPI pixmaps - always enabled in Qt 6 so no need to set it explicitly
+    # QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(LOGO))
