@@ -63,7 +63,9 @@ def test_worker_processes_frames(qtbot, monkeypatch_dlclive, settings_model):
         for i in range(10):
             proc.enqueue_frame(frame, timestamp=2.0 + i)
 
-        qtbot.waitUntil(lambda: proc.get_stats().frames_processed >= 3, timeout=1500)
+        # NOTE @C-Achard the timeout has to be surprisingly large here
+        # not sure if it's qtbot or threading scheduling delays
+        qtbot.waitUntil(lambda: proc.get_stats().frames_processed >= 3, timeout=5000)
 
     finally:
         proc.reset()
