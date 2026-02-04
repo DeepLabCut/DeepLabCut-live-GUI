@@ -1,5 +1,6 @@
 """Backend discovery and construction utilities."""
 
+# dlclivegui/cameras/factory.py
 from __future__ import annotations
 
 import copy

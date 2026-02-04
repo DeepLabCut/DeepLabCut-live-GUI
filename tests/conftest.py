@@ -171,7 +171,6 @@ def draw_pose_stub(monkeypatch):
         pose,
         p_cutoff=None,
         colormap=None,
-        bbox_color=None,
         offset=(0, 0),
         scale=(1.0, 1.0),
         **_ignored,
