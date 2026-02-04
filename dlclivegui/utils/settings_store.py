@@ -7,7 +7,7 @@ from ..config import ApplicationSettings
 from .utils import is_model_file
 
 
-class QtSettingsStore:
+class DLCLiveGUISettingsStore:
     def __init__(self, qsettings: QSettings | None = None):
         self._s = qsettings or QSettings("DeepLabCut", "DLCLiveGUI")
 
@@ -25,6 +25,26 @@ class QtSettingsStore:
 
     def set_last_config_path(self, path: str) -> None:
         self._s.setValue("app/last_config_path", path or "")
+
+    def get_session_name(self) -> str:
+        v = self._s.value("recording/session_name", "")
+        return str(v) if v else ""
+
+    def set_session_name(self, name: str) -> None:
+        self._s.setValue("recording/session_name", name or "")
+
+    def get_use_timestamp(self, default: bool = True) -> bool:
+        v = self._s.value("recording/use_timestamp", default)
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        if isinstance(v, str):
+            return v.strip().lower() in ("1", "true", "yes", "on")
+        return bool(default)
+
+    def set_use_timestamp(self, value: bool) -> None:
+        self._s.setValue("recording/use_timestamp", bool(value))
 
     # --- optional: snapshot full config as JSON in QSettings ---
     def save_full_config_snapshot(self, cfg: ApplicationSettings) -> None:
