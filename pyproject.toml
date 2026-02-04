@@ -94,7 +94,8 @@ markers = [
     "unit: Unit tests for individual components",
     "integration: Integration tests for component interaction",
     "functional: Functional tests for end-to-end workflows",
-    "slow: Tests that take a long time to run",
+    "hardware: Tests that require specific hardware, notable camera backends",
+    # "slow: Tests that take a long time to run",
     "gui: Tests that require GUI interaction",
 ]
 
