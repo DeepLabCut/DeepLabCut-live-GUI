@@ -13,8 +13,8 @@ os.environ["PYLON_CAMEMU"] = "2"
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QFont, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QFont, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -76,21 +76,22 @@ class DLCLiveMainWindow(QMainWindow):
         self.setWindowTitle("DeepLabCut Live GUI")
 
         # Try to load myconfig.json from the application directory if no config provided
-        # FIXME @C-Achard change this behavior for release
+        # NOTE @C-Achard Leaving this as a convenience for now
+        # TODO @C-Achard change this to a smarter "reload previous config" mechanism
         if config is None:
-            myconfig_path = Path(__file__).parent.parent / "myconfig.json"
-            if myconfig_path.exists():
-                try:
-                    config = ApplicationSettings.load(str(myconfig_path))
-                    self._config_path = myconfig_path
-                    logger.info(f"Loaded configuration from {myconfig_path}")
-                except Exception as exc:
-                    logger.warning(f"Failed to load myconfig.json: {exc}. Using default config.")
-                    config = DEFAULT_CONFIG
-                    self._config_path = None
-            else:
-                config = DEFAULT_CONFIG
-                self._config_path = None
+            #     myconfig_path = Path(__file__).parent.parent / "myconfig.json"
+            #     if myconfig_path.exists():
+            #         try:
+            #             config = ApplicationSettings.load(str(myconfig_path))
+            #             self._config_path = myconfig_path
+            #             logger.info(f"Loaded configuration from {myconfig_path}")
+            #         except Exception as exc:
+            #             logger.warning(f"Failed to load myconfig.json: {exc}. Using default config.")
+            #             config = DEFAULT_CONFIG
+            #             self._config_path = None
+            # else:
+            config = DEFAULT_CONFIG
+            self._config_path = None
         else:
             self._config_path = None
 
@@ -310,6 +311,10 @@ class DLCLiveMainWindow(QMainWindow):
         save_as_action = QAction("Save configuration as…", self)
         save_as_action.triggered.connect(self._action_save_config_as)
         file_menu.addAction(save_as_action)
+        ## Open recording folder
+        open_rec_folder_action = QAction("Open recording folder", self)
+        open_rec_folder_action.triggered.connect(self._action_open_recording_folder)
+        file_menu.addAction(open_rec_folder_action)
         ## Close
         file_menu.addSeparator()
         exit_action = QAction("Close window", self)
@@ -482,6 +487,12 @@ class DLCLiveMainWindow(QMainWindow):
         self.crf_spin.setRange(0, 51)
         self.crf_spin.setValue(23)
         form.addRow("CRF", self.crf_spin)
+
+        # Add "Open folder" button
+        self.open_rec_folder_button = QPushButton("Open recording folder")
+        self.open_rec_folder_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        self.open_rec_folder_button.clicked.connect(self._action_open_recording_folder)
+        form.addRow(self.open_rec_folder_button)
 
         # Wrap recording buttons in a widget to prevent shifting
         recording_button_widget = QWidget()
@@ -789,6 +800,47 @@ class DLCLiveMainWindow(QMainWindow):
         if directory:
             self.processor_folder_edit.setText(directory)
             self._refresh_processors()
+
+    def _action_open_recording_folder(self) -> None:
+        """
+        Open the recording folder in the system file explorer.
+        Priority:
+            1. If a run directory exists (during/after recording), open it.
+            2. Else if the session directory exists, open it.
+            3. Else if the base output directory exists, open it.
+            4. Otherwise: show warning.
+        """
+        try:
+            # 1. Real run directory if available (RecordingManager)
+            run_dir = getattr(self._rec_manager, "run_dir", None)
+            if run_dir and Path(run_dir).exists():
+                target = Path(run_dir)
+            else:
+                # 2. Session folder
+                out_dir = Path(self.output_directory_edit.text().strip()).expanduser()
+                sess_name = self.session_name_edit.text().strip() or "session"
+                sess_dir = out_dir / sess_name
+
+                if sess_dir.exists():
+                    target = sess_dir
+                elif out_dir.exists():
+                    target = out_dir
+                else:
+                    self.statusBar().showMessage("Recording folder does not exist yet.", 5000)
+                    return
+
+            # --- Use Qt's built-in cross-platform folder opener ---
+            url = QUrl.fromLocalFile(str(target))
+            ok = QDesktopServices.openUrl(url)
+
+            if ok:
+                self.statusBar().showMessage(f"Opened folder: {target}", 3000)
+            else:
+                self.statusBar().showMessage("Could not open folder.", 5000)
+
+        except Exception as exc:
+            logger.error(f"Failed to open folder: {exc}")
+            self.statusBar().showMessage("Could not open recording folder.", 5000)
 
     def _refresh_processors(self) -> None:
         self.processor_combo.clear()
