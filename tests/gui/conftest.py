@@ -1,6 +1,8 @@
 # tests/services/gui/conftest.py
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from PySide6.QtCore import Qt
 
@@ -178,3 +180,85 @@ class _FakeProcessor:
 def fake_processor():
     """Return a simple fake processor for testing."""
     return _FakeProcessor()
+
+
+# ---------- RecordingManager helpers/fixtures ----------
+class FakeVideoRecorder:
+    """Lightweight test double for VideoRecorder (no threads/ffmpeg)."""
+
+    def __init__(self, output, frame_size=None, frame_rate=None, codec="libx264", crf=23, **kwargs):
+        self.output = Path(output)
+        self.frame_size = frame_size
+        self.frame_rate = frame_rate
+        self.codec = codec
+        self.crf = crf
+        self.started = False
+        self.stopped = False
+        self.write_calls = []
+        self.raise_on_start = False
+        self.raise_on_write = False
+        self._stats = None
+
+    @property
+    def is_running(self):
+        return self.started and not self.stopped
+
+    def start(self):
+        if self.raise_on_start:
+            raise RuntimeError("start failed")
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    def write(self, frame, timestamp=None):
+        if self.raise_on_write:
+            raise RuntimeError("write failed")
+        self.write_calls.append((frame, timestamp))
+        return True
+
+    def get_stats(self):
+        return self._stats
+
+
+@pytest.fixture
+def recording_settings(app_config_two_cams):
+    """
+    RecordingSettingsModel clone derived from app_config_two_cams.
+    Keeps tests isolated from mutation across runs.
+    """
+    return app_config_two_cams.recording.model_copy(deep=True)
+
+
+@pytest.fixture
+def patch_video_recorder(monkeypatch):
+    """
+    Patch the VideoRecorder symbol used inside dlclivegui.gui.recording_manager
+    so RecordingManager tests don't invoke vidgear/ffmpeg.
+    """
+    import dlclivegui.gui.recording_manager as rm_mod
+
+    monkeypatch.setattr(rm_mod, "VideoRecorder", FakeVideoRecorder)
+    return FakeVideoRecorder
+
+
+@pytest.fixture
+def patch_build_run_dir(monkeypatch, tmp_path):
+    """
+    Patch build_run_dir (resolved in dlclivegui.gui.recording_manager namespace)
+    to return a deterministic run directory and capture the call args.
+    """
+    import dlclivegui.gui.recording_manager as rm_mod
+
+    spy = {"session_dir": None, "use_timestamp": None}
+    run_dir = tmp_path / "videos" / "Sess_SANITIZED" / "run_TEST"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    def _fake_build_run_dir(session_dir: Path, *, use_timestamp: bool):
+        spy["session_dir"] = Path(session_dir)
+        spy["use_timestamp"] = use_timestamp
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
+
+    monkeypatch.setattr(rm_mod, "build_run_dir", _fake_build_run_dir)
+    return spy, run_dir
