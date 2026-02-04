@@ -88,7 +88,7 @@ def build_run_dir(session_dir: Path, *, use_timestamp: bool) -> Path:
         run_dir.mkdir(parents=True, exist_ok=False)
         return run_dir
 
-    idx = next_run_index(session_dir, prefix="run_")
+    idx = next_run_index(session_dir)
     run_dir = session_dir / f"run_{idx:04d}"
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir

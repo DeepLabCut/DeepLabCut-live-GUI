@@ -71,7 +71,7 @@ from dlclivegui.utils.config_models import (
     VisualizationSettingsModel,
 )
 from dlclivegui.utils.display import compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
-from dlclivegui.utils.utils import FPSTracker, build_recording_plan
+from dlclivegui.utils.utils import FPSTracker
 
 # logging.basicConfig(level=logging.INFO)
 logging.basicConfig(level=logging.DEBUG)  # FIXME @C-Achard set back to INFO for release
@@ -587,7 +587,7 @@ class DLCLiveMainWindow(QMainWindow):
         if hasattr(self, "session_name_edit"):
             self.session_name_edit.editingFinished.connect(self._on_session_name_editing_finished)
         if hasattr(self, "use_timestamp_checkbox"):
-            self.use_timestamp_checkbox.stateChanged.connect(lambda _s: self._update_recording_path_preview())
+            self.use_timestamp_checkbox.stateChanged.connect(self._on_use_timestamp_changed)
         if hasattr(self, "output_directory_edit"):
             self.output_directory_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
         if hasattr(self, "filename_edit"):
@@ -626,6 +626,9 @@ class DLCLiveMainWindow(QMainWindow):
                 persisted = self._load_persisted_session_name()
                 if persisted:
                     self.session_name_edit.setText(persisted)
+        ## Restore "Use timestamp" checkbox state
+        if hasattr(self, "use_timestamp_checkbox"):
+            self.use_timestamp_checkbox.setChecked(self._load_persisted_use_timestamp())
 
         # Set bounding box settings from config
         bbox = config.bbox
@@ -837,30 +840,14 @@ class DLCLiveMainWindow(QMainWindow):
         # Preview is approximate (since run index/time is decided at start).
         sess_safe = sess.strip() or "session"
         run_hint = "run_<timestamp>" if use_ts else "run_<next>"
-        stem_hint = base.strip() or "recording"
+        stem_hint = Path(base).stem if base.strip() else "recording"  # shows user-provided stem or default
         self.recording_path_preview.setText(
             str(Path(out_dir).expanduser() / sess_safe / run_hint / f"{stem_hint}_<camera>.{container}")
         )
 
-    def _recording_plan_from_ui(self):
-        recording = self._recording_settings_from_ui()
-        session_name = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
-        use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
-
-        camera_ids = (
-            sorted(self._running_cams_ids)
-            if self._running_cams_ids
-            else [get_camera_id(c) for c in self._config.multi_camera.get_active_cameras()]
-        )
-
-        return build_recording_plan(
-            output_dir=recording.directory,
-            session_name=session_name,
-            base_filename=self.filename_edit.text().strip(),
-            container=self.container_combo.currentText().strip(),
-            camera_ids=camera_ids,
-            use_timestamp=use_ts,
-        )
+    def _on_use_timestamp_changed(self, _state: int) -> None:
+        self._persist_use_timestamp(self.use_timestamp_checkbox.isChecked())
+        self._update_recording_path_preview()
 
     # ------------------------------------------------------------------
     # Multi-camera
@@ -1132,11 +1119,12 @@ class DLCLiveMainWindow(QMainWindow):
         )
         if run_dir is None:
             self._show_error("Failed to start recording.")
+            return
 
         self._persist_session_name(session_name)
         self.start_record_button.setEnabled(False)
         self.stop_record_button.setEnabled(True)
-        self.statusBar().showMessage(f"Recording {len(active_cams)} camera(s) to {recording.directory}", 5000)
+        self.statusBar().showMessage(f"Recording {len(active_cams)} camera(s) to {run_dir}", 5000)
         self._update_camera_controls_enabled()
 
     def _stop_multi_camera_recording(self) -> None:
@@ -1680,6 +1668,9 @@ class DLCLiveMainWindow(QMainWindow):
     def _session_settings_key(self) -> str:
         return "recording/session_name"
 
+    def _use_timestamp_settings_key(self) -> str:
+        return "recording/use_timestamp"
+
     def _load_persisted_session_name(self) -> str:
         try:
             return self.settings.value(self._session_settings_key(), "", type=str) or ""
@@ -1689,6 +1680,27 @@ class DLCLiveMainWindow(QMainWindow):
     def _persist_session_name(self, name: str) -> None:
         try:
             self.settings.setValue(self._session_settings_key(), name)
+        except Exception:
+            pass
+
+    def _load_persisted_use_timestamp(self) -> bool:
+        """Load checkbox state from QSettings (defaults to True)."""
+        try:
+            # QSettings sometimes returns strings; type=bool helps but isn't perfect everywhere.
+            v = self.settings.value(self._use_timestamp_settings_key(), True)
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, (int, float)):
+                return bool(v)
+            if isinstance(v, str):
+                return v.strip().lower() in ("1", "true", "yes", "on")
+            return True
+        except Exception:
+            return True
+
+    def _persist_use_timestamp(self, value: bool) -> None:
+        try:
+            self.settings.setValue(self._use_timestamp_settings_key(), bool(value))
         except Exception:
             pass
 

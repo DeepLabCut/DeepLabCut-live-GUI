@@ -15,11 +15,7 @@ log = logging.getLogger(__name__)
 
 
 class RecordingManager:
-    """Handle multi-camera recording lifecycle and filenames.
-
-    Directory structure:
-      output_dir / <session_name> / <unique_run_dir> / <files...>
-    """
+    """Handle multi-camera recording lifecycle and filenames."""
 
     def __init__(self):
         self._recorders: dict[str, VideoRecorder] = {}
@@ -51,46 +47,52 @@ class RecordingManager:
         active_cams: list[CameraSettingsModel],
         current_frames: dict[str, np.ndarray],
         *,
-        session_name: str | None = None,
+        session_name: str = "session",
         use_timestamp: bool = True,
+        all_or_nothing: bool = False,
     ) -> Path | None:
-        """Start recording for all cameras.
+        """Start recording for all active cameras.
+
+        Record into <directory>/<session_name>/<unique_run_dir>/
+
+        Args:
+            recording: Recording settings including output directory and codec.
+            active_cams: List of active camera settings to record.
+            current_frames: Dict of current frames by camera ID for size reference.
+            session_name: Name of the recording session (used in directory name).
+            use_timestamp: Whether to use timestamp-based run directories instead of indexed.
+            all_or_nothing: If True, stop all and return None if any recorder fails to start.
 
         Returns:
-            Path to the created run directory, or None if start failed.
+            run_dir if at least one recorder started, else None.
         """
         if self._recorders:
-            log.debug("Recording already active; start_all ignored.")
             return self._run_dir
 
         if not active_cams:
-            log.warning("No active cameras provided; nothing to record.")
             return None
 
-        base_path = recording.output_path()  # expected to include directory + filename + suffix
+        base_path = recording.output_path()
         base_stem = base_path.stem
-        output_dir = base_path.parent
 
-        sess = sanitize_name(session_name or "session", fallback="session")
-        session_dir = output_dir / sess
-
+        # create session/run directories
+        session_safe = sanitize_name(session_name, fallback="session")
+        session_dir = base_path.parent / session_safe
         try:
             run_dir = build_run_dir(session_dir, use_timestamp=use_timestamp)
         except Exception as exc:
-            log.error("Failed to create run directory in %s: %s", session_dir, exc)
+            log.error("Failed to create run dir: %s", exc)
             return None
 
         self._session_dir = session_dir
         self._run_dir = run_dir
 
         started_any = False
-        errors: list[str] = []
 
         for cam in active_cams:
             cam_id = get_camera_id(cam)
-            # Stable per-camera filename. No timestamp needed because run_dir is unique.
             cam_filename = f"{base_stem}_{cam.backend}_cam{cam.index}{base_path.suffix}"
-            cam_path = run_dir / cam_filename
+            cam_path = run_dir / cam_filename  # CHANGED: use run_dir
 
             frame = current_frames.get(cam_id)
             frame_size = (frame.shape[0], frame.shape[1]) if frame is not None else None
@@ -102,34 +104,27 @@ class RecordingManager:
                 codec=recording.codec,
                 crf=recording.crf,
             )
-
             try:
                 recorder.start()
                 self._recorders[cam_id] = recorder
                 started_any = True
                 log.info("Started recording %s -> %s", cam_id, cam_path)
             except Exception as exc:
-                err = f"{cam_id}: {exc}"
-                errors.append(err)
                 log.error("Failed to start recording for %s: %s", cam_id, exc)
+                if all_or_nothing:
+                    self.stop_all()
+                    return None
 
-        # If nothing started, clean up and return None
         if not started_any:
             self._recorders.clear()
             self._session_dir = None
             self._run_dir = None
-            log.error("No recorders started. Errors: %s", "; ".join(errors) if errors else "unknown")
             return None
-
-        # If partial failures occurred, we keep successful recorders running,
-        # but log clearly. You can choose to stop_all() here if you prefer "all-or-nothing".
-        if errors:
-            log.warning("Some cameras failed to start recording: %s", "; ".join(errors))
 
         return run_dir
 
     def stop_all(self) -> None:
-        for cam_id, rec in list(self._recorders.items()):
+        for cam_id, rec in self._recorders.items():
             try:
                 rec.stop()
                 log.info("Stopped recording %s", cam_id)
@@ -154,7 +149,6 @@ class RecordingManager:
             self._recorders.pop(cam_id, None)
 
     def get_stats_summary(self) -> str:
-        # Aggregate stats across recorders
         totals = {
             "written": 0,
             "dropped": 0,
