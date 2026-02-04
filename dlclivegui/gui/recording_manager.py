@@ -92,7 +92,7 @@ class RecordingManager:
         for cam in active_cams:
             cam_id = get_camera_id(cam)
             cam_filename = f"{base_stem}_{cam.backend}_cam{cam.index}{base_path.suffix}"
-            cam_path = run_dir / cam_filename  # CHANGED: use run_dir
+            cam_path = run_dir / cam_filename
 
             frame = current_frames.get(cam_id)
             frame_size = (frame.shape[0], frame.shape[1]) if frame is not None else None

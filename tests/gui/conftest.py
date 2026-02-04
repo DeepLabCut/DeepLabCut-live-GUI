@@ -6,13 +6,6 @@ from PySide6.QtCore import Qt
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.gui.main_window import DLCLiveMainWindow
-
-# from dlclivegui.config import (
-#     DEFAULT_CONFIG,
-#     ApplicationSettings,
-#     CameraSettings,
-#     MultiCameraSettings,
-# )
 from dlclivegui.utils.config_models import (
     DEFAULT_CONFIG,
     ApplicationSettingsModel,
@@ -21,9 +14,8 @@ from dlclivegui.utils.config_models import (
 )
 from tests.conftest import FakeBackend, FakeDLCLive  # noqa: F401
 
+
 # ---------- Test helpers: application configuration with two fake cameras ----------
-
-
 @pytest.fixture
 def app_config_two_cams(tmp_path) -> ApplicationSettingsModel:
     """An app config with two enabled cameras (fake backend) and writable recording dir."""
@@ -41,8 +33,6 @@ def app_config_two_cams(tmp_path) -> ApplicationSettingsModel:
 
 
 # ---------- Autouse patches to keep GUI tests fast and side-effect-free ----------
-
-
 @pytest.fixture(autouse=True)
 def _patch_camera_factory(monkeypatch):
     """
@@ -85,9 +75,27 @@ def _patch_dlclive_to_fake(monkeypatch):
     monkeypatch.setattr(dlcp_mod, "DLCLive", FakeDLCLive)
 
 
-# ---------- The main window fixture (focus) ----------
+@pytest.fixture(autouse=True)
+def _isolate_qsettings(tmp_path):
+    """
+    Redirect QSettings to a temp directory so persistence tests are deterministic
+    and do not touch real user settings.
+    """
+    from PySide6.QtCore import QSettings
+
+    # Use INI backend for easy temp path redirection
+    QSettings.setDefaultFormat(QSettings.IniFormat)
+    QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(tmp_path))
+
+    # Clear keys for this app/org to avoid leakage between tests
+    s = QSettings("DeepLabCut", "DLCLiveGUI")
+    s.clear()
+    s.sync()
+
+    yield
 
 
+# ---------- The main window fixture ----------
 @pytest.fixture
 def window(qtbot, app_config_two_cams) -> DLCLiveMainWindow:
     """
@@ -112,8 +120,6 @@ def window(qtbot, app_config_two_cams) -> DLCLiveMainWindow:
 
 
 # ---------- Convenience fixtures that expose controller/processor from the window ----------
-
-
 @pytest.fixture
 def multi_camera_controller(window):
     """
@@ -128,3 +134,47 @@ def dlc_processor(window):
     Return the *processor used by the window* so tests can connect to pose/initialized.
     """
     return window._dlc
+
+
+# ---------- Monkeypatch RecordingManager start_all to capture args and return fake path ----------
+@pytest.fixture
+def start_all_spy(monkeypatch, tmp_path):
+    """
+    Patch RecordingManager.start_all to capture args and return a fake run_dir.
+    """
+    calls = {}
+
+    def _fake_start_all(self, recording, active_cams, current_frames, **kwargs):
+        calls["recording"] = recording
+        calls["active_cams"] = active_cams
+        calls["current_frames"] = current_frames
+        calls["kwargs"] = kwargs
+
+        # deterministic fake path returned to GUI
+        run_dir = tmp_path / "videos" / "Sess" / "run_TEST"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
+
+    # IMPORTANT: patch the RecordingManager class that the GUI imports.
+    from dlclivegui.gui import recording_manager as rm_mod
+
+    monkeypatch.setattr(rm_mod.RecordingManager, "start_all", _fake_start_all)
+
+    return calls
+
+
+# ---------- Fake processor ----------
+class _FakeProcessor:
+    def __init__(self):
+        self.conns = [object()]
+        self._recording = True  # just needs to exist
+        self._vid_recording = True  # attribute presence required by your code
+        self.video_recording = True
+        self.session_name = "auto_ABC"
+        self.recording = True
+
+
+@pytest.fixture
+def fake_processor():
+    """Return a simple fake processor for testing."""
+    return _FakeProcessor()
