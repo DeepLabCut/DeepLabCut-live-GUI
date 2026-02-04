@@ -5,8 +5,8 @@ import pytest
 from PySide6.QtCore import Qt
 
 from dlclivegui.cameras.factory import DetectedCamera
+from dlclivegui.config import CameraSettings, MultiCameraSettings
 from dlclivegui.gui.camera_config_dialog import CameraConfigDialog
-from dlclivegui.utils.config_models import CameraSettingsModel, MultiCameraSettingsModel
 
 
 @pytest.fixture
@@ -20,10 +20,10 @@ def dialog(qtbot, monkeypatch):
         ],
     )
 
-    s = MultiCameraSettingsModel(
+    s = MultiCameraSettings(
         cameras=[
-            CameraSettingsModel(name="CamA", backend="opencv", index=0, enabled=True),
-            CameraSettingsModel(name="CamB", backend="opencv", index=1, enabled=False),
+            CameraSettings(name="CamA", backend="opencv", index=0, enabled=True),
+            CameraSettings(name="CamB", backend="opencv", index=1, enabled=False),
         ]
     )
     d = CameraConfigDialog(None, s)

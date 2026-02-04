@@ -15,7 +15,7 @@ from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
 
 # from dlclivegui.config import CameraSettings
-from dlclivegui.utils.config_models import CameraSettingsModel
+from dlclivegui.config import CameraSettings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class SingleCameraWorker(QObject):
     started = Signal(str)  # camera_id
     stopped = Signal(str)  # camera_id
 
-    def __init__(self, camera_id: str, settings: CameraSettingsModel):
+    def __init__(self, camera_id: str, settings: CameraSettings):
         super().__init__()
         self._camera_id = camera_id
         self._settings = settings
@@ -101,7 +101,7 @@ class SingleCameraWorker(QObject):
         self._stop_event.set()
 
 
-def get_camera_id(settings: CameraSettingsModel) -> str:
+def get_camera_id(settings: CameraSettings) -> str:
     """Generate a unique camera ID from settings."""
     return f"{settings.backend}:{settings.index}"
 
@@ -124,7 +124,7 @@ class MultiCameraController(QObject):
         super().__init__()
         self._workers: dict[str, SingleCameraWorker] = {}
         self._threads: dict[str, QThread] = {}
-        self._settings: dict[str, CameraSettingsModel] = {}
+        self._settings: dict[str, CameraSettings] = {}
         self._frames: dict[str, np.ndarray] = {}
         self._timestamps: dict[str, float] = {}
         self._frame_lock = Lock()
@@ -141,7 +141,7 @@ class MultiCameraController(QObject):
         """Get the number of active cameras."""
         return len(self._started_cameras)
 
-    def start(self, camera_settings: list[CameraSettingsModel]) -> None:
+    def start(self, camera_settings: list[CameraSettings]) -> None:
         """Start multiple cameras; accepts dataclasses, pydantic models, or dicts."""
         if self._running:
             LOGGER.warning("Multi-camera controller already running")
@@ -162,7 +162,7 @@ class MultiCameraController(QObject):
         for settings in active_settings:
             self._start_camera(settings)
 
-    def _start_camera(self, settings: CameraSettingsModel) -> None:
+    def _start_camera(self, settings: CameraSettings) -> None:
         """Start a single camera."""
         cam_id = get_camera_id(settings)
         if cam_id in self._workers:

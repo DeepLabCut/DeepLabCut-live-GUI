@@ -11,7 +11,7 @@ from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
 
 # from dlclivegui.config import DLCProcessorSettings
-from dlclivegui.utils.config_models import DLCProcessorSettingsModel
+from dlclivegui.config import DLCProcessorSettings
 
 # ---------------------------------------------------------------------
 # Test doubles
@@ -92,4 +92,4 @@ def monkeypatch_dlclive(monkeypatch):
 @pytest.fixture
 def settings_model():
     """A standard Pydantic DLCProcessorSettingsModel for tests."""
-    return DLCProcessorSettingsModel(model_path="dummy.pt")
+    return DLCProcessorSettings(model_path="dummy.pt")

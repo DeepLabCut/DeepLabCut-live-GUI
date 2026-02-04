@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from ..utils.config_models import CameraSettingsModel
+from ..config import CameraSettings
 from .base import _BACKEND_REGISTRY, CameraBackend
 
 
@@ -106,7 +106,7 @@ def _ensure_backends_loaded() -> None:
     _BACKENDS_IMPORTED = True
 
 
-def _sanitize_for_probe(settings: CameraSettingsModel) -> CameraSettingsModel:
+def _sanitize_for_probe(settings: CameraSettings) -> CameraSettings:
     """
     Return a light, side-effect-minimized dataclass copy for availability probes.
     - Zero FPS (let driver pick default)
@@ -225,7 +225,7 @@ class CameraFactory:
                         # Definitely not present, skip heavy open
                         continue
 
-                    settings = CameraSettingsModel(
+                    settings = CameraSettings(
                         name=f"Probe {index}",
                         index=index,
                         fps=30.0,
@@ -265,7 +265,7 @@ class CameraFactory:
         return detected
 
     @staticmethod
-    def create(settings: CameraSettingsModel) -> CameraBackend:
+    def create(settings: CameraSettings) -> CameraBackend:
         """Instantiate a backend for ``settings``."""
         dc = settings
         backend_name = (dc.backend or "opencv").lower()
@@ -281,7 +281,7 @@ class CameraFactory:
         return backend_cls(dc)
 
     @staticmethod
-    def check_camera_available(settings: CameraSettingsModel) -> tuple[bool, str]:
+    def check_camera_available(settings: CameraSettings) -> tuple[bool, str]:
         """Check if a camera is present/accessible without pushing heavy settings like FPS."""
         dc = settings
         backend_name = (dc.backend or "opencv").lower()

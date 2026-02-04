@@ -8,8 +8,8 @@ from PySide6.QtCore import Qt
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import DetectedCamera
+from dlclivegui.config import CameraSettings, MultiCameraSettings
 from dlclivegui.gui.camera_config_dialog import CameraConfigDialog
-from dlclivegui.utils.config_models import CameraSettingsModel, MultiCameraSettingsModel
 
 # ---------------- Fake backend ----------------
 
@@ -47,9 +47,9 @@ def patch_factory(monkeypatch):
 
 @pytest.fixture
 def dialog(qtbot, patch_factory):
-    s = MultiCameraSettingsModel(
+    s = MultiCameraSettings(
         cameras=[
-            CameraSettingsModel(name="A", backend="opencv", index=0, enabled=True),
+            CameraSettings(name="A", backend="opencv", index=0, enabled=True),
         ]
     )
     d = CameraConfigDialog(None, s)

@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from ..utils.config_models import CameraSettingsModel
+from ..config import CameraSettings
 
 _BACKEND_REGISTRY: dict[str, type[CameraBackend]] = {}
 
@@ -49,9 +49,9 @@ def reset_backends():
 class CameraBackend(ABC):
     """Abstract base class for camera backends."""
 
-    def __init__(self, settings: CameraSettingsModel):
+    def __init__(self, settings: CameraSettings):
         # Normalize to dataclass so all backends stay unchanged
-        self.settings: CameraSettingsModel = settings
+        self.settings: CameraSettings = settings
 
     @classmethod
     def name(cls) -> str:

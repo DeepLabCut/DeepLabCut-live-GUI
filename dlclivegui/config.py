@@ -1,4 +1,4 @@
-# config_models.py
+# dlclivegui/config.py
 from __future__ import annotations
 
 import json
@@ -12,7 +12,7 @@ TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
 Precision = Literal["FP32", "FP16"]
 
 
-class CameraSettingsModel(BaseModel):
+class CameraSettings(BaseModel):
     name: str = "Camera 0"
     index: int = 0
     fps: float = 25.0
@@ -59,27 +59,27 @@ class CameraSettingsModel(BaseModel):
         return (self.crop_x0, self.crop_y0, self.crop_x1, self.crop_y1)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CameraSettingsModel:
+    def from_dict(cls, data: dict[str, Any]) -> CameraSettings:
         return cls(**data)
 
     @classmethod
-    def from_defaults(cls) -> CameraSettingsModel:
+    def from_defaults(cls) -> CameraSettings:
         return cls()
 
-    def apply_defaults(self) -> CameraSettingsModel:
+    def apply_defaults(self) -> CameraSettings:
         default = self.from_defaults()
-        for field in CameraSettingsModel.model_fields:
+        for field in CameraSettings.model_fields:
             if getattr(self, field) in (None, 0, 0.0):
                 setattr(self, field, getattr(default, field))
         return self
 
 
-class MultiCameraSettingsModel(BaseModel):
-    cameras: list[CameraSettingsModel] = Field(default_factory=list)
+class MultiCameraSettings(BaseModel):
+    cameras: list[CameraSettings] = Field(default_factory=list)
     max_cameras: int = 4
     tile_layout: TileLayout = "auto"
 
-    def get_active_cameras(self) -> list[CameraSettingsModel]:
+    def get_active_cameras(self) -> list[CameraSettings]:
         return [c for c in self.cameras if c.enabled]
 
     @model_validator(mode="after")
@@ -88,7 +88,7 @@ class MultiCameraSettingsModel(BaseModel):
             raise ValueError("Number of enabled cameras exceeds max_cameras.")
         return self
 
-    def add_camera(self, camera: CameraSettingsModel) -> bool:
+    def add_camera(self, camera: CameraSettings) -> bool:
         """Add a new camera if under max_cameras limit."""
         if len(self.cameras) >= self.max_cameras:
             return False
@@ -103,9 +103,9 @@ class MultiCameraSettingsModel(BaseModel):
         return False
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> MultiCameraSettingsModel:
+    def from_dict(cls, data: dict[str, Any]) -> MultiCameraSettings:
         cameras_data = data.get("cameras", [])
-        cameras = [CameraSettingsModel(**cam) for cam in cameras_data]
+        cameras = [CameraSettings(**cam) for cam in cameras_data]
         max_cameras = data.get("max_cameras", 4)
         tile_layout = data.get("tile_layout", "auto")
         return cls(cameras=cameras, max_cameras=max_cameras, tile_layout=tile_layout)
@@ -138,7 +138,7 @@ class DynamicCropModel(BaseModel):
         return (self.enabled, self.margin, self.max_missing_frames)
 
 
-class DLCProcessorSettingsModel(BaseModel):
+class DLCProcessorSettings(BaseModel):
     model_path: str = ""
     model_directory: str = "."
     device: str | None = "auto"  # "cuda:0", "cpu", or None
@@ -155,7 +155,7 @@ class DLCProcessorSettingsModel(BaseModel):
         return DynamicCropModel.from_tupleish(v)
 
 
-class BoundingBoxSettingsModel(BaseModel):
+class BoundingBoxSettings(BaseModel):
     enabled: bool = False
     x0: int = 0
     y0: int = 0
@@ -169,7 +169,7 @@ class BoundingBoxSettingsModel(BaseModel):
         return self
 
 
-class VisualizationSettingsModel(BaseModel):
+class VisualizationSettings(BaseModel):
     p_cutoff: float = Field(default=0.6, ge=0.0, le=1.0)
     colormap: str = "hot"
     bbox_color: tuple[int, int, int] = (0, 0, 255)
@@ -181,7 +181,7 @@ class VisualizationSettingsModel(BaseModel):
         return (0, 0, 255)  # default red
 
 
-class RecordingSettingsModel(BaseModel):
+class RecordingSettings(BaseModel):
     enabled: bool = False
     directory: str = Field(default_factory=lambda: str(Path.home() / "Videos" / "deeplabcut-live"))
     filename: str = "session.mp4"
@@ -214,18 +214,18 @@ class RecordingSettingsModel(BaseModel):
         }
 
 
-class ApplicationSettingsModel(BaseModel):
+class ApplicationSettings(BaseModel):
     # optional: add a semantic version for migrations
     version: int = 1
-    camera: CameraSettingsModel = Field(default_factory=CameraSettingsModel)  # kept for backward compat
-    multi_camera: MultiCameraSettingsModel = Field(default_factory=MultiCameraSettingsModel)
-    dlc: DLCProcessorSettingsModel = Field(default_factory=DLCProcessorSettingsModel)
-    recording: RecordingSettingsModel = Field(default_factory=RecordingSettingsModel)
-    bbox: BoundingBoxSettingsModel = Field(default_factory=BoundingBoxSettingsModel)
-    visualization: VisualizationSettingsModel = Field(default_factory=VisualizationSettingsModel)
+    camera: CameraSettings = Field(default_factory=CameraSettings)  # kept for backward compat
+    multi_camera: MultiCameraSettings = Field(default_factory=MultiCameraSettings)
+    dlc: DLCProcessorSettings = Field(default_factory=DLCProcessorSettings)
+    recording: RecordingSettings = Field(default_factory=RecordingSettings)
+    bbox: BoundingBoxSettings = Field(default_factory=BoundingBoxSettings)
+    visualization: VisualizationSettings = Field(default_factory=VisualizationSettings)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ApplicationSettingsModel:
+    def from_dict(cls, data: dict[str, Any]) -> ApplicationSettings:
         camera_data = data.get("camera", {})
         multi_camera_data = data.get("multi_camera", {})
         dlc_data = data.get("dlc", {})
@@ -233,12 +233,12 @@ class ApplicationSettingsModel(BaseModel):
         bbox_data = data.get("bbox", {})
         visualization_data = data.get("visualization", {})
 
-        camera = CameraSettingsModel(**camera_data)
-        multi_camera = MultiCameraSettingsModel.from_dict(multi_camera_data)
-        dlc = DLCProcessorSettingsModel(**dlc_data)
-        recording = RecordingSettingsModel(**recording_data)
-        bbox = BoundingBoxSettingsModel(**bbox_data)
-        visualization = VisualizationSettingsModel(**visualization_data)
+        camera = CameraSettings(**camera_data)
+        multi_camera = MultiCameraSettings.from_dict(multi_camera_data)
+        dlc = DLCProcessorSettings(**dlc_data)
+        recording = RecordingSettings(**recording_data)
+        bbox = BoundingBoxSettings(**bbox_data)
+        visualization = VisualizationSettings(**visualization_data)
 
         return cls(
             camera=camera,
@@ -261,7 +261,7 @@ class ApplicationSettingsModel(BaseModel):
         }
 
     @classmethod
-    def load(cls, path: Path | str) -> ApplicationSettingsModel:
+    def load(cls, path: Path | str) -> ApplicationSettings:
         """Load configuration from ``path``."""
 
         file_path = Path(path).expanduser()
@@ -280,4 +280,4 @@ class ApplicationSettingsModel(BaseModel):
             json.dump(self.to_dict(), handle, indent=2)
 
 
-DEFAULT_CONFIG = ApplicationSettingsModel()
+DEFAULT_CONFIG = ApplicationSettings()

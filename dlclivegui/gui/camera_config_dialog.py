@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import DetectedCamera
-from dlclivegui.utils.config_models import CameraSettingsModel, MultiCameraSettingsModel
+from dlclivegui.config import CameraSettings, MultiCameraSettings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ class CameraLoadWorker(QThread):
     error = Signal(str)  # Emits error message
     canceled = Signal()  # Emits when canceled before success
 
-    def __init__(self, cam: CameraSettingsModel, parent: QWidget | None = None):
+    def __init__(self, cam: CameraSettings, parent: QWidget | None = None):
         super().__init__(parent)
         # Work on a defensive copy so we never mutate the original settings
         self._cam = copy.deepcopy(cam)
@@ -135,7 +135,7 @@ class CameraConfigDialog(QDialog):
     def __init__(
         self,
         parent: QWidget | None = None,
-        multi_camera_settings: MultiCameraSettingsModel | None = None,
+        multi_camera_settings: MultiCameraSettings | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Configure Cameras")
@@ -180,7 +180,7 @@ class CameraConfigDialog(QDialog):
     # Config helpers
     # ------------------------------
 
-    def _build_model_from_form(self, base: CameraSettingsModel) -> CameraSettingsModel:
+    def _build_model_from_form(self, base: CameraSettings) -> CameraSettings:
         # construct a dict from form widgets; Pydantic will coerce/validate
         payload = base.model_dump()
         payload.update(
@@ -197,7 +197,7 @@ class CameraConfigDialog(QDialog):
             }
         )
         #  Validate and coerce; if invalid, Pydantic will raise
-        return CameraSettingsModel.model_validate(payload)
+        return CameraSettings.model_validate(payload)
 
     # -------------------------------
     # UI setup
@@ -562,7 +562,7 @@ class CameraConfigDialog(QDialog):
         self._refresh_available_cameras()
         self._update_button_states()
 
-    def _format_camera_label(self, cam: CameraSettingsModel, index: int = -1) -> str:
+    def _format_camera_label(self, cam: CameraSettings, index: int = -1) -> str:
         status = "✓" if cam.enabled else "○"
         this_id = f"{cam.backend}:{cam.index}"
         dlc_indicator = " [DLC]" if this_id == self._dlc_camera_id and cam.enabled else ""
@@ -703,7 +703,7 @@ class CameraConfigDialog(QDialog):
     # UI helpers/actions
     # -------------------------------
 
-    def _needs_preview_reopen(self, cam: CameraSettingsModel) -> bool:
+    def _needs_preview_reopen(self, cam: CameraSettings) -> bool:
         if not (self._preview_active and self._preview_backend):
             return False
 
@@ -747,7 +747,7 @@ class CameraConfigDialog(QDialog):
         interval_ms = max(15, int(1000.0 / min(max(fps, 1.0), 60.0)))
         self._preview_timer.start(interval_ms)
 
-    def _reconcile_fps_from_backend(self, cam: CameraSettingsModel) -> None:
+    def _reconcile_fps_from_backend(self, cam: CameraSettings) -> None:
         """Clamp UI/settings to measured device FPS when we can actually measure it."""
         if not self._is_backend_opencv(cam.backend):
             return
@@ -764,7 +764,7 @@ class CameraConfigDialog(QDialog):
             self._append_status(f"[Info] FPS adjusted to device-supported ~{actual:.2f}.")
             self._adjust_preview_timer_for_fps(actual)
 
-    def _update_active_list_item(self, row: int, cam: CameraSettingsModel) -> None:
+    def _update_active_list_item(self, row: int, cam: CameraSettings) -> None:
         """Refresh the active camera list row text and color."""
         item = self.active_cameras_list.item(row)
         if not item:
@@ -775,7 +775,7 @@ class CameraConfigDialog(QDialog):
         self._refresh_camera_labels()
         self._update_button_states()
 
-    def _load_camera_to_form(self, cam: CameraSettingsModel) -> None:
+    def _load_camera_to_form(self, cam: CameraSettings) -> None:
         self.cam_enabled_checkbox.setChecked(cam.enabled)
         self.cam_name_label.setText(cam.name)
         self.cam_index_label.setText(str(cam.index))
@@ -793,7 +793,7 @@ class CameraConfigDialog(QDialog):
         self.cam_crop_y1.setValue(cam.crop_y1)
         self.apply_settings_btn.setEnabled(True)
 
-    def _write_form_to_cam(self, cam: CameraSettingsModel) -> None:
+    def _write_form_to_cam(self, cam: CameraSettings) -> None:
         cam.enabled = bool(self.cam_enabled_checkbox.isChecked())
         cam.fps = float(self.cam_fps.value())
         cam.exposure = int(self.cam_exposure.value())
@@ -846,7 +846,7 @@ class CameraConfigDialog(QDialog):
                 )
                 return
 
-        new_cam = CameraSettingsModel(
+        new_cam = CameraSettings(
             name=detected.label,
             index=detected.index,
             fps=30.0,
@@ -1099,7 +1099,7 @@ class CameraConfigDialog(QDialog):
 
     def _on_loader_success(self, payload) -> None:
         try:
-            if isinstance(payload, CameraSettingsModel):
+            if isinstance(payload, CameraSettings):
                 cam_settings = payload
                 self._append_status("Opening camera…")
                 self._preview_backend = CameraFactory.create(cam_settings)

@@ -2,10 +2,10 @@
 import pytest
 
 from dlclivegui.cameras.factory import CameraFactory
-from dlclivegui.services.multi_camera_controller import MultiCameraController, get_camera_id
 
 # from dlclivegui.config import CameraSettings
-from dlclivegui.utils.config_models import CameraSettingsModel
+from dlclivegui.config import CameraSettings
+from dlclivegui.services.multi_camera_controller import MultiCameraController, get_camera_id
 
 
 @pytest.mark.unit
@@ -13,9 +13,9 @@ def test_start_and_frames(qtbot, patch_factory):
     mc = MultiCameraController()
 
     # One dataclass + one dict (simulate mixed inputs)
-    cam1 = CameraSettingsModel(name="C1", backend="opencv", index=0, fps=25.0).apply_defaults()
+    cam1 = CameraSettings(name="C1", backend="opencv", index=0, fps=25.0).apply_defaults()
     cam2 = {"name": "C2", "backend": "opencv", "index": 1, "fps": 30.0, "enabled": True}
-    cam2 = CameraSettingsModel.from_dict(cam2).apply_defaults()
+    cam2 = CameraSettings.from_dict(cam2).apply_defaults()
 
     frames_seen = []
 
@@ -45,7 +45,7 @@ def test_rotation_and_crop(qtbot, patch_factory):
     mc = MultiCameraController()
 
     # 64x48 frame; rotate 90 => 48x64 then crop to 32x32 box
-    cam = CameraSettingsModel(
+    cam = CameraSettings(
         name="C",
         backend="opencv",
         index=0,
@@ -90,7 +90,7 @@ def test_initialization_failure(qtbot, monkeypatch):
     monkeypatch.setattr(CameraFactory, "create", staticmethod(_create))
 
     mc = MultiCameraController()
-    cam = CameraSettingsModel(name="C", backend="opencv", index=0, enabled=True).apply_defaults()
+    cam = CameraSettings(name="C", backend="opencv", index=0, enabled=True).apply_defaults()
 
     # Expect initialization_failed with the camera id
     with qtbot.waitSignals([mc.initialization_failed, mc.all_stopped], timeout=2000) as _:

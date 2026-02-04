@@ -9,7 +9,7 @@ import pytest
 
 from dlclivegui.cameras import factory as cam_factory
 from dlclivegui.cameras.base import _BACKEND_REGISTRY, reset_backends
-from dlclivegui.utils.config_models import CameraSettingsModel
+from dlclivegui.config import CameraSettings
 
 
 def _write_temp_backend_package(tmp_path: Path, pkg_name: str = "test_backends_pkg") -> str:
@@ -27,7 +27,7 @@ def _write_temp_backend_package(tmp_path: Path, pkg_name: str = "test_backends_p
     backend_code = textwrap.dedent(
         """
         from dlclivegui.cameras.base import register_backend, CameraBackend
-        from dlclivegui.utils.config_models import CameraSettingsModel
+        from dlclivegui.config import CameraSettings
         import numpy as np
         import time
 
@@ -121,7 +121,7 @@ def test_detect_and_create_with_discovered_backend(temp_backends_pkg):
     assert len(detected[0].label) > 0
 
     # create() should return an instance of our registered backend using a model-only settings
-    s = CameraSettingsModel(name="UnitCam", backend="lazyfake", index=0, fps=30.0)
+    s = CameraSettings(name="UnitCam", backend="lazyfake", index=0, fps=30.0)
     backend = cam_factory.CameraFactory.create(s)
     # A minimal behavior check: open/read/close work
     backend.open()

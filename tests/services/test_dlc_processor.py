@@ -1,13 +1,12 @@
 import numpy as np
 import pytest
 
+# from dlclivegui.config import DLCProcessorSettings
+from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.services.dlc_processor import (
     DLCLiveProcessor,
     ProcessorStats,
 )
-
-# from dlclivegui.config import DLCProcessorSettings
-from dlclivegui.utils.config_models import DLCProcessorSettingsModel
 
 # ---------------------------------------------------------------------
 # Tests
@@ -19,7 +18,7 @@ def test_configure_accepts_pydantic(settings_model, monkeypatch_dlclive):
     proc = DLCLiveProcessor()
     proc.configure(settings_model)
 
-    assert isinstance(proc._settings, DLCProcessorSettingsModel)
+    assert isinstance(proc._settings, DLCProcessorSettings)
     assert proc._settings.model_path == "dummy.pt"
 
 
@@ -110,7 +109,7 @@ def test_error_signal_on_initialization_failure(qtbot, monkeypatch):
     monkeypatch.setattr(dlc_processor, "DLCLive", FailingDLCLive)
 
     proc = DLCLiveProcessor()
-    proc.configure(DLCProcessorSettingsModel(model_path="fail.pt"))
+    proc.configure(DLCProcessorSettings(model_path="fail.pt"))
 
     try:
         frame = np.zeros((10, 10, 3), dtype=np.uint8)

@@ -7,7 +7,7 @@ import pytest
 from dlclivegui.cameras import CameraFactory, DetectedCamera, base
 
 # from dlclivegui.config import CameraSettings
-from dlclivegui.utils.config_models import CameraSettingsModel
+from dlclivegui.config import CameraSettings
 
 
 @pytest.mark.unit
@@ -36,10 +36,10 @@ def test_check_camera_available_quick_ping():
     sys.modules["mock_mod"] = mod
     base.register_backend_direct("mock", MockBackend)
 
-    ok, msg = CameraFactory.check_camera_available(CameraSettingsModel(backend="mock", index=0))
+    ok, msg = CameraFactory.check_camera_available(CameraSettings(backend="mock", index=0))
     assert ok is True
 
-    ok, msg = CameraFactory.check_camera_available(CameraSettingsModel(backend="mock", index=3))
+    ok, msg = CameraFactory.check_camera_available(CameraSettings(backend="mock", index=3))
     assert ok is False
 
 

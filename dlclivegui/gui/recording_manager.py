@@ -6,9 +6,9 @@ from pathlib import Path
 
 import numpy as np
 
+from dlclivegui.config import CameraSettings, RecordingSettings
 from dlclivegui.services.multi_camera_controller import get_camera_id
 from dlclivegui.services.video_recorder import RecorderStats, VideoRecorder
-from dlclivegui.utils.config_models import CameraSettingsModel, RecordingSettingsModel
 from dlclivegui.utils.utils import build_run_dir, sanitize_name
 
 log = logging.getLogger(__name__)
@@ -43,8 +43,8 @@ class RecordingManager:
 
     def start_all(
         self,
-        recording: RecordingSettingsModel,
-        active_cams: list[CameraSettingsModel],
+        recording: RecordingSettings,
+        active_cams: list[CameraSettings],
         current_frames: dict[str, np.ndarray],
         *,
         session_name: str = "session",

@@ -37,6 +37,16 @@ from PySide6.QtWidgets import (
 )
 
 from dlclivegui.cameras import CameraFactory
+from dlclivegui.config import (
+    DEFAULT_CONFIG,
+    ApplicationSettings,
+    BoundingBoxSettings,
+    CameraSettings,
+    DLCProcessorSettings,
+    MultiCameraSettings,
+    RecordingSettings,
+    VisualizationSettings,
+)
 from dlclivegui.gui.camera_config_dialog import CameraConfigDialog
 from dlclivegui.gui.recording_manager import RecordingManager
 from dlclivegui.gui.theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
@@ -49,16 +59,6 @@ from dlclivegui.processors.processor_utils import (
 from dlclivegui.services.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStats
 from dlclivegui.services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
 from dlclivegui.services.video_recorder import RecorderStats
-from dlclivegui.utils.config_models import (
-    DEFAULT_CONFIG,
-    ApplicationSettingsModel,
-    BoundingBoxSettingsModel,
-    CameraSettingsModel,
-    DLCProcessorSettingsModel,
-    MultiCameraSettingsModel,
-    RecordingSettingsModel,
-    VisualizationSettingsModel,
-)
 from dlclivegui.utils.display import compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
 from dlclivegui.utils.settings_store import ModelPathStore
 from dlclivegui.utils.utils import FPSTracker
@@ -71,7 +71,7 @@ logger = logging.getLogger("DLCLiveGUI")
 class DLCLiveMainWindow(QMainWindow):
     """Main application window."""
 
-    def __init__(self, config: ApplicationSettingsModel | None = None):
+    def __init__(self, config: ApplicationSettings | None = None):
         super().__init__()
         self.setWindowTitle("DeepLabCut Live GUI")
 
@@ -81,7 +81,7 @@ class DLCLiveMainWindow(QMainWindow):
             myconfig_path = Path(__file__).parent.parent / "myconfig.json"
             if myconfig_path.exists():
                 try:
-                    config = ApplicationSettingsModel.load(str(myconfig_path))
+                    config = ApplicationSettings.load(str(myconfig_path))
                     self._config_path = myconfig_path
                     logger.info(f"Loaded configuration from {myconfig_path}")
                 except Exception as exc:
@@ -108,7 +108,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._raw_frame: np.ndarray | None = None
         self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
-        self._active_camera_settings: CameraSettingsModel | None = None
+        self._active_camera_settings: CameraSettings | None = None
         self._last_drop_warning = 0.0
         self._last_recorder_summary = "Recorder idle"
         self._display_interval = 1.0 / 25.0
@@ -587,7 +587,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # Config
-    def _apply_config(self, config: ApplicationSettingsModel) -> None:
+    def _apply_config(self, config: ApplicationSettings) -> None:
         # Update active cameras label
         self._update_active_cameras_label()
 
@@ -639,12 +639,12 @@ class DLCLiveMainWindow(QMainWindow):
         # Update recording path preview
         self._update_recording_path_preview()
 
-    def _current_config(self) -> ApplicationSettingsModel:
+    def _current_config(self) -> ApplicationSettings:
         # Get the first camera from multi-camera config for backward compatibility
         active_cameras = self._config.multi_camera.get_active_cameras()
-        camera = active_cameras[0] if active_cameras else CameraSettingsModel()
+        camera = active_cameras[0] if active_cameras else CameraSettings()
 
-        return ApplicationSettingsModel(
+        return ApplicationSettings(
             camera=camera,
             multi_camera=self._config.multi_camera,
             dlc=self._dlc_settings_from_ui(),
@@ -659,8 +659,8 @@ class DLCLiveMainWindow(QMainWindow):
             return {}
         return json.loads(text)
 
-    def _dlc_settings_from_ui(self) -> DLCProcessorSettingsModel:
-        return DLCProcessorSettingsModel(
+    def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
+        return DLCProcessorSettings(
             model_path=self.model_path_edit.text().strip(),
             model_directory=self._config.dlc.model_directory,  # Preserve from config
             device=self._config.dlc.device,  # Preserve from config
@@ -671,8 +671,8 @@ class DLCLiveMainWindow(QMainWindow):
             # additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
         )
 
-    def _recording_settings_from_ui(self) -> RecordingSettingsModel:
-        return RecordingSettingsModel(
+    def _recording_settings_from_ui(self) -> RecordingSettings:
+        return RecordingSettings(
             enabled=True,  # Always enabled - recording controlled by button
             directory=self.output_directory_edit.text().strip(),
             filename=self.filename_edit.text().strip() or "session.mp4",
@@ -681,8 +681,8 @@ class DLCLiveMainWindow(QMainWindow):
             crf=int(self.crf_spin.value()),
         )
 
-    def _bbox_settings_from_ui(self) -> BoundingBoxSettingsModel:
-        return BoundingBoxSettingsModel(
+    def _bbox_settings_from_ui(self) -> BoundingBoxSettings:
+        return BoundingBoxSettings(
             enabled=self.bbox_enabled_checkbox.isChecked(),
             x0=self.bbox_x0_spin.value(),
             y0=self.bbox_y0_spin.value(),
@@ -690,8 +690,8 @@ class DLCLiveMainWindow(QMainWindow):
             y1=self.bbox_y1_spin.value(),
         )
 
-    def _visualization_settings_from_ui(self) -> VisualizationSettingsModel:
-        return VisualizationSettingsModel(
+    def _visualization_settings_from_ui(self) -> VisualizationSettings:
+        return VisualizationSettings(
             p_cutoff=self._p_cutoff,
             colormap=self._colormap,
             bbox_color=self._bbox_color,
@@ -704,7 +704,7 @@ class DLCLiveMainWindow(QMainWindow):
         if not file_name:
             return
         try:
-            config = ApplicationSettingsModel.load(file_name)
+            config = ApplicationSettings.load(file_name)
         except Exception as exc:  # pragma: no cover - GUI interaction
             self._show_error(str(exc))
             return
@@ -859,7 +859,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._cam_dialog.raise_()
         self._cam_dialog.activateWindow()
 
-    def _on_multi_camera_settings_changed(self, settings: MultiCameraSettingsModel) -> None:
+    def _on_multi_camera_settings_changed(self, settings: MultiCameraSettings) -> None:
         """Handle changes to multi-camera settings."""
         self._config.multi_camera = settings
         self._update_active_cameras_label()
@@ -892,7 +892,7 @@ class DLCLiveMainWindow(QMainWindow):
         if not active_cams:
             return
 
-        unavailable: list[tuple[str, str, CameraSettingsModel]] = []
+        unavailable: list[tuple[str, str, CameraSettings]] = []
         for cam in active_cams:
             cam_id = f"{cam.backend}:{cam.index}"
             available, error = CameraFactory.check_camera_available(cam)
