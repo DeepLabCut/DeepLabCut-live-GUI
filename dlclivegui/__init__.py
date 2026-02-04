@@ -1,23 +1,23 @@
 """DeepLabCut Live GUI package."""
 
-from .config import (
-    ApplicationSettings,
-    CameraSettings,
-    DLCProcessorSettings,
-    MultiCameraSettings,
-    RecordingSettings,
-)
 from .gui.camera_config_dialog import CameraConfigDialog
 from .gui.main_window import DLCLiveMainWindow
 from .main import main
 from .services.multi_camera_controller import MultiCameraController, MultiFrameData
+from .utils.config_models import (
+    ApplicationSettingsModel,
+    CameraSettingsModel,
+    DLCProcessorSettingsModel,
+    MultiCameraSettingsModel,
+    RecordingSettingsModel,
+)
 
 __all__ = [
-    "ApplicationSettings",
-    "CameraSettings",
-    "DLCProcessorSettings",
-    "MultiCameraSettings",
-    "RecordingSettings",
+    "ApplicationSettingsModel",
+    "CameraSettingsModel",
+    "DLCProcessorSettingsModel",
+    "MultiCameraSettingsModel",
+    "RecordingSettingsModel",
     "DLCLiveMainWindow",
     "MultiCameraController",
     "MultiFrameData",

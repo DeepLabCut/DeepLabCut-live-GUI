@@ -37,17 +37,6 @@ from PySide6.QtWidgets import (
 )
 
 from dlclivegui.cameras import CameraFactory
-from dlclivegui.config import (
-    #     DEFAULT_CONFIG,
-    #     ApplicationSettings,
-    #     BoundingBoxSettings,
-    #     CameraSettings,
-    #     DLCProcessorSettings,
-    ModelPathStore,
-    #     MultiCameraSettings,
-    #     RecordingSettings,
-    #     VisualizationSettings,
-)
 from dlclivegui.gui.camera_config_dialog import CameraConfigDialog
 from dlclivegui.gui.recording_manager import RecordingManager
 from dlclivegui.gui.theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
@@ -71,6 +60,7 @@ from dlclivegui.utils.config_models import (
     VisualizationSettingsModel,
 )
 from dlclivegui.utils.display import compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
+from dlclivegui.utils.settings_store import ModelPathStore
 from dlclivegui.utils.utils import FPSTracker
 
 # logging.basicConfig(level=logging.INFO)
