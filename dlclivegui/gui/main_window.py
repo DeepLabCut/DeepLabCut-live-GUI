@@ -56,11 +56,11 @@ from dlclivegui.processors.processor_utils import (
     scan_processor_folder,
     scan_processor_package,
 )
-from dlclivegui.services.dlc_processor import DLCLiveProcessor, PoseResult, ProcessorStats
+from dlclivegui.services.dlc_processor import DLCLiveProcessor, PoseResult
 from dlclivegui.services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
-from dlclivegui.services.video_recorder import RecorderStats
 from dlclivegui.utils.display import compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
-from dlclivegui.utils.settings_store import ModelPathStore
+from dlclivegui.utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
+from dlclivegui.utils.stats import format_dlc_stats
 from dlclivegui.utils.utils import FPSTracker
 
 # logging.basicConfig(level=logging.INFO)
@@ -75,28 +75,43 @@ class DLCLiveMainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("DeepLabCut Live GUI")
 
-        # Try to load myconfig.json from the application directory if no config provided
-        # NOTE @C-Achard Leaving this as a convenience for now
-        # TODO @C-Achard change this to a smarter "reload previous config" mechanism
+        self.settings = QSettings("DeepLabCut", "DLCLiveGUI")
+        self._model_path_store = ModelPathStore(self.settings)
+        self._settings_store = DLCLiveGUISettingsStore(self.settings)
+
         if config is None:
-            #     myconfig_path = Path(__file__).parent.parent / "myconfig.json"
-            #     if myconfig_path.exists():
-            #         try:
-            #             config = ApplicationSettings.load(str(myconfig_path))
-            #             self._config_path = myconfig_path
-            #             logger.info(f"Loaded configuration from {myconfig_path}")
-            #         except Exception as exc:
-            #             logger.warning(f"Failed to load myconfig.json: {exc}. Using default config.")
-            #             config = DEFAULT_CONFIG
-            #             self._config_path = None
-            # else:
-            config = DEFAULT_CONFIG
-            self._config_path = None
+            # 1) snapshot
+            cfg = self._settings_store.load_full_config_snapshot()
+            if cfg is not None:
+                config = cfg
+                self._config_path = None
+                logger.info("Loaded configuration from QSettings snapshot.")
+            else:
+                # 2) last config file path
+                last_cfg_path = self._settings_store.get_last_config_path()
+                if last_cfg_path:
+                    try:
+                        p = Path(last_cfg_path)
+                        if p.exists() and p.is_file():
+                            config = ApplicationSettings.load(str(p))
+                            self._config_path = p
+                            logger.info(f"Loaded configuration from last config path: {p}")
+                        else:
+                            config = DEFAULT_CONFIG
+                            self._config_path = None
+                    except Exception as exc:
+                        logger.warning(
+                            f"Failed to load last config path ({last_cfg_path}): {exc}. Using default config."
+                        )
+                        config = DEFAULT_CONFIG
+                        self._config_path = None
+                else:
+                    # 3) default
+                    config = DEFAULT_CONFIG
+                    self._config_path = None
         else:
             self._config_path = None
 
-        self.settings = QSettings("DeepLabCut", "DLCLiveGUI")
-        self._model_path_store = ModelPathStore(self.settings)
         self._fps_tracker = FPSTracker()
         self._rec_manager = RecordingManager()
         self._dlc = DLCLiveProcessor()
@@ -167,7 +182,15 @@ class DLCLiveMainWindow(QMainWindow):
             self.statusBar().showMessage(f"Auto-loaded configuration from {self._config_path}", 5000)
 
         # Validate cameras from loaded config (deferred to allow window to show first)
+        # NOTE IMPORTANT (tests/CI): This is scheduled via a QTimer and may fire during pytest-qt teardown.
         QTimer.singleShot(100, self._validate_configured_cameras)
+        # If validation triggers a modal QMessageBox (warning/error) while the parent window is closing,
+        # it can cause Windows native crashes (heap corruption / access violations).
+        #
+        # Mitigations for tests/CI:
+        #   - Disable this timer by monkeypatching _validate_configured_cameras in GUI tests
+        #   - OR monkeypatch/override _show_warning/_show_error to no-op in GUI tests (easiest)
+        #   - OR use a cancellable QTimer attribute and stop() it in closeEven
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -677,12 +700,12 @@ class DLCLiveMainWindow(QMainWindow):
         ## Restore persisted session name if empty
         if hasattr(self, "session_name_edit"):
             if not self.session_name_edit.text().strip():
-                persisted = self._load_persisted_session_name()
+                persisted = self._settings_store.get_session_name()
                 if persisted:
                     self.session_name_edit.setText(persisted)
         ## Restore "Use timestamp" checkbox state
         if hasattr(self, "use_timestamp_checkbox"):
-            self.use_timestamp_checkbox.setChecked(self._load_persisted_use_timestamp())
+            self.use_timestamp_checkbox.setChecked(self._settings_store.get_use_timestamp(default=True))
 
         # Set bounding box settings from config
         bbox = config.bbox
@@ -772,6 +795,8 @@ class DLCLiveMainWindow(QMainWindow):
         except Exception as exc:  # pragma: no cover - GUI interaction
             self._show_error(str(exc))
             return
+        self._settings_store.set_last_config_path(file_name)
+        self._settings_store.save_full_config_snapshot(config)
         self._config = config
         self._config_path = Path(file_name)
         self._apply_config(config)
@@ -799,6 +824,8 @@ class DLCLiveMainWindow(QMainWindow):
         try:
             config = self._current_config()
             config.save(path)
+            self._settings_store.set_last_config_path(str(path))
+            self._settings_store.save_full_config_snapshot(config)
         except Exception as exc:  # pragma: no cover - GUI interaction
             self._show_error(str(exc))
             return
@@ -919,7 +946,7 @@ class DLCLiveMainWindow(QMainWindow):
     # Recording path preview and session name persistence
     def _on_session_name_editing_finished(self) -> None:
         name = self.session_name_edit.text().strip()
-        self._persist_session_name(name)
+        self._settings_store.set_session_name(name)
         self._update_recording_path_preview()
 
     def _update_recording_path_preview(self) -> None:
@@ -941,7 +968,7 @@ class DLCLiveMainWindow(QMainWindow):
         )
 
     def _on_use_timestamp_changed(self, _state: int) -> None:
-        self._persist_use_timestamp(self.use_timestamp_checkbox.isChecked())
+        self._settings_store.set_use_timestamp(self.use_timestamp_checkbox.isChecked())
         self._update_recording_path_preview()
 
     # ------------------------------------------------------------------
@@ -1249,7 +1276,7 @@ class DLCLiveMainWindow(QMainWindow):
             self._show_error("Failed to start recording.")
             return
 
-        self._persist_session_name(session_name)
+        self._settings_store.set_session_name(session_name)
         self.start_record_button.setEnabled(False)
         self.stop_record_button.setEnabled(True)
         self.statusBar().showMessage(f"Recording {len(active_cams)} camera(s) to {run_dir}", 5000)
@@ -1469,55 +1496,6 @@ class DLCLiveMainWindow(QMainWindow):
             self._current_frame = tiled
             self._update_video_display(tiled)
 
-    def _format_recorder_stats(self, stats: RecorderStats) -> str:
-        latency_ms = stats.last_latency * 1000.0
-        avg_ms = stats.average_latency * 1000.0
-        buffer_ms = stats.buffer_seconds * 1000.0
-        write_fps = stats.write_fps
-        enqueue = stats.frames_enqueued
-        written = stats.frames_written
-        dropped = stats.dropped_frames
-        return (
-            f"{written}/{enqueue} frames | write {write_fps:.1f} fps | "
-            f"latency {latency_ms:.1f} ms (avg {avg_ms:.1f} ms) | "
-            f"queue {stats.queue_size} (~{buffer_ms:.0f} ms) | dropped {dropped}"
-        )
-
-    def _format_dlc_stats(self, stats: ProcessorStats) -> str:
-        """Format DLC processor statistics for display."""
-        latency_ms = stats.last_latency * 1000.0
-        avg_ms = stats.average_latency * 1000.0
-        processing_fps = stats.processing_fps
-        enqueue = stats.frames_enqueued
-        processed = stats.frames_processed
-        dropped = stats.frames_dropped
-
-        # Add profiling info if available
-        profile_info = ""
-        if stats.avg_inference_time > 0:
-            inf_ms = stats.avg_inference_time * 1000.0
-            queue_ms = stats.avg_queue_wait * 1000.0
-            signal_ms = stats.avg_signal_emit_time * 1000.0
-            total_ms = stats.avg_total_process_time * 1000.0
-
-            # Add GPU vs processor breakdown if available
-            gpu_breakdown = ""
-            if stats.avg_gpu_inference_time > 0 or stats.avg_processor_overhead > 0:
-                gpu_ms = stats.avg_gpu_inference_time * 1000.0
-                proc_ms = stats.avg_processor_overhead * 1000.0
-                gpu_breakdown = f" (GPU:{gpu_ms:.1f}ms+proc:{proc_ms:.1f}ms)"
-
-            profile_info = (
-                f"\n[Profile] inf:{inf_ms:.1f}ms{gpu_breakdown} queue:{queue_ms:.1f}ms "
-                f"signal:{signal_ms:.1f}ms total:{total_ms:.1f}ms"
-            )
-
-        return (
-            f"{processed}/{enqueue} frames | inference {processing_fps:.1f} fps | "
-            f"latency {latency_ms:.1f} ms (avg {avg_ms:.1f} ms) | "
-            f"queue {stats.queue_size} | dropped {dropped}{profile_info}"
-        )
-
     def _update_metrics(self) -> None:
         # --- Camera stats ---
         if hasattr(self, "camera_stats_label"):
@@ -1553,7 +1531,7 @@ class DLCLiveMainWindow(QMainWindow):
         if hasattr(self, "dlc_stats_label"):
             if self._dlc_active and self._dlc_initialized:
                 stats = self._dlc.get_stats()
-                summary = self._format_dlc_stats(stats)
+                summary = format_dlc_stats(stats)
                 self.dlc_stats_label.setText(summary)
             else:
                 self.dlc_stats_label.setText("DLC processor idle")
@@ -1613,7 +1591,7 @@ class DLCLiveMainWindow(QMainWindow):
 
                         # Processor overrides session name field + persist it
                         self.session_name_edit.setText(session_name)
-                        self._persist_session_name(session_name)
+                        self._settings_store.set_session_name(session_name)
 
                         # Optional: set base filename to session name (readable stable filenames)
                         self.filename_edit.setText(session_name)
@@ -1791,46 +1769,6 @@ class DLCLiveMainWindow(QMainWindow):
         """Display an informational message dialog."""
         self.statusBar().showMessage(message, 5000)
         QMessageBox.information(self, "Information", message)
-
-    # FIXME @C-Achard move to config/dedicated Store class
-    def _session_settings_key(self) -> str:
-        return "recording/session_name"
-
-    def _use_timestamp_settings_key(self) -> str:
-        return "recording/use_timestamp"
-
-    def _load_persisted_session_name(self) -> str:
-        try:
-            return self.settings.value(self._session_settings_key(), "", type=str) or ""
-        except Exception:
-            return ""
-
-    def _persist_session_name(self, name: str) -> None:
-        try:
-            self.settings.setValue(self._session_settings_key(), name)
-        except Exception:
-            pass
-
-    def _load_persisted_use_timestamp(self) -> bool:
-        """Load checkbox state from QSettings (defaults to True)."""
-        try:
-            # QSettings sometimes returns strings; type=bool helps but isn't perfect everywhere.
-            v = self.settings.value(self._use_timestamp_settings_key(), True)
-            if isinstance(v, bool):
-                return v
-            if isinstance(v, (int, float)):
-                return bool(v)
-            if isinstance(v, str):
-                return v.strip().lower() in ("1", "true", "yes", "on")
-            return True
-        except Exception:
-            return True
-
-    def _persist_use_timestamp(self, value: bool) -> None:
-        try:
-            self.settings.setValue(self._use_timestamp_settings_key(), bool(value))
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Qt overrides

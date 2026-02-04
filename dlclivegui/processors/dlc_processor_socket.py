@@ -32,6 +32,7 @@ def register_processor(cls):
     return cls
 
 
+# pragma: no cover
 class OneEuroFilter:
     def __init__(self, t0, x0, dx0=None, min_cutoff=1.0, beta=0.0, d_cutoff=1.0):
         self.min_cutoff = min_cutoff
@@ -69,6 +70,9 @@ class OneEuroFilter:
         self.t_prev = t
 
         return x_hat
+
+
+# pragma: cover
 
 
 # @register_processor # Not registering base class in the GUI

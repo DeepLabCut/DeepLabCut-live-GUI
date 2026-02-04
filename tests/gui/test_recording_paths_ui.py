@@ -3,36 +3,67 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+import pytest
+from PySide6.QtCore import QCoreApplication, QSettings, Qt
 
 from dlclivegui.gui.main_window import DLCLiveMainWindow
+
+# Optional: mark these as GUI tests for selection/filtering
+pytestmark = pytest.mark.gui
+
+
+@pytest.fixture(autouse=True)
+def isolated_qsettings(tmp_path):
+    """
+    Force QSettings to store values in a temp INI file rather than touching user settings.
+    Autouse so *all tests* (including those using the `window` fixture) are isolated.
+    """
+    if QCoreApplication.instance() is None:
+        QCoreApplication([])
+
+    old_format = QSettings.defaultFormat()
+    QSettings.setDefaultFormat(QSettings.IniFormat)
+    QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(tmp_path))
+
+    # Clear any existing values for this org/app in the temp scope
+    s = QSettings(QSettings.IniFormat, QSettings.UserScope, "DeepLabCut", "DLCLiveGUI")
+    s.clear()
+    s.sync()
+
+    yield
+
+    # Restore global default format
+    QSettings.setDefaultFormat(old_format)
+
+
+@pytest.fixture(autouse=True)
+def _no_modal_dialogs(monkeypatch):
+    monkeypatch.setattr(DLCLiveMainWindow, "_show_warning", lambda self, msg: None)
+    monkeypatch.setattr(DLCLiveMainWindow, "_show_error", lambda self, msg: None)
+    monkeypatch.setattr(DLCLiveMainWindow, "_show_info", lambda self, msg: None)
 
 
 def test_recording_path_preview_updates(window, qtbot, tmp_path):
     # baseline: should be set after apply_config()
     assert window.recording_path_preview.text() != ""
 
-    # Set output dir
     out_dir = tmp_path / "out"
     window.output_directory_edit.setText(str(out_dir))
 
-    # Set session name + filename + container
     window.session_name_edit.setText("mouseA_day1")
     window.filename_edit.setText("trial01")
     window.container_combo.setCurrentText("avi")
 
-    # Timestamp ON -> should show run_<timestamp>
     window.use_timestamp_checkbox.setChecked(True)
-    qtbot.wait(10)  # allow queued signals
+    qtbot.wait(10)
 
     txt = window.recording_path_preview.text()
     assert "mouseA_day1" in txt
     assert "run_" in txt
-    assert "timestamp" in txt  # label contains run_&lt;timestamp&gt; in your code
+    assert "timestamp" in txt
     assert "trial01" in txt
     assert ".avi" in txt
 
-    # Timestamp OFF -> should show run_<next>
     window.use_timestamp_checkbox.setChecked(False)
     qtbot.wait(10)
 
@@ -96,7 +127,7 @@ def test_start_recording_passes_session_and_timestamp(window, start_all_spy, qtb
     assert kwargs["session_name"] == "Sess42"
     assert kwargs["use_timestamp"] is False
     assert "all_or_nothing" in kwargs
-    # Ensure recording.directory and recording.filename match UI
+
     recording = start_all_spy["recording"]
     assert recording.output_path().parent == Path(window.output_directory_edit.text()).expanduser().resolve()
     assert recording.container == window.container_combo.currentText()

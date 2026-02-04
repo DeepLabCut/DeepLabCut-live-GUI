@@ -1,10 +1,13 @@
 # dlclivegui/utils/settings_store.py
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
 from ..config import ApplicationSettings
 from .utils import is_model_file
+
+logger = logging.getLogger(__name__)
 
 
 class DLCLiveGUISettingsStore:
@@ -57,6 +60,7 @@ class DLCLiveGUISettingsStore:
         try:
             return ApplicationSettings.model_validate_json(str(raw))
         except Exception:
+            logger.debug("Failed to load full config snapshot from QSettings")
             return None
 
 
@@ -70,8 +74,9 @@ class ModelPathStore:
         if not p:
             return None
         try:
-            return str(Path(p).expanduser())
+            return str(Path(p).expanduser().resolve())
         except Exception:
+            logger.debug("Failed to normalize path: %s", p)
             return None
 
     def load_last(self) -> str | None:
@@ -82,6 +87,7 @@ class ModelPathStore:
         try:
             return path if is_model_file(path) else None
         except Exception:
+            logger.debug("Last model path is not a valid model file: %s", path)
             return None
 
     def load_last_dir(self) -> str | None:
@@ -93,6 +99,7 @@ class ModelPathStore:
             p = Path(d)
             return str(p) if p.exists() and p.is_dir() else None
         except Exception:
+            logger.debug("Last model dir is not a valid directory: %s", d)
             return None
 
     def save_if_valid(self, path: str) -> None:
@@ -107,6 +114,7 @@ class ModelPathStore:
             if is_model_file(path):
                 self._settings.setValue("dlc/last_model_path", str(Path(path)))
         except Exception:
+            logger.debug("Failed to save last model path: %s", path)
             pass
 
     def save_last_dir(self, directory: str) -> None:
@@ -128,6 +136,7 @@ class ModelPathStore:
                 if is_model_file(config_path):
                     return config_path
             except Exception:
+                logger.debug("Config path is not a valid model file: %s", config_path)
                 pass
 
         persisted = self.load_last()
@@ -155,6 +164,7 @@ class ModelPathStore:
                 if parent.exists():
                     return str(parent)
             except Exception:
+                logger.debug("Failed to get parent of last model file: %s", last_file)
                 pass
 
         # 3) fallback dir (config.model_directory) if valid
@@ -164,6 +174,7 @@ class ModelPathStore:
                 if p.exists() and p.is_dir():
                     return str(p)
             except Exception:
+                logger.debug("Fallback dir is not a valid directory: %s", fallback_dir)
                 pass
 
         # 4) last resort: home
@@ -178,4 +189,5 @@ class ModelPathStore:
             p = Path(last_file)
             return str(p) if p.exists() and p.is_file() else None
         except Exception:
+            logger.debug("Failed to check existence of last model file: %s", last_file)
             return None
