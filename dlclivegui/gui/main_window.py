@@ -463,6 +463,8 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Show recording path preview
         self.recording_path_preview = QLabel("")
+        # Ensure it never gets squished vertically
+        self.recording_path_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.recording_path_preview.setWordWrap(True)
         self.recording_path_preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
         form.addRow("Will save to", self.recording_path_preview)
@@ -470,32 +472,66 @@ class DLCLiveMainWindow(QMainWindow):
         self.filename_edit = QLineEdit()
         form.addRow("Filename", self.filename_edit)
 
-        container_codec_layout = QHBoxLayout()
-        container_codec_layout.setContentsMargins(0, 0, 0, 0)
-        container_codec_layout.setSpacing(8)
+        # Container + codec + CRF in a single row
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 2, 0, 2)
+        grid.setHorizontalSpacing(8)
+
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 3)
+        grid.setColumnStretch(2, 0)
+        grid.setColumnStretch(3, 3)
+        grid.setColumnStretch(4, 0)
+        grid.setColumnStretch(5, 2)
+
+        ## Container
+        container_label = QLabel("Container")
+        container_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        grid.addWidget(container_label, 0, 0)
+
         self.container_combo = QComboBox()
+        self.container_combo.setToolTip("Select the video container/format")
+        self.container_combo.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
         self.container_combo.setEditable(True)
         self.container_combo.addItems(["mp4", "avi", "mov"])
-        container_codec_layout.addWidget(self.container_combo)
-        # form.addRow("Container", self.container_combo)
+        # Ensure it never becomes unreadable:
+        self.container_combo.setMinimumContentsLength(8)
+        self.container_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        grid.addWidget(self.container_combo, 0, 1)
+
+        ## Codec
+        codec_label = QLabel("Codec")
+        codec_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        grid.addWidget(codec_label, 0, 2)
+
         self.codec_combo = QComboBox()
+        self.codec_combo.setToolTip("Select the video codec to use for recording")
+        self.codec_combo.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
+
         if os.sys.platform == "darwin":
             self.codec_combo.addItems(["h264_videotoolbox", "libx264", "hevc_videotoolbox"])
         else:
             self.codec_combo.addItems(["h264_nvenc", "libx264", "hevc_nvenc"])
+
         self.codec_combo.setCurrentText("libx264")
-        # form.addRow("Codec", self.codec_combo)
-        container_codec_layout.addWidget(self.codec_combo)
-        form.addRow("Container/Codec", container_codec_layout)
+        # Optional: a modest minimum content length helps prevent jitter
+        self.codec_combo.setMinimumContentsLength(6)
+        self.codec_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        grid.addWidget(self.codec_combo, 0, 3)
+
+        ## CRF
+        crf_label = QLabel("CRF")
+        crf_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        grid.addWidget(crf_label, 0, 4)
 
         self.crf_spin = QSpinBox()
-        dflt_crf = RecordingSettings().crf
-        self.crf_spin.setToolTip(
-            f"Constant Rate Factor (CRF) for video quality (lower is better quality, {dflt_crf} is default)"
-        )
-        self.crf_spin.setRange(0, 51)
-        self.crf_spin.setValue(dflt_crf)
-        form.addRow("CRF", self.crf_spin)
+        self.crf_spin.setRange(0, 51)  # FFmpeg CRF range for x264/x265
+        self.crf_spin.setValue(RecordingSettings().crf)
+        self.crf_spin.setToolTip("Constant Rate Factor (0 = lossless, 51 = worst)")
+        self.crf_spin.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
+        grid.addWidget(self.crf_spin, 0, 5)
+
+        form.addRow(grid)
 
         # Record with overlays
         self.record_with_overlays_checkbox = QCheckBox("Record video with overlays")
@@ -504,12 +540,6 @@ class DLCLiveMainWindow(QMainWindow):
         )
         self.record_with_overlays_checkbox.setChecked(False)
         form.addRow(self.record_with_overlays_checkbox)
-
-        # Add "Open folder" button
-        self.open_rec_folder_button = QPushButton("Open recording folder")
-        self.open_rec_folder_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
-        self.open_rec_folder_button.clicked.connect(self._action_open_recording_folder)
-        form.addRow(self.open_rec_folder_button)
 
         # Wrap recording buttons in a widget to prevent shifting
         recording_button_widget = QWidget()
@@ -525,6 +555,12 @@ class DLCLiveMainWindow(QMainWindow):
         self.stop_record_button.setMinimumWidth(150)
         buttons.addWidget(self.stop_record_button)
         form.addRow(recording_button_widget)
+
+        # Add "Open folder" button
+        self.open_rec_folder_button = QPushButton("Open recording folder")
+        self.open_rec_folder_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        self.open_rec_folder_button.clicked.connect(self._action_open_recording_folder)
+        form.addRow(self.open_rec_folder_button)
 
         return group
 
@@ -1063,7 +1099,6 @@ class DLCLiveMainWindow(QMainWindow):
                 self._last_pose.pose,
                 p_cutoff=self._p_cutoff,
                 colormap=self._colormap,
-                bbox_color=self._bbox_color,
                 offset=offset,
                 scale=scale,
             )
