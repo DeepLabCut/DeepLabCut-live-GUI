@@ -52,12 +52,14 @@ dev = [
     "pytest-mock>=3.10",
     "pytest-qt>=4.2",
     "pre-commit",
+    "hypothesis>=6.0",
 ]
 test = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "pytest-mock>=3.10",
     "pytest-qt>=4.2",
+    "hypothesis>=6.0",
 ]
 
 [project.urls]
