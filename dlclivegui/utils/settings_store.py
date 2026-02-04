@@ -1,5 +1,4 @@
-# settings_store.py
-
+# dlclivegui/utils/settings_store.py
 from PySide6.QtCore import QSettings
 
 from .config_models import ApplicationSettingsModel

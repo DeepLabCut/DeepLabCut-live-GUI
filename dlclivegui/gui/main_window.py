@@ -71,7 +71,7 @@ from dlclivegui.utils.config_models import (
     VisualizationSettingsModel,
 )
 from dlclivegui.utils.display import compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
-from dlclivegui.utils.utils import FPSTracker
+from dlclivegui.utils.utils import FPSTracker, build_recording_plan
 
 # logging.basicConfig(level=logging.INFO)
 logging.basicConfig(level=logging.DEBUG)  # FIXME @C-Achard set back to INFO for release
@@ -440,9 +440,10 @@ class DLCLiveMainWindow(QMainWindow):
         return group
 
     def _build_recording_group(self) -> QGroupBox:
+        """Build recording controls group."""
         group = QGroupBox("Recording")
         form = QFormLayout(group)
-
+        # Output directory selection
         dir_layout = QHBoxLayout()
         self.output_directory_edit = QLineEdit()
         dir_layout.addWidget(self.output_directory_edit)
@@ -451,6 +452,25 @@ class DLCLiveMainWindow(QMainWindow):
         browse_dir.clicked.connect(self._action_browse_directory)
         dir_layout.addWidget(browse_dir)
         form.addRow("Output directory", dir_layout)
+
+        # Session + run name
+        self.session_name_edit = QLineEdit()
+        self.session_name_edit.setPlaceholderText("e.g. mouseA_day1")
+        form.addRow("Session name", self.session_name_edit)
+
+        self.use_timestamp_checkbox = QCheckBox("Use timestamp for run folder name")
+        self.use_timestamp_checkbox.setChecked(True)
+        self.use_timestamp_checkbox.setToolTip(
+            "If checked, run folder will be run_YYYYMMDD_HHMMSS_mmm.\n"
+            "If unchecked, run folder will be run_0001, run_0002, ..."
+        )
+        form.addRow("", self.use_timestamp_checkbox)
+
+        # Show recording path preview
+        self.recording_path_preview = QLabel("")
+        self.recording_path_preview.setWordWrap(True)
+        self.recording_path_preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        form.addRow("Will save to", self.recording_path_preview)
 
         self.filename_edit = QLineEdit()
         form.addRow("Filename", self.filename_edit)
@@ -556,22 +576,39 @@ class DLCLiveMainWindow(QMainWindow):
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
         self.multi_camera_controller.initialization_failed.connect(self._on_multi_camera_initialization_failed)
 
+        # DLC processor signals
         self._dlc.pose_ready.connect(self._on_pose_ready)
         self._dlc.error.connect(self._on_dlc_error)
         self._dlc.initialized.connect(self._on_dlc_initialised)
         self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
 
-    # ------------------------------------------------------------------ config
+        # Recording settings
+        ## Session name persistence + preview updates
+        if hasattr(self, "session_name_edit"):
+            self.session_name_edit.editingFinished.connect(self._on_session_name_editing_finished)
+        if hasattr(self, "use_timestamp_checkbox"):
+            self.use_timestamp_checkbox.stateChanged.connect(lambda _s: self._update_recording_path_preview())
+        if hasattr(self, "output_directory_edit"):
+            self.output_directory_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
+        if hasattr(self, "filename_edit"):
+            self.filename_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
+        if hasattr(self, "container_combo"):
+            self.container_combo.currentTextChanged.connect(lambda _t: self._update_recording_path_preview())
+
+    # ------------------------------------------------------------------
+    # Config
     def _apply_config(self, config: ApplicationSettingsModel) -> None:
         # Update active cameras label
         self._update_active_cameras_label()
 
+        # Set DLC settings from config
         dlc = config.dlc
         resolved_model_path = self._model_path_store.resolve(dlc.model_path)
         self.model_path_edit.setText(resolved_model_path)
 
         # self.additional_options_edit.setPlainText(json.dumps(dlc.additional_options, indent=2))
 
+        # Set recording settings from config
         recording = config.recording
         self.output_directory_edit.setText(recording.directory)
         self.filename_edit.setText(recording.filename)
@@ -583,6 +620,12 @@ class DLCLiveMainWindow(QMainWindow):
             self.codec_combo.addItem(recording.codec)
             self.codec_combo.setCurrentIndex(self.codec_combo.count() - 1)
         self.crf_spin.setValue(int(recording.crf))
+        ## Restore persisted session name if empty
+        if hasattr(self, "session_name_edit"):
+            if not self.session_name_edit.text().strip():
+                persisted = self._load_persisted_session_name()
+                if persisted:
+                    self.session_name_edit.setText(persisted)
 
         # Set bounding box settings from config
         bbox = config.bbox
@@ -599,6 +642,9 @@ class DLCLiveMainWindow(QMainWindow):
         self._bbox_color = viz.get_bbox_color_bgr()
         # Update DLC camera list
         self._refresh_dlc_camera_list()
+
+        # Update recording path preview
+        self._update_recording_path_preview()
 
     def _current_config(self) -> ApplicationSettingsModel:
         # Get the first camera from multi-camera config for backward compatibility
@@ -658,7 +704,8 @@ class DLCLiveMainWindow(QMainWindow):
             bbox_color=self._bbox_color,
         )
 
-    # ------------------------------------------------------------------ actions
+    # ------------------------------------------------------------------
+    # Actions
     def _action_load_config(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(self, "Load configuration", str(Path.home()), "JSON files (*.json)")
         if not file_name:
@@ -770,7 +817,53 @@ class DLCLiveMainWindow(QMainWindow):
             f"Found {len(self._processor_keys)} processor(s) in package dlclivegui.processors", 3000
         )
 
-    # ------------------------------------------------------------------ multi-camera
+    # ------------------------------------------------------------------
+    # Recording path preview and session name persistence
+    def _on_session_name_editing_finished(self) -> None:
+        name = self.session_name_edit.text().strip()
+        self._persist_session_name(name)
+        self._update_recording_path_preview()
+
+    def _update_recording_path_preview(self) -> None:
+        """Update the label showing where files will go (best-effort)."""
+        if not hasattr(self, "recording_path_preview"):
+            return
+        out_dir = self.output_directory_edit.text().strip()
+        sess = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
+        base = self.filename_edit.text().strip()
+        container = self.container_combo.currentText().strip() if hasattr(self, "container_combo") else "mp4"
+        use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
+
+        # Preview is approximate (since run index/time is decided at start).
+        sess_safe = sess.strip() or "session"
+        run_hint = "run_<timestamp>" if use_ts else "run_<next>"
+        stem_hint = base.strip() or "recording"
+        self.recording_path_preview.setText(
+            str(Path(out_dir).expanduser() / sess_safe / run_hint / f"{stem_hint}_<camera>.{container}")
+        )
+
+    def _recording_plan_from_ui(self):
+        recording = self._recording_settings_from_ui()
+        session_name = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
+        use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
+
+        camera_ids = (
+            sorted(self._running_cams_ids)
+            if self._running_cams_ids
+            else [get_camera_id(c) for c in self._config.multi_camera.get_active_cameras()]
+        )
+
+        return build_recording_plan(
+            output_dir=recording.directory,
+            session_name=session_name,
+            base_filename=self.filename_edit.text().strip(),
+            container=self.container_combo.currentText().strip(),
+            camera_ids=camera_ids,
+            use_timestamp=use_ts,
+        )
+
+    # ------------------------------------------------------------------
+    # Multi-camera
     def _open_camera_config_dialog(self) -> None:
         """Open the camera configuration dialog (non-modal, async inside)."""
         if self.multi_camera_controller.is_running():
@@ -910,6 +1003,8 @@ class DLCLiveMainWindow(QMainWindow):
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
 
+    # ------------------------------------------------------------------
+    # Multi-camera event handlers
     def _on_multi_frame_ready(self, frame_data: MultiFrameData) -> None:
         """Handle frames from multiple cameras.
 
@@ -1020,13 +1115,29 @@ class DLCLiveMainWindow(QMainWindow):
         """Start recording from all active cameras."""
         recording = self._recording_settings_from_ui()
         active_cams = self._config.multi_camera.get_active_cameras()
-        self._rec_manager.start_all(recording, active_cams, self._multi_camera_frames)
+        if not active_cams:
+            self._show_error("No active cameras to record from.")
+            return
 
-        if self._rec_manager.is_active:
-            self.start_record_button.setEnabled(False)
-            self.stop_record_button.setEnabled(True)
-            self.statusBar().showMessage(f"Recording {len(active_cams)} camera(s) to {recording.directory}", 5000)
-            self._update_camera_controls_enabled()
+        session_name = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
+        use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
+
+        run_dir = self._rec_manager.start_all(
+            recording,
+            active_cams,
+            self._multi_camera_frames,
+            session_name=session_name,
+            use_timestamp=use_ts,
+            all_or_nothing=False,
+        )
+        if run_dir is None:
+            self._show_error("Failed to start recording.")
+
+        self._persist_session_name(session_name)
+        self.start_record_button.setEnabled(False)
+        self.stop_record_button.setEnabled(True)
+        self.statusBar().showMessage(f"Recording {len(active_cams)} camera(s) to {recording.directory}", 5000)
+        self._update_camera_controls_enabled()
 
     def _stop_multi_camera_recording(self) -> None:
         if not self._rec_manager.is_active:
@@ -1037,7 +1148,8 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage("Multi-camera recording stopped", 3000)
         self._update_camera_controls_enabled()
 
-    # ------------------------------------------------------------------ camera control
+    # ------------------------------------------------------------------
+    # Camera control
     def _show_logo_and_text(self):
         """Show the transparent logo with text below it in the preview area when not running."""
         from PySide6.QtCore import QRect
@@ -1383,9 +1495,13 @@ class DLCLiveMainWindow(QMainWindow):
                         session_name = getattr(processor, "session_name", "auto_session")
                         self._auto_record_session_name = session_name
 
-                        # Update filename with session name
-                        self.filename_edit.text()
-                        self.filename_edit.setText(f"{session_name}.mp4")
+                        # Processor overrides session name field + persist it
+                        self.session_name_edit.setText(session_name)
+                        self._persist_session_name(session_name)
+
+                        # Optional: set base filename to session name (readable stable filenames)
+                        self.filename_edit.setText(session_name)
+                        self._update_recording_path_preview()
 
                         self._start_recording()
                         self.statusBar().showMessage(f"Auto-started recording: {session_name}", 3000)
@@ -1544,7 +1660,8 @@ class DLCLiveMainWindow(QMainWindow):
             # Stop inference since initialization failed
             self._stop_inference(show_message=False)
 
-    # ------------------------------------------------------------------ helpers
+    # ------------------------------------------------------------------
+    # Helpers
     def _show_error(self, message: str) -> None:
         self.statusBar().showMessage(message, 5000)
         QMessageBox.critical(self, "Error", message)
@@ -1559,7 +1676,24 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage(message, 5000)
         QMessageBox.information(self, "Information", message)
 
-    # ------------------------------------------------------------------ Qt overrides
+    # FIXME @C-Achard move to config/dedicated Store class
+    def _session_settings_key(self) -> str:
+        return "recording/session_name"
+
+    def _load_persisted_session_name(self) -> str:
+        try:
+            return self.settings.value(self._session_settings_key(), "", type=str) or ""
+        except Exception:
+            return ""
+
+    def _persist_session_name(self, name: str) -> None:
+        try:
+            self.settings.setValue(self._session_settings_key(), name)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Qt overrides
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour
         if self.multi_camera_controller.is_running():
             self.multi_camera_controller.stop(wait=True)
