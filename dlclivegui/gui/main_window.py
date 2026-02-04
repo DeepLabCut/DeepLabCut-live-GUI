@@ -470,23 +470,40 @@ class DLCLiveMainWindow(QMainWindow):
         self.filename_edit = QLineEdit()
         form.addRow("Filename", self.filename_edit)
 
+        container_codec_layout = QHBoxLayout()
+        container_codec_layout.setContentsMargins(0, 0, 0, 0)
+        container_codec_layout.setSpacing(8)
         self.container_combo = QComboBox()
         self.container_combo.setEditable(True)
         self.container_combo.addItems(["mp4", "avi", "mov"])
-        form.addRow("Container", self.container_combo)
-
+        container_codec_layout.addWidget(self.container_combo)
+        # form.addRow("Container", self.container_combo)
         self.codec_combo = QComboBox()
         if os.sys.platform == "darwin":
             self.codec_combo.addItems(["h264_videotoolbox", "libx264", "hevc_videotoolbox"])
         else:
             self.codec_combo.addItems(["h264_nvenc", "libx264", "hevc_nvenc"])
         self.codec_combo.setCurrentText("libx264")
-        form.addRow("Codec", self.codec_combo)
+        # form.addRow("Codec", self.codec_combo)
+        container_codec_layout.addWidget(self.codec_combo)
+        form.addRow("Container/Codec", container_codec_layout)
 
         self.crf_spin = QSpinBox()
+        dflt_crf = RecordingSettings().crf
+        self.crf_spin.setToolTip(
+            f"Constant Rate Factor (CRF) for video quality (lower is better quality, {dflt_crf} is default)"
+        )
         self.crf_spin.setRange(0, 51)
-        self.crf_spin.setValue(23)
+        self.crf_spin.setValue(dflt_crf)
         form.addRow("CRF", self.crf_spin)
+
+        # Record with overlays
+        self.record_with_overlays_checkbox = QCheckBox("Record video with overlays")
+        self.record_with_overlays_checkbox.setToolTip(
+            "Enable to include pose overlays in recorded video (keypoints & bounding boxes)"
+        )
+        self.record_with_overlays_checkbox.setChecked(False)
+        form.addRow(self.record_with_overlays_checkbox)
 
         # Add "Open folder" button
         self.open_rec_folder_button = QPushButton("Open recording folder")
@@ -1034,6 +1051,35 @@ class DLCLiveMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # Multi-camera event handlers
+    def _render_overlays_for_recording(self, cam_id, frame):
+        # Copy so we don't affect GUI preview pipeline
+        output = frame.copy()
+        offset, scale = (0, 0), (1.0, 1.0)
+
+        # If this is the inference camera, apply pose overlays
+        if cam_id == self._inference_camera_id and self._last_pose and self._last_pose.pose is not None:
+            output = draw_pose(
+                output,
+                self._last_pose.pose,
+                p_cutoff=self._p_cutoff,
+                colormap=self._colormap,
+                bbox_color=self._bbox_color,
+                offset=offset,
+                scale=scale,
+            )
+        if self._bbox_enabled:
+            output = draw_bbox(
+                output,
+                self._bbox_x0,
+                self._bbox_y0,
+                self._bbox_x1,
+                self._bbox_y1,
+                color=self._bbox_color,
+                offset=offset,
+                scale=scale,
+            )
+        return output
+
     def _on_multi_frame_ready(self, frame_data: MultiFrameData) -> None:
         """Handle frames from multiple cameras.
 
@@ -1089,6 +1135,11 @@ class DLCLiveMainWindow(QMainWindow):
         # PRIORITY 2: Recording (queued, non-blocking)
         if self._rec_manager.is_active and src_id in frame_data.frames:
             frame = frame_data.frames[src_id]
+
+            if self.record_with_overlays_checkbox.isChecked():
+                # Draw overlays for recording
+                frame = self._render_overlays_for_recording(src_id, frame)
+
             ts = frame_data.timestamps.get(src_id, time.time())
             self._rec_manager.write_frame(src_id, frame, ts)
 

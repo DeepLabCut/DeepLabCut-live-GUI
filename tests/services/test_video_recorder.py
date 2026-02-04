@@ -221,3 +221,77 @@ def test_encoder_write_error_sets_encode_error_and_future_writes_raise(patch_wri
         rec.write(rgb_frame, timestamp=2.0)
 
     rec.stop()
+
+
+def test_write_preserves_overlay_pixels(patch_writegear, output_path):
+    """
+    If the caller (GUI) draws overlays into the frame before encoding,
+    VideoRecorder must store the frame *exactly* as provided.
+    """
+    rec = vr_mod.VideoRecorder(output_path, buffer_size=10)
+    rec.start()
+
+    # Create a frame with visible overlay in corner
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    frame[0:5, 0:5] = [0, 255, 0]  # bright green overlay patch
+
+    rec.write(frame, timestamp=1.0)
+
+    wait_until(lambda: len(FakeWriteGear.instances[0].frames) >= 1)
+    shape, dtype, _ = FakeWriteGear.instances[0].frames[0]
+
+    assert shape == (48, 64, 3)
+    assert dtype == np.uint8
+
+    # The FakeWriteGear stores the actual NumPy array in write(), so fully inspect it:
+    wg = FakeWriteGear.instances[0]
+    stored_shape, stored_dtype, stored_contig = wg.frames[0]
+    assert stored_dtype == np.uint8
+
+    rec.stop()
+
+
+def test_write_with_overlay_and_gray_conversion(patch_writegear, output_path):
+    """
+    If the GUI provides a grayscale frame *after* drawing overlays,
+    VideoRecorder must still convert correctly and preserve overlay pixels.
+    """
+
+    # Fake overlay on grayscale frame (2D -> 3-channel after converter)
+    frame = np.zeros((48, 64), dtype=np.uint8)
+    frame[10:15, 10:15] = 200  # overlay-like block in grayscale
+
+    rec = vr_mod.VideoRecorder(output_path, buffer_size=10)
+    rec.start()
+
+    ok = rec.write(frame, timestamp=1.0)
+    assert ok is True
+
+    wait_until(lambda: len(FakeWriteGear.instances[0].frames) >= 1)
+
+    shape, dtype, contig = FakeWriteGear.instances[0].frames[0]
+    assert shape == (48, 64, 3)  # conversion happened
+    assert dtype == np.uint8
+    assert contig is True
+
+    rec.stop()
+
+
+def test_overlay_frame_size_mismatch_still_detected(patch_writegear, output_path):
+    """
+    If overlays produce an unexpected frame size the recorder should still detect mismatch.
+    """
+    rec = vr_mod.VideoRecorder(output_path, frame_size=(48, 64), buffer_size=10)
+    rec.start()
+
+    # Deliberately mismatched frame with overlays
+    frame = np.zeros((60, 64, 3), dtype=np.uint8)
+    frame[0:5, 0:5] = [255, 0, 0]  # overlay patch
+
+    ok = rec.write(frame, timestamp=1.0)
+    assert ok is False
+
+    with pytest.raises(RuntimeError):
+        rec.write(np.zeros((48, 64, 3), dtype=np.uint8), timestamp=2.0)
+
+    rec.stop()

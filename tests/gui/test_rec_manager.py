@@ -34,6 +34,7 @@ def current_frames(_active_cams_two):
     return frames
 
 
+@pytest.mark.unit
 def test_start_all_creates_recorders_and_returns_run_dir(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir
 ):
@@ -73,6 +74,7 @@ def test_start_all_creates_recorders_and_returns_run_dir(
         assert f"_{cam.backend}_cam{cam.index}" in rec.output.name
 
 
+@pytest.mark.unit
 def test_start_all_passes_use_timestamp_flag(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir
 ):
@@ -83,6 +85,7 @@ def test_start_all_passes_use_timestamp_flag(
     assert spy["use_timestamp"] is False
 
 
+@pytest.mark.unit
 def test_frame_size_is_inferred_from_current_frames(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir
 ):
@@ -97,6 +100,7 @@ def test_frame_size_is_inferred_from_current_frames(
         assert rec.frame_size == (frame.shape[0], frame.shape[1])
 
 
+@pytest.mark.unit
 def test_missing_frame_results_in_none_frame_size(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir
 ):
@@ -111,6 +115,7 @@ def test_missing_frame_results_in_none_frame_size(
     assert rec1.frame_size is None
 
 
+@pytest.mark.unit
 def test_partial_failure_allowed_when_not_all_or_nothing(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir
 ):
@@ -139,6 +144,7 @@ def test_partial_failure_allowed_when_not_all_or_nothing(
         mgr.stop_all()
 
 
+@pytest.mark.unit
 def test_all_or_nothing_stops_all_on_any_failure(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir
 ):
@@ -169,6 +175,7 @@ def test_all_or_nothing_stops_all_on_any_failure(
         patch_video_recorder.start = original_start
 
 
+@pytest.mark.unit
 def test_stop_all_clears_state(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir
 ):
@@ -183,6 +190,7 @@ def test_stop_all_clears_state(
     assert mgr.session_dir is None
 
 
+@pytest.mark.unit
 def test_write_frame_uses_given_timestamp(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir
 ):
@@ -197,6 +205,7 @@ def test_write_frame_uses_given_timestamp(
     assert rec.write_calls[-1][1] == 123.0
 
 
+@pytest.mark.unit
 def test_write_frame_uses_time_when_timestamp_missing(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir, monkeypatch
 ):
@@ -215,6 +224,7 @@ def test_write_frame_uses_time_when_timestamp_missing(
     assert rec.write_calls[-1][1] == 999.0
 
 
+@pytest.mark.unit
 def test_write_frame_removes_recorder_on_exception(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir
 ):
@@ -229,6 +239,7 @@ def test_write_frame_removes_recorder_on_exception(
     assert cam0_id not in mgr.recorders
 
 
+@pytest.mark.unit
 def test_get_stats_summary_single_recorder_uses_formatter(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir, monkeypatch
 ):
@@ -246,6 +257,7 @@ def test_get_stats_summary_single_recorder_uses_formatter(
     assert mgr.get_stats_summary() == "OK_SINGLE"
 
 
+@pytest.mark.unit
 def test_get_stats_summary_multi_aggregates(
     recording_settings, _active_cams_two, current_frames, patch_video_recorder, patch_build_run_dir
 ):

@@ -5,6 +5,8 @@ import importlib
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 MODULE_UNDER_TEST = "dlclivegui.main"
 
 
@@ -14,6 +16,7 @@ def _import_fresh():
     return importlib.import_module(MODULE_UNDER_TEST)
 
 
+@pytest.mark.gui
 def test_main_with_splash(monkeypatch):
     appmod = _import_fresh()
 
@@ -83,6 +86,7 @@ def test_main_with_splash(monkeypatch):
     assert captured_exit["code"] == app_instance.exec.return_value
 
 
+@pytest.mark.gui
 def test_main_without_splash(monkeypatch):
     appmod = _import_fresh()
 
