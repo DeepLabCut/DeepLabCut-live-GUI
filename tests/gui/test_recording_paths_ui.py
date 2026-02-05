@@ -57,7 +57,7 @@ def test_recording_path_preview_updates(window, qtbot, tmp_path):
     window.use_timestamp_checkbox.setChecked(True)
     qtbot.wait(10)
 
-    txt = window.recording_path_preview.text()
+    txt = window.recording_path_preview.full_text
     assert "mouseA_day1" in txt
     assert "run_" in txt
     assert "timestamp" in txt
@@ -67,7 +67,7 @@ def test_recording_path_preview_updates(window, qtbot, tmp_path):
     window.use_timestamp_checkbox.setChecked(False)
     qtbot.wait(10)
 
-    txt2 = window.recording_path_preview.text()
+    txt2 = window.recording_path_preview.full_text
     assert "mouseA_day1" in txt2
     assert "run_" in txt2
     assert "next" in txt2

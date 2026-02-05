@@ -18,10 +18,8 @@ from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QCloseEvent,
-    QCursor,
     QDesktopServices,
     QFont,
-    QGuiApplication,
     QIcon,
     QImage,
     QPainter,
@@ -44,7 +42,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStatusBar,
     QStyle,
-    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -60,21 +57,23 @@ from dlclivegui.config import (
     RecordingSettings,
     VisualizationSettings,
 )
-from dlclivegui.gui.camera_config_dialog import CameraConfigDialog
-from dlclivegui.gui.recording_manager import RecordingManager
-from dlclivegui.gui.theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
-from dlclivegui.processors.processor_utils import (
+
+from ..processors.processor_utils import (
     default_processors_dir,
     instantiate_from_scan,
     scan_processor_folder,
     scan_processor_package,
 )
-from dlclivegui.services.dlc_processor import DLCLiveProcessor, PoseResult
-from dlclivegui.services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
-from dlclivegui.utils.display import compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
-from dlclivegui.utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
-from dlclivegui.utils.stats import format_dlc_stats
-from dlclivegui.utils.utils import FPSTracker
+from ..services.dlc_processor import DLCLiveProcessor, PoseResult
+from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
+from ..utils.display import compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
+from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
+from ..utils.stats import format_dlc_stats
+from ..utils.utils import FPSTracker
+from .camera_config_dialog import CameraConfigDialog
+from .misc.elidinglabel import ElidingPathLabel
+from .recording_manager import RecordingManager
+from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 
 # logging.basicConfig(level=logging.INFO)
 logging.basicConfig(level=logging.DEBUG)  # FIXME @C-Achard set back to INFO for release
@@ -498,15 +497,22 @@ class DLCLiveMainWindow(QMainWindow):
         form.addRow("", self.use_timestamp_checkbox)
 
         # Show recording path preview
-        self.recording_path_preview = QLabel("")
-        # Ensure it never gets squished vertically
-        self.recording_path_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.recording_path_preview.setWordWrap(False)
-        self.recording_path_preview.setCursor(Qt.PointingHandCursor)
-        self.recording_path_preview.setToolTip("")  # will show the preview path
-        self.recording_path_preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.recording_path_preview.mouseReleaseEvent = self._copy_path_on_click
+
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.DontWrapRows)
+
+        self.recording_path_preview = ElidingPathLabel("")
+        # No need to assign mouseReleaseEvent: the label handles click-to-copy internally
         form.addRow("Will save to", self.recording_path_preview)
+        # self.recording_path_preview = QLabel("")
+        # # Ensure it never gets squished vertically
+        # self.recording_path_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # self.recording_path_preview.setWordWrap(False)
+        # self.recording_path_preview.setCursor(Qt.PointingHandCursor)
+        # self.recording_path_preview.setToolTip("")  # will show the preview path
+        # self.recording_path_preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # self.recording_path_preview.mouseReleaseEvent = self._copy_path_on_click
+        # form.addRow("Will save to", self.recording_path_preview)
 
         self.filename_edit = QLineEdit()
         form.addRow("Filename", self.filename_edit)
@@ -965,10 +971,31 @@ class DLCLiveMainWindow(QMainWindow):
         self._settings_store.set_session_name(name)
         self._update_recording_path_preview()
 
+    # def _update_recording_path_preview(self) -> None:
+    #     """Update the label showing where files will go (best-effort)."""
+    #     if not hasattr(self, "recording_path_preview"):
+    #         return
+    #     out_dir = self.output_directory_edit.text().strip()
+    #     sess = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
+    #     base = self.filename_edit.text().strip()
+    #     container = self.container_combo.currentText().strip() if hasattr(self, "container_combo") else "mp4"
+    #     use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
+
+    #     # Preview is approximate (since run index/time is decided at start).
+    #     sess_safe = sess.strip() or "session"
+    #     run_hint = "run_<timestamp>" if use_ts else "run_<next>"
+    #     stem_hint = Path(base).stem if base.strip() else "recording"  # shows user-provided stem or default
+    #     full_hint = str(Path(out_dir).expanduser() / sess_safe / run_hint / f"{stem_hint}_<camera>.{container}")
+    #     self.recording_path_preview.setText(f"<span style='color: gray;'>{full_hint}</span>")
+    #     self.recording_path_preview.setToolTip(
+    #         f"<b>Click to copy to clipboard :</b><br>{full_hint.replace('<camera>', '*')}"
+    #     )
+
     def _update_recording_path_preview(self) -> None:
         """Update the label showing where files will go (best-effort)."""
         if not hasattr(self, "recording_path_preview"):
             return
+
         out_dir = self.output_directory_edit.text().strip()
         sess = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
         base = self.filename_edit.text().strip()
@@ -976,23 +1003,21 @@ class DLCLiveMainWindow(QMainWindow):
         use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
 
         # Preview is approximate (since run index/time is decided at start).
-        sess_safe = sess.strip() or "session"
+        sess_safe = sess or "session"
         run_hint = "run_<timestamp>" if use_ts else "run_<next>"
-        stem_hint = Path(base).stem if base.strip() else "recording"  # shows user-provided stem or default
+        stem_hint = Path(base).stem if base else "recording"
         full_hint = str(Path(out_dir).expanduser() / sess_safe / run_hint / f"{stem_hint}_<camera>.{container}")
-        self.recording_path_preview.setText(f"<span style='color: gray;'>{full_hint}</span>")
-        self.recording_path_preview.setToolTip(
-            f"<b>Click to copy to clipboard :</b><br>{full_hint.replace('<camera>', '*')}"
-        )
 
-    def _copy_path_on_click(self, event):
-        if event.button() == Qt.LeftButton:
-            # Clear all HTML tags to get the raw path before copying
-            path = self.recording_path_preview.text()
-            path = path.replace("<span style='color: gray;'>", "").replace("</span>", "")
-            clean_path = path.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-            QGuiApplication.clipboard().setText(clean_path)
-            QToolTip.showText(QCursor.pos(), "Copied path", self.recording_path_preview)
+        self.recording_path_preview.set_full_text(full_hint)
+
+    # def _copy_path_on_click(self, event):
+    #     if event.button() == Qt.LeftButton:
+    #         # Clear all HTML tags to get the raw path before copying
+    #         path = self.recording_path_preview.text()
+    #         path = path.replace("<span style='color: gray;'>", "").replace("</span>", "")
+    #         clean_path = path.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    #         QGuiApplication.clipboard().setText(clean_path)
+    #         QToolTip.showText(QCursor.pos(), "Copied path", self.recording_path_preview)
 
     def _on_use_timestamp_changed(self, _state: int) -> None:
         self._settings_store.set_use_timestamp(self.use_timestamp_checkbox.isChecked())

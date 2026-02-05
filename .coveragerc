@@ -7,4 +7,3 @@ omit =
     # omit only the parts that are pure passthrough shims to SDKs
     dlclivegui/cameras/backends/basler_backend.py
     dlclivegui/cameras/backends/gentl_backend.py
-    # dlclivegui/cameras/backends/aravis_backend.py
