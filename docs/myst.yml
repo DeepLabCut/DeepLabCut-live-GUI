@@ -13,13 +13,13 @@ project:
     - title: Quickstart
       children:
         - file: quickstart/install
+    - title: User Guide
+      children:
+        - file: user_guide/overview
       #     - file: quickstart/camera_setup
       #     - file: quickstart/inference_setup
       #     - file: quickstart/first_run
 
-      # - title: User Guide
-      #   children:
-      #     - file: user_guide/overview
       #     - file: user_guide/cameras/index
       #       children:
       #         - file: user_guide/cameras/configure_dialog
