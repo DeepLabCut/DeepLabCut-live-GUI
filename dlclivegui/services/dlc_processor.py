@@ -332,6 +332,10 @@ class DLCLiveProcessor(QObject):
             self._dlc.init_inference(init_frame)
             init_inference_time = time.perf_counter() - init_inference_start
 
+            # Pass DLCLive cfg to processor if available
+            if hasattr(self._dlc, "processor") and hasattr(self._dlc.processor, "set_dlc_cfg"):
+                self._dlc.processor.set_dlc_cfg(getattr(self._dlc, "cfg", None))
+
             self._initialized = True
             self.initialized.emit(True)
 
