@@ -2,68 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
+import dlclivegui.cameras.backends.opencv_backend as ob
+
 pytestmark = pytest.mark.unit
-import dlclivegui.cameras.backends.opencv_backend as ob  # noqa: E402
-
-
-class FakeCapture:
-    """A controllable fake cv2.VideoCapture."""
-
-    def __init__(self, opened=True, backend_name="FAKE"):
-        self._opened = opened
-        self._released = False
-        self._backend_name = backend_name
-
-        # Emulate common capture properties
-        self.props = {
-            ob.cv2.CAP_PROP_FRAME_WIDTH: 640.0,
-            ob.cv2.CAP_PROP_FRAME_HEIGHT: 480.0,
-            ob.cv2.CAP_PROP_FPS: 30.0,
-            ob.cv2.CAP_PROP_FOURCC: 0.0,
-        }
-
-        # Behavior toggles for read path
-        self.grab_ok = True
-        self.retrieve_ok = True
-        self.retrieve_frame = None  # if None, create a dummy frame on retrieve()
-
-        # Introspection
-        self.set_calls = []
-        self.get_calls = []
-        self.grab_calls = 0
-        self.retrieve_calls = 0
-
-    def isOpened(self):
-        return self._opened and not self._released
-
-    def release(self):
-        self._released = True
-
-    def getBackendName(self):
-        return self._backend_name
-
-    def get(self, prop_id):
-        self.get_calls.append(prop_id)
-        return self.props.get(prop_id, 0.0)
-
-    def set(self, prop_id, value):
-        self.set_calls.append((prop_id, value))
-        self.props[prop_id] = float(value)
-        return True
-
-    def grab(self):
-        self.grab_calls += 1
-        return self.grab_ok
-
-    def retrieve(self):
-        self.retrieve_calls += 1
-        if not self.retrieve_ok:
-            return False, None
-        if self.retrieve_frame is None:
-            import numpy as np
-
-            self.retrieve_frame = np.zeros((10, 10, 3), dtype=np.uint8)
-        return True, self.retrieve_frame
 
 
 def make_settings(index=0, fps=30.0, properties=None):
@@ -82,14 +23,7 @@ def test_parse_resolution_defaults_and_invalid_values():
     assert backend._parse_resolution("nope") == (720, 540)
 
 
-def test_normalize_resolution_windows(monkeypatch):
-    monkeypatch.setattr(ob.platform, "system", lambda: "Windows")
-    backend = ob.OpenCVCameraBackend(make_settings(properties={"resolution": (800, 600)}))
-    assert backend._normalize_resolution(800, 600) == (1280, 720)
-    assert backend._normalize_resolution(1920, 1080) == (1920, 1080)
-
-
-def test_try_open_windows_fallback_to_msmf(monkeypatch):
+def test_try_open_windows_fallback_to_msmf(monkeypatch, fake_capture_factory):
     """If preferred backend fails on Windows, try MSMF then ANY."""
     monkeypatch.setattr(ob.platform, "system", lambda: "Windows")
 
@@ -98,10 +32,10 @@ def test_try_open_windows_fallback_to_msmf(monkeypatch):
     def fake_videocapture(index, flag):
         calls.append((index, flag))
         if flag == getattr(ob.cv2, "CAP_DSHOW", ob.cv2.CAP_ANY):
-            return FakeCapture(opened=False)
+            return fake_capture_factory(opened=False)
         if flag == getattr(ob.cv2, "CAP_MSMF", ob.cv2.CAP_ANY):
-            return FakeCapture(opened=True, backend_name="MSMF")
-        return FakeCapture(opened=False)
+            return fake_capture_factory(opened=True, backend_name="MSMF")
+        return fake_capture_factory(opened=False)
 
     monkeypatch.setattr(ob.cv2, "VideoCapture", fake_videocapture)
 
@@ -114,17 +48,22 @@ def test_try_open_windows_fallback_to_msmf(monkeypatch):
     assert calls[1][1] == getattr(ob.cv2, "CAP_MSMF", ob.cv2.CAP_ANY)
 
 
-def test_open_uses_alt_index_probe_on_windows(monkeypatch):
-    """If initial open fails and alt_index_probe is enabled, try index+1."""
+def test_open_does_not_use_alt_index_probe_when_disabled_in_code(monkeypatch, fake_capture_factory):
+    """alt_index_probe is currently commented out in backend.open(); ensure no index+1 attempt."""
     monkeypatch.setattr(ob.platform, "system", lambda: "Windows")
+
+    # Prevent discovery from changing index/backend
+    monkeypatch.setattr(ob, "list_cameras", lambda *_a, **_k: [])
+    monkeypatch.setattr(ob, "select_camera", lambda *_a, **_k: None)
 
     calls = []
 
     def fake_videocapture(index, flag):
         calls.append((index, flag))
-        if index == 1:
-            return FakeCapture(opened=True, backend_name="DSHOW")
-        return FakeCapture(opened=False)
+        # Only index 0 succeeds; if code tries index 1, we'd see it in calls and fail.
+        if index == 0:
+            return fake_capture_factory(opened=True, backend_name="DSHOW")
+        return fake_capture_factory(opened=False)
 
     monkeypatch.setattr(ob.cv2, "VideoCapture", fake_videocapture)
 
@@ -133,15 +72,18 @@ def test_open_uses_alt_index_probe_on_windows(monkeypatch):
     backend.open()
 
     assert any(idx == 0 for idx, _ in calls)
-    assert any(idx == 1 for idx, _ in calls)
+    assert not any(idx == 1 for idx, _ in calls)  # since alt index probe is commented out
     assert "camera" in backend.device_name().lower()
 
 
-def test_open_raises_when_unable_to_open(monkeypatch):
+def test_open_raises_when_unable_to_open(monkeypatch, fake_capture_factory):
     monkeypatch.setattr(ob.platform, "system", lambda: "Linux")
 
+    monkeypatch.setattr(ob, "list_cameras", lambda *_a, **_k: [])
+    monkeypatch.setattr(ob, "select_camera", lambda *_a, **_k: None)
+
     def fake_videocapture(index, flag):
-        return FakeCapture(opened=False)
+        return fake_capture_factory(opened=False)
 
     monkeypatch.setattr(ob.cv2, "VideoCapture", fake_videocapture)
 
@@ -150,9 +92,9 @@ def test_open_raises_when_unable_to_open(monkeypatch):
         backend.open()
 
 
-def test_read_returns_none_on_grab_failure():
+def test_read_returns_none_on_grab_failure(fake_capture_factory):
     backend = ob.OpenCVCameraBackend(make_settings(index=0, properties={}))
-    cap = FakeCapture(opened=True)
+    cap = fake_capture_factory(opened=True)
     cap.grab_ok = False
     backend._capture = cap
 
@@ -161,9 +103,9 @@ def test_read_returns_none_on_grab_failure():
     assert isinstance(ts, float)
 
 
-def test_read_returns_none_on_retrieve_failure():
+def test_read_returns_none_on_retrieve_failure(fake_capture_factory):
     backend = ob.OpenCVCameraBackend(make_settings(index=0, properties={}))
-    cap = FakeCapture(opened=True)
+    cap = fake_capture_factory(opened=True)
     cap.retrieve_ok = False
     backend._capture = cap
 
@@ -172,9 +114,9 @@ def test_read_returns_none_on_retrieve_failure():
     assert isinstance(ts, float)
 
 
-def test_read_never_raises_on_exception():
+def test_read_never_raises_on_exception(fake_capture_factory):
     backend = ob.OpenCVCameraBackend(make_settings(index=0, properties={}))
-    cap = FakeCapture(opened=True)
+    cap = fake_capture_factory(opened=True)
 
     def boom():
         raise RuntimeError("transient")
@@ -187,10 +129,10 @@ def test_read_never_raises_on_exception():
     assert isinstance(ts, float)
 
 
-def test_configure_capture_sets_resolution_and_fps_non_faststart_windows(monkeypatch):
+def test_configure_capture_sets_resolution_and_fps_non_faststart_windows(monkeypatch, fake_capture_factory):
     monkeypatch.setattr(ob.platform, "system", lambda: "Windows")
 
-    cap = FakeCapture(opened=True, backend_name="DSHOW")
+    cap = fake_capture_factory(opened=True, backend_name="DSHOW")
     cap.props[ob.cv2.CAP_PROP_FRAME_WIDTH] = 640.0
     cap.props[ob.cv2.CAP_PROP_FRAME_HEIGHT] = 480.0
     cap.props[ob.cv2.CAP_PROP_FPS] = 30.0
@@ -201,16 +143,16 @@ def test_configure_capture_sets_resolution_and_fps_non_faststart_windows(monkeyp
 
     backend._configure_capture()
 
-    assert backend.actual_resolution == (1280, 720)
-    assert settings.properties["resolution"] == (1280, 720)
+    assert backend.actual_resolution == (800, 600)
+    assert settings.properties["resolution"] == (800, 600)
     assert backend.actual_fps is not None
     assert isinstance(backend.actual_fps, float)
 
 
-def test_configure_capture_fast_start_does_not_force_resolution(monkeypatch):
+def test_configure_capture_fast_start_does_not_force_resolution(monkeypatch, fake_capture_factory):
     monkeypatch.setattr(ob.platform, "system", lambda: "Windows")
 
-    cap = FakeCapture(opened=True, backend_name="DSHOW")
+    cap = fake_capture_factory(opened=True, backend_name="DSHOW")
     cap.props[ob.cv2.CAP_PROP_FRAME_WIDTH] = 1920.0
     cap.props[ob.cv2.CAP_PROP_FRAME_HEIGHT] = 1080.0
 
@@ -224,10 +166,10 @@ def test_configure_capture_fast_start_does_not_force_resolution(monkeypatch):
     assert settings.properties["resolution"] == (1920, 1080)
 
 
-def test_configure_capture_applies_only_safe_numeric_properties(monkeypatch):
+def test_configure_capture_applies_only_safe_numeric_properties(monkeypatch, fake_capture_factory):
     monkeypatch.setattr(ob.platform, "system", lambda: "Linux")
 
-    cap = FakeCapture(opened=True)
+    cap = fake_capture_factory(opened=True)
     settings = make_settings(
         index=0,
         fps=30.0,
@@ -251,17 +193,17 @@ def test_configure_capture_applies_only_safe_numeric_properties(monkeypatch):
     assert not any(pid == 999 for pid, _ in cap.set_calls)
 
 
-def test_close_and_stop_release_capture():
+def test_close_and_stop_release_capture(fake_capture_factory):
     backend = ob.OpenCVCameraBackend(make_settings(index=0, properties={}))
-    cap = FakeCapture(opened=True)
+    cap = fake_capture_factory(opened=True)
     backend._capture = cap
 
     backend.close()
     assert backend._capture is None
-    assert cap._released is True
+    assert cap.released is True
 
-    cap2 = FakeCapture(opened=True)
+    cap2 = fake_capture_factory(opened=True)
     backend._capture = cap2
     backend.stop()
     assert backend._capture is None
-    assert cap2._released is True
+    assert cap2.released is True

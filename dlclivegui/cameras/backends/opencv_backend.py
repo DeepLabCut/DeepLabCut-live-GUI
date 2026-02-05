@@ -11,6 +11,13 @@ import cv2
 import numpy as np
 
 from ..base import CameraBackend, register_backend
+from .utils.opencv_discovery import (
+    ModeRequest,
+    apply_mode_with_verification,
+    list_cameras,
+    open_with_fallbacks,
+    select_camera,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # FIXME @C-Achard remove before release
@@ -47,7 +54,7 @@ class OpenCVCameraBackend(CameraBackend):
     }
 
     # Standard UVC modes that commonly succeed fast on Windows/Logitech
-    UVC_FALLBACK_MODES = [(1280, 720), (1920, 1080), (640, 480)]
+    # UVC_FALLBACK_MODES = [(1280, 720), (1920, 1080), (640, 480)]
 
     def __init__(self, settings):
         super().__init__(settings)
@@ -64,22 +71,39 @@ class OpenCVCameraBackend(CameraBackend):
     # ----------------------------
     # Public API
     # ----------------------------
-
     def open(self) -> None:
         backend_flag = self._preferred_backend_flag(self.settings.properties.get("api"))
         index = int(self.settings.index)
 
-        # 1) Preferred backend
-        self._capture = self._try_open(index, backend_flag)
+        # Optional: enhanced discovery by name/id
+        prefer_id = self.settings.properties.get("device_id")  # stable_id
+        prefer_name = self.settings.properties.get("device_name")  # substring match
+        prefer_vid = self.settings.properties.get("device_vid")
+        prefer_pid = self.settings.properties.get("device_pid")
+
+        cams = list_cameras(backend_flag)
+        chosen = select_camera(
+            cams,
+            prefer_stable_id=prefer_id,
+            prefer_name_substr=prefer_name,
+            prefer_vid_pid=(int(prefer_vid), int(prefer_pid)) if prefer_vid and prefer_pid else None,
+            fallback_index=index,
+        )
+
+        if chosen:
+            index = chosen.index
+            backend_flag = chosen.backend
+
+        self._capture, spec = open_with_fallbacks(index, backend_flag)
 
         # 2) Optional Logitech endpoint trick (Windows only)
-        if (
-            (not self._capture or not self._capture.isOpened())
-            and platform.system() == "Windows"
-            and self._alt_index_probe
-        ):
-            logger.debug("Primary index failed; trying alternate endpoint (index+1) with same backend.")
-            self._capture = self._try_open(index + 1, backend_flag)
+        # if (
+        #     (not self._capture or not self._capture.isOpened())
+        #     and platform.system() == "Windows"
+        #     and self._alt_index_probe
+        # ):
+        #     logger.debug("Primary index failed; trying alternate endpoint (index+1) with same backend.")
+        #     self._capture = self._try_open(index + 1, backend_flag)
 
         if not self._capture or not self._capture.isOpened():
             raise RuntimeError(
@@ -157,7 +181,7 @@ class OpenCVCameraBackend(CameraBackend):
 
     def _parse_resolution(self, resolution) -> tuple[int, int]:
         if resolution is None:
-            return (720, 540)  # normalized later where needed
+            return (720, 540)
         if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
             try:
                 return (int(resolution[0]), int(resolution[1]))
@@ -166,14 +190,14 @@ class OpenCVCameraBackend(CameraBackend):
                 return (720, 540)
         return (720, 540)
 
-    def _normalize_resolution(self, width: int, height: int) -> tuple[int, int]:
-        """On Windows, map non-standard requests to UVC-friendly modes for fast acceptance."""
-        if platform.system() == "Windows":
-            if (width, height) in self.UVC_FALLBACK_MODES:
-                return (width, height)
-            logger.debug(f"Normalizing unsupported resolution {width}x{height} to 1280x720 on Windows.")
-            return self.UVC_FALLBACK_MODES[0]
-        return (width, height)
+    # def _normalize_resolution(self, width: int, height: int) -> tuple[int, int]:
+    #     """On Windows, map non-standard requests to UVC-friendly modes for fast acceptance."""
+    #     if platform.system() == "Windows":
+    #         if (width, height) in self.UVC_FALLBACK_MODES:
+    #             return (width, height)
+    #         logger.debug(f"Normalizing unsupported resolution {width}x{height} to 1280x720 on Windows.")
+    #         return self.UVC_FALLBACK_MODES[0]
+    #     return (width, height)
 
     def _preferred_backend_flag(self, backend: str | None) -> int:
         """Resolve preferred backend by platform."""
@@ -232,12 +256,18 @@ class OpenCVCameraBackend(CameraBackend):
             self._codec_str = self._read_codec_string()
             logger.info(f"Camera codec after MJPG attempt: {self._codec_str}")
 
-        # --- Resolution (normalize non-standard on Windows) ---
+        # --- Resolution ---
         req_w, req_h = self._resolution
-        req_w, req_h = self._normalize_resolution(req_w, req_h)
+        enforce_aspect = self.settings.properties.get("enforce_aspect", "strict")
 
         if not self._fast_start:
-            self._set_resolution_if_needed(req_w, req_h)
+            result = apply_mode_with_verification(
+                self._capture,
+                ModeRequest(
+                    width=req_w, height=req_h, fps=float(self.settings.fps or 0.0), enforce_aspect=enforce_aspect
+                ),
+            )
+            self._actual_width, self._actual_height, self._actual_fps = result.width, result.height, result.fps
         else:
             self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
             self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
@@ -250,13 +280,13 @@ class OpenCVCameraBackend(CameraBackend):
                 logger.warning(
                     f"Resolution mismatch: requested {req_w}x{req_h}, got {self._actual_width}x{self._actual_height}"
                 )
-                for fw, fh in self.UVC_FALLBACK_MODES:
-                    if (fw, fh) == (self._actual_width, self._actual_height):
-                        break  # already at a fallback
-                    if self._set_resolution_if_needed(fw, fh, reconfigure_only=True):
-                        logger.info(f"Switched to supported resolution {fw}x{fh}")
-                        self._actual_width, self._actual_height = fw, fh
-                        break
+                # for fw, fh in self.UVC_FALLBACK_MODES:
+                #     if (fw, fh) == (self._actual_width, self._actual_height):
+                #         break  # already at a fallback
+                #     if self._set_resolution_if_needed(fw, fh, reconfigure_only=True):
+                #         logger.info(f"Switched to supported resolution {fw}x{fh}")
+                #         self._actual_width, self._actual_height = fw, fh
+                #         break
                 self._resolution = (self._actual_width or req_w, self._actual_height or req_h)
         else:
             # Non-Windows: accept actual as-is
@@ -338,31 +368,31 @@ class OpenCVCameraBackend(CameraBackend):
         except Exception as exc:
             logger.debug(f"MJPG enable attempt raised: {exc}")
 
-    def _set_resolution_if_needed(self, width: int, height: int, reconfigure_only: bool = False) -> bool:
-        """Set width/height only if different.
-        Returns True if the device ends up at the requested size.
-        """
-        try:
-            cur_w = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-            cur_h = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        except Exception:
-            cur_w, cur_h = 0, 0
+    # def _set_resolution_if_needed(self, width: int, height: int, reconfigure_only: bool = False) -> bool:
+    #     """Set width/height only if different.
+    #     Returns True if the device ends up at the requested size.
+    #     """
+    #     try:
+    #         cur_w = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    #         cur_h = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    #     except Exception:
+    #         cur_w, cur_h = 0, 0
 
-        if (cur_w != width) or (cur_h != height):
-            set_w_ok = self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
-            set_h_ok = self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
-            if not set_w_ok:
-                logger.debug(f"Failed to set frame width to {width}")
-            if not set_h_ok:
-                logger.debug(f"Failed to set frame height to {height}")
+    #     if (cur_w != width) or (cur_h != height):
+    #         set_w_ok = self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
+    #         set_h_ok = self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+    #         if not set_w_ok:
+    #             logger.debug(f"Failed to set frame width to {width}")
+    #         if not set_h_ok:
+    #             logger.debug(f"Failed to set frame height to {height}")
 
-        try:
-            self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-            self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        except Exception:
-            self._actual_width, self._actual_height = 0, 0
+    #     try:
+    #         self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    #         self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    #     except Exception:
+    #         self._actual_width, self._actual_height = 0, 0
 
-        return (self._actual_width, self._actual_height) == (width, height)
+    #     return (self._actual_width, self._actual_height) == (width, height)
 
     def _resolve_backend(self, backend: str | None) -> int:
         if backend is None:
