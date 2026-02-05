@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -53,6 +54,8 @@ def reset_backends():
 class CameraBackend(ABC):
     """Abstract base class for camera backends."""
 
+    OPTIONS_KEY: ClassVar[str] = ""  # override in subclasses if they want to support options
+
     def __init__(self, settings: CameraSettings):
         # Normalize to dataclass so all backends stay unchanged
         self.settings: CameraSettings = settings
@@ -66,6 +69,33 @@ class CameraBackend(ABC):
     def is_available(cls) -> bool:
         """Return whether the backend can be used on this system."""
         return True
+
+    @classmethod
+    def options_key(cls) -> str:
+        """Return the key used to store this backend's options in CameraSettings."""
+        return cls.OPTIONS_KEY
+
+    @classmethod
+    def parse_options(cls, settings: CameraSettings) -> Any:
+        """Return a typed options object for this backend (or None)."""
+        return None
+
+    @classmethod
+    def options_schema(cls) -> dict[str, Any] | None:
+        """Optional: for UI/docs."""
+        return None
+
+    @classmethod
+    def sanitize_for_probe(cls, settings: CameraSettings) -> CameraSettings:
+        """
+        Default: keep only the backend namespace and minimal safe toggles.
+        Backends may override.
+        """
+        # shallow copy is fine if you deep-copy in factory already
+        dc = settings.model_copy(deep=True)
+        ns = (dc.properties or {}).get(cls.options_key(), {})
+        dc.properties = {cls.options_key(): dict(ns)}
+        return dc
 
     def stop(self) -> None:  # noqa B027
         """Optional: Request a graceful stop. No-op by default."""

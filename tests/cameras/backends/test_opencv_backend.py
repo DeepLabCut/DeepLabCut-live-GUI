@@ -1,3 +1,4 @@
+# tests/cameras/backends/test_opencv_backend.py
 from types import SimpleNamespace
 
 import pytest
@@ -156,14 +157,19 @@ def test_configure_capture_fast_start_does_not_force_resolution(monkeypatch, fak
     cap.props[ob.cv2.CAP_PROP_FRAME_WIDTH] = 1920.0
     cap.props[ob.cv2.CAP_PROP_FRAME_HEIGHT] = 1080.0
 
-    settings = make_settings(index=0, fps=30.0, properties={"resolution": (1280, 720), "fast_start": True})
+    settings = make_settings(index=0, fps=30.0, properties={"resolution": (1280, 720), "opencv": {"fast_start": True}})
     backend = ob.OpenCVCameraBackend(settings)
     backend._capture = cap
 
     backend._configure_capture()
 
     assert backend.actual_resolution == (1920, 1080)
-    assert settings.properties["resolution"] == (1920, 1080)
+
+    # Fast-start does not configure the camera; it only reports the current mode.
+    # Keep "resolution" as the requested intent (do not overwrite with observed values).
+    # Settings are applied later when user clicks "Apply settings" in the UI,
+    # so it's important not to overwrite them here.
+    assert settings.properties["resolution"] == (1280, 720)
 
 
 def test_configure_capture_applies_only_safe_numeric_properties(monkeypatch, fake_capture_factory):

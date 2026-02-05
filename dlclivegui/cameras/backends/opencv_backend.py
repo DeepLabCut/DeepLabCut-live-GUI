@@ -1,14 +1,17 @@
 """OpenCV-based camera backend (platform-optimized, fast startup, robust read)."""
 
+# dlclivegui/cameras/backends/opencv_backend.py
 from __future__ import annotations
 
 import logging
 import os
 import platform
 import time
+from typing import TYPE_CHECKING, Literal
 
 import cv2
 import numpy as np
+from pydantic import BaseModel, Field, model_validator
 
 from ..base import CameraBackend, register_backend
 from .utils.opencv_discovery import (
@@ -21,6 +24,42 @@ from .utils.opencv_discovery import (
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # FIXME @C-Achard remove before release
+
+if TYPE_CHECKING:
+    from dlclivegui.config import CameraSettings
+
+
+AspectPolicy = Literal["strict", "prefer", "ignore"]
+FourCC = Literal["MJPG", "YUY2", "NV12", "H264", "XRGB", "BGR3"]  # expand as needed
+
+
+class OpenCVOptions(BaseModel):
+    # --- device selection ---
+    device_id: str | None = None  # stable_id from cv2-enumerate-cameras
+    device_name: str | None = None  # substring match
+    device_vid: int | None = None
+    device_pid: int | None = None
+
+    # --- backend/open behavior ---
+    api: str | None = None  # "DSHOW", "MSMF", "V4L2", "AVFOUNDATION", "ANY"
+    fast_start: bool = False
+    alt_index_probe: bool = False
+
+    # --- format negotiation policy ---
+    enforce_aspect: AspectPolicy = "strict"
+    aspect_tol: float = Field(default=0.01, ge=0.0, le=0.2)  # 1% default
+    area_tol: float = Field(default=0.05, ge=0.0, le=1.0)  # 5% default
+
+    # --- codec policy ---
+    prefer_mjpg: bool = False  # opt-in MJPG attempt on Windows
+    fourcc: FourCC | None = None  # explicit request overrides prefer_mjpg
+
+    @model_validator(mode="after")
+    def _codec_consistency(self):
+        # If user explicitly sets fourcc, we don't need prefer_mjpg
+        if self.fourcc is not None and self.prefer_mjpg:
+            self.prefer_mjpg = False
+        return self
 
 
 @register_backend("opencv")
@@ -41,6 +80,7 @@ class OpenCVCameraBackend(CameraBackend):
     Robust read(): returns (None, ts) on transient failures (never raises).
     """
 
+    OPTIONS_KEY = "opencv"
     SAFE_PROP_IDS = {
         int(getattr(cv2, "CAP_PROP_EXPOSURE", 15)),
         int(getattr(cv2, "CAP_PROP_AUTO_EXPOSURE", 21)),
@@ -53,46 +93,54 @@ class OpenCVCameraBackend(CameraBackend):
         int(getattr(cv2, "CAP_PROP_CONVERT_RGB", 17)),
     }
 
-    # Standard UVC modes that commonly succeed fast on Windows/Logitech
-    # UVC_FALLBACK_MODES = [(1280, 720), (1920, 1080), (640, 480)]
-
     def __init__(self, settings):
         super().__init__(settings)
         self._capture: cv2.VideoCapture | None = None
         self._resolution: tuple[int, int] = self._parse_resolution(settings.properties.get("resolution"))
-        self._fast_start: bool = bool(self.settings.properties.get("fast_start", False))
-        self._alt_index_probe: bool = bool(self.settings.properties.get("alt_index_probe", False))
+        opt = self.parse_options(settings)
+        self._fast_start: bool = opt.fast_start
+        self._alt_index_probe: bool = opt.alt_index_probe
         self._actual_width: int | None = None
         self._actual_height: int | None = None
         self._actual_fps: float | None = None
         self._codec_str: str = ""
         self._mjpg_attempted: bool = False
 
+    @classmethod
+    def parse_options(cls, settings: CameraSettings) -> OpenCVOptions:
+        raw = (settings.properties or {}).get(cls.OPTIONS_KEY, {})
+        # no flat keys supported — clean ground
+        return OpenCVOptions.model_validate(raw)
+
+    @classmethod
+    def options_schema(cls) -> dict:
+        return OpenCVOptions.model_json_schema()
+
     # ----------------------------
     # Public API
     # ----------------------------
     def open(self) -> None:
-        backend_flag = self._preferred_backend_flag(self.settings.properties.get("api"))
+        opt = self.parse_options(self.settings)  # typed + validated
+        backend_flag = self._preferred_backend_flag(opt.api)
         index = int(self.settings.index)
-
-        # Optional: enhanced discovery by name/id
-        prefer_id = self.settings.properties.get("device_id")  # stable_id
-        prefer_name = self.settings.properties.get("device_name")  # substring match
-        prefer_vid = self.settings.properties.get("device_vid")
-        prefer_pid = self.settings.properties.get("device_pid")
 
         cams = list_cameras(backend_flag)
         chosen = select_camera(
             cams,
-            prefer_stable_id=prefer_id,
-            prefer_name_substr=prefer_name,
-            prefer_vid_pid=(int(prefer_vid), int(prefer_pid)) if prefer_vid and prefer_pid else None,
+            prefer_stable_id=opt.device_id,
+            prefer_name_substr=opt.device_name,
+            prefer_vid_pid=(opt.device_vid, opt.device_pid) if opt.device_vid and opt.device_pid else None,
             fallback_index=index,
         )
 
         if chosen:
             index = chosen.index
             backend_flag = chosen.backend
+
+            if opt.device_id is None:
+                ns = self.settings.properties.setdefault(self.OPTIONS_KEY, {})
+                ns["device_id"] = chosen.stable_id
+                logger.info("Persisted OpenCV device_id=%s", chosen.stable_id)
 
         self._capture, spec = open_with_fallbacks(index, backend_flag)
 
@@ -117,6 +165,9 @@ class OpenCVCameraBackend(CameraBackend):
                     "MSMF selected. If open is slow, consider setting "
                     "OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS=0 before importing cv2."
                 )
+
+        if platform.system() == "Windows" and opt.prefer_mjpg and not self._mjpg_attempted:
+            self._maybe_enable_mjpg()
 
         self._configure_capture()
 
@@ -190,15 +241,6 @@ class OpenCVCameraBackend(CameraBackend):
                 return (720, 540)
         return (720, 540)
 
-    # def _normalize_resolution(self, width: int, height: int) -> tuple[int, int]:
-    #     """On Windows, map non-standard requests to UVC-friendly modes for fast acceptance."""
-    #     if platform.system() == "Windows":
-    #         if (width, height) in self.UVC_FALLBACK_MODES:
-    #             return (width, height)
-    #         logger.debug(f"Normalizing unsupported resolution {width}x{height} to 1280x720 on Windows.")
-    #         return self.UVC_FALLBACK_MODES[0]
-    #     return (width, height)
-
     def _preferred_backend_flag(self, backend: str | None) -> int:
         """Resolve preferred backend by platform."""
         if backend:  # user override
@@ -250,15 +292,9 @@ class OpenCVCameraBackend(CameraBackend):
         self._codec_str = self._read_codec_string()
         logger.info(f"Camera using codec: {self._codec_str}")
 
-        if platform.system() == "Windows" and not self._mjpg_attempted:
-            self._maybe_enable_mjpg()
-            self._mjpg_attempted = True
-            self._codec_str = self._read_codec_string()
-            logger.info(f"Camera codec after MJPG attempt: {self._codec_str}")
-
         # --- Resolution ---
         req_w, req_h = self._resolution
-        enforce_aspect = self.settings.properties.get("enforce_aspect", "strict")
+        enforce_aspect = self.parse_options(self.settings).enforce_aspect
 
         if not self._fast_start:
             result = apply_mode_with_verification(
@@ -271,8 +307,8 @@ class OpenCVCameraBackend(CameraBackend):
         else:
             self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
             self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        if self._actual_width and self._actual_height:
-            self.settings.properties["resolution"] = (self._actual_width, self._actual_height)
+        # if self._actual_width and self._actual_height:
+        #     self.settings.properties["resolution"] = (self._actual_width, self._actual_height)
 
         # Handle mismatch quickly with a few known-good UVC fallbacks (Windows only)
         if platform.system() == "Windows" and self._actual_width and self._actual_height:
@@ -280,13 +316,6 @@ class OpenCVCameraBackend(CameraBackend):
                 logger.warning(
                     f"Resolution mismatch: requested {req_w}x{req_h}, got {self._actual_width}x{self._actual_height}"
                 )
-                # for fw, fh in self.UVC_FALLBACK_MODES:
-                #     if (fw, fh) == (self._actual_width, self._actual_height):
-                #         break  # already at a fallback
-                #     if self._set_resolution_if_needed(fw, fh, reconfigure_only=True):
-                #         logger.info(f"Switched to supported resolution {fw}x{fh}")
-                #         self._actual_width, self._actual_height = fw, fh
-                #         break
                 self._resolution = (self._actual_width or req_w, self._actual_height or req_h)
         else:
             # Non-Windows: accept actual as-is
@@ -310,9 +339,9 @@ class OpenCVCameraBackend(CameraBackend):
             logger.warning(f"FPS mismatch: requested {requested_fps:.2f}, got {self._actual_fps:.2f}")
 
         # Always reconcile the settings with what we measured/obtained
-        if self._actual_fps:
-            self.settings.fps = float(self._actual_fps)
-            logger.info(f"Camera configured with FPS: {self._actual_fps:.2f}")
+        # if self._actual_fps:
+        #     self.settings.fps = float(self._actual_fps)
+        logger.info(f"Camera configured with FPS: {self._actual_fps:.2f}")
         logger.debug(
             "CAP_PROP_FPS requested=%s set_ok=%s get=%s",
             self.settings.fps,

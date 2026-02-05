@@ -3,7 +3,6 @@
 # dlclivegui/cameras/factory.py
 from __future__ import annotations
 
-import copy
 import importlib
 import logging
 import pkgutil
@@ -102,39 +101,20 @@ def _ensure_backends_loaded() -> None:
         if not pkg_path:
             continue
 
-    for _finder, mod_name, _is_pkg in pkgutil.iter_modules(pkg_path, prefix=pkg_name + "."):
-        try:
-            importlib.import_module(mod_name)
-            logger.debug("Loaded camera backend module: %s", mod_name)
-        except Exception as exc:
-            # Record and log loudly WITH traceback
-            _BACKEND_IMPORT_ERRORS[mod_name] = f"{type(exc).__name__}: {exc}"
-            logger.exception("FAILED to import backend module '%s': %s", mod_name, exc)
+        for _finder, mod_name, _is_pkg in pkgutil.iter_modules(pkg_path, prefix=pkg_name + "."):
+            try:
+                importlib.import_module(mod_name)
+                logger.debug("Loaded camera backend module: %s", mod_name)
+            except Exception as exc:
+                # Record and log loudly WITH traceback
+                _BACKEND_IMPORT_ERRORS[mod_name] = f"{type(exc).__name__}: {exc}"
+                logger.exception("FAILED to import backend module '%s': %s", mod_name, exc)
 
-            # Optional fail-fast mode for CI/dev
-            if environ.get("DLC_CAMERA_BACKENDS_STRICT_IMPORT", "").strip().lower() in ("1", "true", "yes"):
-                raise
+                # Optional fail-fast mode for CI/dev
+                if environ.get("DLC_CAMERA_BACKENDS_STRICT_IMPORT", "").strip().lower() in ("1", "true", "yes"):
+                    raise
 
     _BACKENDS_IMPORTED = True
-
-
-def _sanitize_for_probe(settings: CameraSettings) -> CameraSettings:
-    """
-    Return a light, side-effect-minimized dataclass copy for availability probes.
-    - Zero FPS (let driver pick default)
-    - Keep only 'api' hint in properties, force fast_start=True
-    - Do not change 'enabled'
-    """
-    dc = settings
-    probe = copy.deepcopy(dc)
-    probe.fps = 0.0  # don't force FPS during probe
-    props = probe.properties if isinstance(probe.properties, dict) else {}
-    api = props.get("api")
-    probe.properties = {}
-    if api is not None:
-        probe.properties["api"] = api
-    probe.properties["fast_start"] = True
-    return probe
 
 
 class CameraFactory:
@@ -244,7 +224,7 @@ class CameraFactory:
                         backend=backend,
                         properties={},
                     )
-                    settings = _sanitize_for_probe(settings)
+                    settings = backend_cls.sanitize_for_probe(settings)
                     backend_instance = backend_cls(settings)
 
                     try:
@@ -284,6 +264,11 @@ class CameraFactory:
         backend_name = (dc.backend or "opencv").lower()
         try:
             backend_cls = CameraFactory._resolve_backend(backend_name)
+            try:
+                backend_cls.parse_options(settings)  # ensures bad config fails loudly here
+            except Exception as exc:
+                raise RuntimeError(f"Invalid {backend_name} options: {exc}") from exc
+
         except RuntimeError as exc:  # pragma: no cover - runtime configuration
             raise RuntimeError(f"Unknown camera backend '{backend_name}': {exc}") from exc
         if not backend_cls.is_available():
@@ -291,7 +276,7 @@ class CameraFactory:
                 f"Camera backend '{backend_name}' is not available. "
                 "Ensure the required drivers and Python packages are installed."
             )
-        return backend_cls(dc)
+        return backend_cls(settings)
 
     @staticmethod
     def check_camera_available(settings: CameraSettings) -> tuple[bool, str]:
@@ -325,7 +310,7 @@ class CameraFactory:
 
         # Fallback: lightweight open/close with sanitized settings
         try:
-            probe_settings = _sanitize_for_probe(dc)
+            probe_settings = backend_cls.sanitize_for_probe(dc)
             backend_instance = backend_cls(probe_settings)
             with _suppress_opencv_logging():
                 backend_instance.open()
