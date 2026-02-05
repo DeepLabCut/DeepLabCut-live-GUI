@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import Event, Thread
 
 import numpy as np
+import pandas as pd
 from dlclive import Processor  # type: ignore
 
 LOG = logging.getLogger("dlc_processor_socket")
@@ -71,7 +72,9 @@ class BaseProcessor_socket(Processor):
 
     # Metadata for GUI discovery
     PROCESSOR_NAME = "Base Socket Processor"
-    PROCESSOR_DESCRIPTION = "Base class for socket-based processors with multi-client support"
+    PROCESSOR_DESCRIPTION = (
+        "Base class for socket-based processors with multi-client support"
+    )
     PROCESSOR_PARAMS = {
         "bind": {
             "type": "tuple",
@@ -171,7 +174,9 @@ class BaseProcessor_socket(Processor):
                 LOG.debug(f"Client connected from {self.listener.last_accepted}")
                 self.conns.add(c)
                 # Start RX loop for this connection (in case clients send data)
-                Thread(target=self._rx_loop, args=(c,), name="DLCRX", daemon=True).start()
+                Thread(
+                    target=self._rx_loop, args=(c,), name="DLCRX", daemon=True
+                ).start()
             except (OSError, EOFError):
                 break
 
@@ -349,12 +354,46 @@ class BaseProcessor_socket(Processor):
                 save_dict = self.get_data()
                 path2save = Path(__file__).parent.parent.parent / "data" / file
                 LOG.info(f"Path should be {path2save}")
+                if self.save_original:
+                    original_pose = save_dict.pop(["original_pose"])
+                    self.save_original_pose(original_pose, save_dict['frame_time'], save_dict['time_stamp'], path2save)
                 pickle.dump(save_dict, open(path2save, "wb"))
                 save_code = 1
             except Exception as e:
                 LOG.error(f"Save failed: {e}")
                 save_code = -1
         return save_code
+
+    def save_original_pose(
+        self,
+        original_pose: np.ndarray,
+        pose_frame_times: np.ndarray,
+        pose_times: np.ndarray,
+        filepath2save: Path,
+    ):
+        filepath2save = filepath2save.parent / (filepath2save.stem + "_DLC.hdf5")
+        if isinstance(self.dlc_cfg, dict):
+            bodyparts = self.dlc_cfg.get('metadata',{}).get("bodyparts", [])
+        else:
+            bodyparts = None
+        poses = np.array(original_pose)
+        poses = poses.reshape((poses.shape[0], poses.shape[1] * poses.shape[2]))
+        if bodyparts:
+            pdindex = pd.MultiIndex.from_product(
+                [bodyparts, ["x", "y", "likelihood"]], names=["bodyparts", "coords"]
+            )
+            pose_df = pd.DataFrame(poses, columns=pdindex)
+        else:
+            LOG.warning("Bodyparts information not found in dlc_cfg; saving without column labels.")    
+            pose_df = pd.DataFrame(poses)
+        pose_df["frame_time"] = pose_frame_times
+        pose_df["pose_time"] = pose_times
+
+        pose_df.to_hdf(filepath2save, key="df_with_missing", mode="w")
+
+    def set_dlc_cfg(self, dlc_cfg):
+        """Set DLC configuration for saving original pose data."""
+        self.dlc_cfg = dlc_cfg
 
     def get_data(self):
         """Get logged data as dictionary."""
@@ -367,6 +406,8 @@ class BaseProcessor_socket(Processor):
         save_dict["frame_time"] = np.array(self.frame_time)
         save_dict["pose_time"] = np.array(self.pose_time) if self.pose_time else None
         save_dict["use_perf_counter"] = self.timing_func == time.perf_counter
+        if self.dlc_cfg is not None:
+            save_dict["dlc_cfg"] = self.dlc_cfg
         return save_dict
 
 
@@ -384,9 +425,7 @@ class MyProcessor_socket(BaseProcessor_socket):
 
     # Metadata for GUI discovery
     PROCESSOR_NAME = "Mouse Pose Processor"
-    PROCESSOR_DESCRIPTION = (
-        "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
-    )
+    PROCESSOR_DESCRIPTION = "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
     PROCESSOR_PARAMS = {
         "bind": {
             "type": "tuple",
@@ -593,9 +632,7 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
 
     # Metadata for GUI discovery
     PROCESSOR_NAME = "Mouse Pose with less keypoints"
-    PROCESSOR_DESCRIPTION = (
-        "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
-    )
+    PROCESSOR_DESCRIPTION = "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
     PROCESSOR_PARAMS = {
         "bind": {
             "type": "tuple",
