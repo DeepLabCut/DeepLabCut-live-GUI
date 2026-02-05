@@ -185,7 +185,7 @@ class DLCLiveMainWindow(QMainWindow):
         # NOTE IMPORTANT (tests/CI): This is scheduled via a QTimer and may fire during pytest-qt teardown.
         QTimer.singleShot(100, self._validate_configured_cameras)
         # If validation triggers a modal QMessageBox (warning/error) while the parent window is closing,
-        # it can cause Windows native crashes (heap corruption / access violations).
+        # it can cause errors with unpredictable timing (heap corruption / access violations).
         #
         # Mitigations for tests/CI:
         #   - Disable this timer by monkeypatching _validate_configured_cameras in GUI tests
