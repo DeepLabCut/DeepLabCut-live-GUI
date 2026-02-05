@@ -14,7 +14,19 @@ os.environ["PYLON_CAMEMU"] = "2"
 import cv2
 import numpy as np
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QFont, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QCloseEvent,
+    QCursor,
+    QDesktopServices,
+    QFont,
+    QGuiApplication,
+    QIcon,
+    QImage,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -32,6 +44,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStatusBar,
     QStyle,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -488,8 +501,11 @@ class DLCLiveMainWindow(QMainWindow):
         self.recording_path_preview = QLabel("")
         # Ensure it never gets squished vertically
         self.recording_path_preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.recording_path_preview.setWordWrap(True)
+        self.recording_path_preview.setWordWrap(False)
+        self.recording_path_preview.setCursor(Qt.PointingHandCursor)
+        self.recording_path_preview.setToolTip("")  # will show the preview path
         self.recording_path_preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.recording_path_preview.mouseReleaseEvent = self._copy_path_on_click
         form.addRow("Will save to", self.recording_path_preview)
 
         self.filename_edit = QLineEdit()
@@ -963,9 +979,20 @@ class DLCLiveMainWindow(QMainWindow):
         sess_safe = sess.strip() or "session"
         run_hint = "run_<timestamp>" if use_ts else "run_<next>"
         stem_hint = Path(base).stem if base.strip() else "recording"  # shows user-provided stem or default
-        self.recording_path_preview.setText(
-            str(Path(out_dir).expanduser() / sess_safe / run_hint / f"{stem_hint}_<camera>.{container}")
+        full_hint = str(Path(out_dir).expanduser() / sess_safe / run_hint / f"{stem_hint}_<camera>.{container}")
+        self.recording_path_preview.setText(f"<span style='color: gray;'>{full_hint}</span>")
+        self.recording_path_preview.setToolTip(
+            f"<b>Click to copy to clipboard :</b><br>{full_hint.replace('<camera>', '*')}"
         )
+
+    def _copy_path_on_click(self, event):
+        if event.button() == Qt.LeftButton:
+            # Clear all HTML tags to get the raw path before copying
+            path = self.recording_path_preview.text()
+            path = path.replace("<span style='color: gray;'>", "").replace("</span>", "")
+            clean_path = path.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            QGuiApplication.clipboard().setText(clean_path)
+            QToolTip.showText(QCursor.pos(), "Copied path", self.recording_path_preview)
 
     def _on_use_timestamp_changed(self, _state: int) -> None:
         self._settings_store.set_use_timestamp(self.use_timestamp_checkbox.isChecked())
