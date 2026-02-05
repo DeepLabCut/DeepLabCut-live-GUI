@@ -296,15 +296,13 @@ class BaseProcessor_socket(Processor):
         """
         curr_time = self.timing_func()
 
-        # Save original pose if requested
-        if self.save_original:
-            self.original_pose.append(pose.copy())
-
         # Update step counter
         self.curr_step = self.curr_step + 1
 
         # Store metadata (only if recording)
         if self.recording:
+            if self.save_original:
+                self.original_pose.append(pose.copy())
             self.time_stamp.append(curr_time)
             self.step.append(self.curr_step)
             self.frame_time.append(kwargs.get("frame_time", -1))
@@ -355,7 +353,7 @@ class BaseProcessor_socket(Processor):
                 path2save = Path(__file__).parent.parent.parent / "data" / file
                 LOG.info(f"Path should be {path2save}")
                 if self.save_original:
-                    original_pose = save_dict.pop(["original_pose"])
+                    original_pose = save_dict.pop("original_pose")
                     self.save_original_pose(original_pose, save_dict['frame_time'], save_dict['time_stamp'], path2save)
                 pickle.dump(save_dict, open(path2save, "wb"))
                 save_code = 1
@@ -527,10 +525,6 @@ class MyProcessor_socket(BaseProcessor_socket):
         Returns:
             pose: Unmodified pose array
         """
-        # Save original pose if requested (from base class)
-        if self.save_original:
-            self.original_pose.append(pose.copy())
-
         # Extract keypoints and confidence
         xy = pose[:, :2]
         conf = pose[:, 2]
@@ -586,6 +580,8 @@ class MyProcessor_socket(BaseProcessor_socket):
 
         # Store processed data (only if recording)
         if self.recording:
+            if self.save_original:
+                self.original_pose.append(pose.copy())
             self.center_x.append(vals[0])
             self.center_y.append(vals[1])
             self.heading_direction.append(vals[2])
@@ -661,7 +657,7 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
         },
         "save_original": {
             "type": "bool",
-            "default": False,
+            "default": True,
             "description": "Save raw pose arrays for analysis",
         },
     }
@@ -673,7 +669,7 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
         use_perf_counter=False,
         use_filter=False,
         filter_kwargs={},
-        save_original=False,
+        save_original=True,
         p_cutoff=0.4,
     ):
         """
@@ -737,10 +733,6 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
         Returns:
             pose: Unmodified pose array
         """
-        # Save original pose if requested (from base class)
-        if self.save_original:
-            self.original_pose.append(pose.copy())
-
         # Extract keypoints and confidence
         xy = pose[:, :2]
         conf = pose[:, 2]
@@ -804,6 +796,8 @@ class MyProcessorTorchmodels_socket(BaseProcessor_socket):
 
         # Store processed data (only if recording)
         if self.recording:
+            if self.save_original:
+                self.original_pose.append(pose.copy())
             self.center_x.append(vals[0])
             self.center_y.append(vals[1])
             self.heading_direction.append(vals[2])
