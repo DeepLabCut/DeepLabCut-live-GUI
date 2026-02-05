@@ -1,0 +1,138 @@
+/* ------------- Header background + text ------------- */
+:root {
+    --dlc-header-bg: rgba(149, 72, 156, 0.85); /* #de6be8 with alpha */
+}
+html.dark {
+      --dlc-header-bg: rgba(69, 83, 100, 0.85);  /* #455364 with alpha */
+}
+/* Header background (frosted) */
+.myst-top-nav {
+  background-color: var(--dlc-header-bg) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+}
+
+/* Dark mode (Tailwind-style: .dark on an ancestor is common in MyST themes) */
+html.dark .myst-top-nav {
+  background-color: var(--dlc-header-bg) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+}
+
+/* Make header links inherit header text color */
+.myst-top-nav a {
+  color: inherit !important;
+}
+
+
+
+/* 1) Keep header as-is; only fix logo container */
+html.dark .myst-top-nav nav a > div {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Optional: also remove padding/border-radius if the wrapper looks like a badge */
+html.dark .myst-top-nav nav a > div {
+  border: 0 !important;
+}
+
+
+/* =========================================================
+   MyST code blocks (global)
+   Targets the exact structure you pasted:
+   div.myst-code > pre.myst-code-body.hljs > code.language-*
+   ========================================================= */
+
+:root {
+  /* Light mode */
+  --dlc-code-bg: rgba(149, 72, 156, 0.05);
+  --dlc-code-fg: #111827;
+  --dlc-code-border: #e5e7eb;
+  --dlc-code-shadow: 0 1px 3px rgba(0,0,0,0.08);
+
+  /* Accents */
+  --dlc-code-accent: #95489c;
+  --dlc-code-radius: 12px;
+}
+
+html.dark {
+  /* Dark mode */
+  --dlc-code-bg: rgba(69, 83, 100, 0.45);
+  --dlc-code-fg: #e5e7eb;
+  --dlc-code-border: rgba(229,231,235,0.14);
+  --dlc-code-shadow: 0 8px 30px rgba(0,0,0,0.45);
+
+  --dlc-code-accent: #c77dd1;
+}
+
+/* The outer wrapper (controls spacing + frame) */
+.myst-code {
+  border: 1px solid var(--dlc-code-border);
+  border-radius: var(--dlc-code-radius);
+  background: var(--dlc-code-bg);
+  box-shadow: var(--dlc-code-shadow);
+  overflow: hidden; /* makes rounded corners clip */
+}
+
+/* The <pre> element you showed: pre.myst-code-body.hljs */
+.myst-code-body.hljs {
+  background-color: var(--dlc-code-bg) !important; /* overrides inline style "unset" */
+  color: var(--dlc-code-fg) !important;
+
+  margin: 0 !important;
+  padding: 0.9rem 1rem !important;
+  line-height: 1.45;
+  tab-size: 4;
+
+  /* Horizontal scroll for long lines */
+  overflow: auto;
+}
+
+/* Avoid any extra styling on the <code> tag */
+.myst-code-body code {
+  background: transparent !important;
+  color: inherit !important;
+  padding: 0 !important;
+}
+
+/* Base text inside code blocks */
+/* .myst-code-body.hljs {
+  color: var(--dlc-code-fg) !important;
+} */
+
+/* Token colors (HLJS) */
+/* .myst-code-body .hljs-built_in,
+.myst-code-body .hljs-keyword,
+.myst-code-body .hljs-selector-tag,
+.myst-code-body .hljs-literal {
+  color: #95489c;
+}
+
+
+.myst-code-body .hljs-string,
+.myst-code-body .hljs-title,
+.myst-code-body .hljs-attr,
+.myst-code-body .hljs-attribute {
+  color: #059669;
+}
+
+
+
+.myst-code-body .hljs-number,
+.myst-code-body .hljs-symbol,
+.myst-code-body .hljs-bullet {
+  color: #f59e0b;
+}
+
+.myst-code-body .hljs-comment,
+.myst-code-body .hljs-quote {
+  color: rgba(100,116,139,0.85);
+  font-style: italic;
+}
+
+html.dark .myst-code-body .hljs-comment,
+html.dark .myst-code-body .hljs-quote {
+  color: rgba(148,163,184,0.75);
+}
+*/

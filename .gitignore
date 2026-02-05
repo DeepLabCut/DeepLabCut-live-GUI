@@ -113,3 +113,6 @@ venv.bak/
 !dlclivegui/config.py
 # uv package files
 uv.lock
+
+# Built jupyter-book
+docs/_build/

@@ -1,0 +1,37 @@
+format: jb-book
+root: index
+
+parts:
+  - caption: Quickstart
+    chapters:
+      - file: quickstart/install
+  #     - file: quickstart/camera_setup
+  #     - file: quickstart/inference_setup
+  #     - file: quickstart/first_run
+
+  # - caption: User Guide
+  #   chapters:
+  #     - file: user_guide/overview
+
+  #     - file: user_guide/cameras/index
+  #       sections:
+  #         - file: user_guide/cameras/configure_dialog
+  #         - file: user_guide/cameras/supported_backends
+
+  #     - file: user_guide/inference/index
+  #       sections:
+  #         - file: user_guide/inference/model_selection
+  #         - file: user_guide/inference/inference_camera
+  #         - file: user_guide/inference/processor_plugins
+
+  #     - file: user_guide/visualization/index
+  #       sections:
+  #         - file: user_guide/visualization/preview_and_overlays
+
+  #     - file: user_guide/recording/index
+  #       sections:
+  #         - file: user_guide/recording/output_structure
+
+  # - caption: Limitations
+  #   chapters:
+  #     - file: limitations/current_limitations
