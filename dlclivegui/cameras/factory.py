@@ -5,13 +5,18 @@ from __future__ import annotations
 
 import copy
 import importlib
+import logging
 import pkgutil
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
+from os import environ
 
 from ..config import CameraSettings
 from .base import _BACKEND_REGISTRY, CameraBackend
+
+logger = logging.getLogger(__name__)
+_BACKEND_IMPORT_ERRORS: dict[str, str] = {}
 
 
 @dataclass
@@ -97,12 +102,18 @@ def _ensure_backends_loaded() -> None:
         if not pkg_path:
             continue
 
-        for _finder, mod_name, _is_pkg in pkgutil.iter_modules(pkg_path, prefix=pkg_name + "."):
-            try:
-                importlib.import_module(mod_name)
-            except Exception:
-                # Ignore misconfigured/optional backends; they just won't register
-                continue
+    for _finder, mod_name, _is_pkg in pkgutil.iter_modules(pkg_path, prefix=pkg_name + "."):
+        try:
+            importlib.import_module(mod_name)
+            logger.debug("Loaded camera backend module: %s", mod_name)
+        except Exception as exc:
+            # Record and log loudly WITH traceback
+            _BACKEND_IMPORT_ERRORS[mod_name] = f"{type(exc).__name__}: {exc}"
+            logger.exception("FAILED to import backend module '%s': %s", mod_name, exc)
+
+            # Optional fail-fast mode for CI/dev
+            if environ.get("DLC_CAMERA_BACKENDS_STRICT_IMPORT", "").strip().lower() in ("1", "true", "yes"):
+                raise
 
     _BACKENDS_IMPORTED = True
 
@@ -233,6 +244,7 @@ class CameraFactory:
                         backend=backend,
                         properties={},
                     )
+                    settings = _sanitize_for_probe(settings)
                     backend_instance = backend_cls(settings)
 
                     try:
@@ -323,8 +335,28 @@ class CameraFactory:
             return False, f"Camera not accessible: {exc}"
 
     @staticmethod
+    def backend_import_errors() -> dict[str, str]:
+        _ensure_backends_loaded()
+        return dict(_BACKEND_IMPORT_ERRORS)
+
+    @staticmethod
     def _resolve_backend(name: str) -> type[CameraBackend]:
+        key = name.lower()
         try:
-            return _BACKEND_REGISTRY[name.lower()]
+            return _BACKEND_REGISTRY[key]
         except KeyError as exc:
-            raise RuntimeError("Backend %s not registered", name) from exc
+            available = ", ".join(sorted(_BACKEND_REGISTRY.keys())) or "(none)"
+
+            # Show import failures that might explain missing registration
+            # (filter to your backend packages to avoid noise)
+            failing = (
+                "\n".join(f"  - {mod}: {_BACKEND_IMPORT_ERRORS[mod]}" for mod in sorted(_BACKEND_IMPORT_ERRORS.keys()))
+                or "  (no import errors recorded)"
+            )
+
+            msg = (
+                f"Backend '{key}' not registered. Available: {available}\n"
+                f"Backend module import errors (most likely cause):\n{failing}\n"
+                "Tip: enable strict import failures with DLC_CAMERA_BACKENDS_STRICT_IMPORT=1"
+            )
+            raise RuntimeError(msg) from exc

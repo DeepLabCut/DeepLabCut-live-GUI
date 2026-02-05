@@ -1,6 +1,7 @@
 # dlclivegui/cameras/base.py
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -8,6 +9,8 @@ import numpy as np
 from ..config import CameraSettings
 
 _BACKEND_REGISTRY: dict[str, type[CameraBackend]] = {}
+
+logger = logging.getLogger(__name__)
 
 
 def register_backend(name: str):
@@ -24,6 +27,7 @@ def register_backend(name: str):
         if not issubclass(cls, CameraBackend):
             raise TypeError(f"Backend '{name}' must subclass CameraBackend")
         _BACKEND_REGISTRY[name.lower()] = cls
+        logger.debug(f"Registered camera backend '{name}' -> {cls}")
         return cls
 
     return decorator
