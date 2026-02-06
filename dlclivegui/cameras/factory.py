@@ -92,7 +92,11 @@ def _ensure_backends_loaded() -> None:
     for pkg_name in _BUILTIN_BACKEND_PACKAGES:
         try:
             pkg = importlib.import_module(pkg_name)
-        except Exception:
+        except Exception as exc:
+            _BACKEND_IMPORT_ERRORS[pkg_name] = f"{type(exc).__name__}: {exc}"
+            logger.exception("FAILED to import backend package '%s': %s", pkg_name, exc)
+            if environ.get("DLC_CAMERA_BACKENDS_STRICT_IMPORT", "").strip().lower() in ("1", "true", "yes"):
+                raise
             # Package might not exist (fine if all backends are third-party via tests/plugins)
             continue
 
@@ -260,6 +264,9 @@ class CameraFactory:
     @staticmethod
     def create(settings: CameraSettings) -> CameraBackend:
         """Instantiate a backend for ``settings``."""
+        # always ensure backends are loaded before creating,
+        # to get accurate error reporting for unknown backends
+        _ensure_backends_loaded()
         dc = settings
         backend_name = (dc.backend or "opencv").lower()
         try:
@@ -281,6 +288,9 @@ class CameraFactory:
     @staticmethod
     def check_camera_available(settings: CameraSettings) -> tuple[bool, str]:
         """Check if a camera is present/accessible without pushing heavy settings like FPS."""
+        # always ensure backends are loaded before checking,
+        # to get accurate error reporting for unknown backends
+        _ensure_backends_loaded()
         dc = settings
         backend_name = (dc.backend or "opencv").lower()
 
@@ -326,6 +336,7 @@ class CameraFactory:
 
     @staticmethod
     def _resolve_backend(name: str) -> type[CameraBackend]:
+        _ensure_backends_loaded()
         key = name.lower()
         try:
             return _BACKEND_REGISTRY[key]
