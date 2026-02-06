@@ -1,3 +1,4 @@
+# tests/gui/test_misc.py
 from __future__ import annotations
 
 import importlib
@@ -6,9 +7,8 @@ from unittest.mock import MagicMock
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QWidget
 
-from dlclivegui.gui.misc import ElidingPathLabel
+from dlclivegui.gui.misc.eliding_label import ElidingPathLabel
 
 
 def test_build_splash_pixmap_valid(monkeypatch):
@@ -42,15 +42,11 @@ def test_build_splash_pixmap_fallback(monkeypatch):
 
 
 @pytest.fixture
-def label(qtbot) -> ElidingPathLabel:
-    """Create a visible ElidingPathLabel for tests."""
-    w = QWidget()
-    lbl = ElidingPathLabel("", parent=w)
-    w.show()
-    qtbot.addWidget(w)
+def label(qtbot):
+    lbl = ElidingPathLabel("")
     qtbot.addWidget(lbl)
     lbl.show()
-    qtbot.wait(10)
+    qtbot.waitExposed(lbl)
     return lbl
 
 
@@ -116,10 +112,7 @@ def test_elides_when_narrow_and_restores_when_wide(label, qtbot):
     ],
 )
 def test_elide_modes_affect_ellipsis_position(qtbot, mode, assert_fn):
-    parent = QWidget()
-    lbl = ElidingPathLabel(elide_mode=mode, parent=parent)
-    parent.show()
-    qtbot.addWidget(parent)
+    lbl = ElidingPathLabel(elide_mode=mode)
     qtbot.addWidget(lbl)
     lbl.show()
 

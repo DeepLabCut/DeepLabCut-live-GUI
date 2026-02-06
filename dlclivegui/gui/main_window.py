@@ -72,7 +72,7 @@ from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import format_dlc_stats
 from ..utils.utils import FPSTracker
 from .camera_config_dialog import CameraConfigDialog
-from .misc.elidinglabel import ElidingPathLabel
+from .misc.eliding_label import ElidingPathLabel
 from .recording_manager import RecordingManager
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 

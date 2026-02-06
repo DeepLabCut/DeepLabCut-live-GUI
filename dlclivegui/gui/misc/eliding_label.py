@@ -13,7 +13,7 @@ class ElidingPathLabel(QLabel):
       - treats text as PlainText (so '<' and '>' render literally).
     """
 
-    def __init__(self, text: str = "", parent=None, elide_mode=Qt.ElideMiddle):
+    def __init__(self, text: str = "", parent=None, elide_mode=Qt.ElideLeft):
         super().__init__(parent)
         self._full_text = text or ""
         self._elide_mode = elide_mode
