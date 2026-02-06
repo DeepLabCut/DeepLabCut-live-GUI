@@ -13,11 +13,12 @@ os.environ["PYLON_CAMEMU"] = "2"
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QCloseEvent,
+    QColor,
     QDesktopServices,
     QFont,
     QIcon,
@@ -66,7 +67,7 @@ from ..processors.processor_utils import (
 )
 from ..services.dlc_processor import DLCLiveProcessor, PoseResult
 from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
-from ..utils.display import compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
+from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import format_dlc_stats
 from ..utils.utils import FPSTracker
@@ -610,16 +611,25 @@ class DLCLiveMainWindow(QMainWindow):
         return group
 
     def _build_bbox_group(self) -> QGroupBox:
-        """Build bounding box visualization controls."""
         group = QGroupBox("Bounding Box Visualization")
         form = QFormLayout(group)
 
+        row_widget = QWidget()
+        checkbox_layout = QHBoxLayout(row_widget)
+        checkbox_layout.setContentsMargins(0, 0, 0, 0)
         self.bbox_enabled_checkbox = QCheckBox("Show bounding box")
         self.bbox_enabled_checkbox.setChecked(False)
-        form.addRow(self.bbox_enabled_checkbox)
+        checkbox_layout.addWidget(self.bbox_enabled_checkbox)
+        checkbox_layout.addWidget(QLabel("Color:"))
+
+        self.bbox_color_combo = QComboBox()
+        self._populate_bbox_color_combo_with_swatches()
+        self.bbox_color_combo.setCurrentIndex(0)
+        checkbox_layout.addWidget(self.bbox_color_combo)
+        checkbox_layout.addStretch(1)
+        form.addRow(row_widget)
 
         bbox_layout = QHBoxLayout()
-
         self.bbox_x0_spin = QSpinBox()
         self.bbox_x0_spin.setRange(0, 7680)
         self.bbox_x0_spin.setPrefix("x0:")
@@ -667,6 +677,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.bbox_y0_spin.valueChanged.connect(self._on_bbox_changed)
         self.bbox_x1_spin.valueChanged.connect(self._on_bbox_changed)
         self.bbox_y1_spin.valueChanged.connect(self._on_bbox_changed)
+        self.bbox_color_combo.currentIndexChanged.connect(self._on_bbox_color_changed)
 
         # Multi-camera controller signals (used for both single and multi-camera modes)
         self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_ready)
@@ -742,6 +753,9 @@ class DLCLiveMainWindow(QMainWindow):
         self._p_cutoff = viz.p_cutoff
         self._colormap = viz.colormap
         self._bbox_color = viz.get_bbox_color_bgr()
+        if hasattr(self, "bbox_color_combo"):
+            self._set_combo_from_color(self._bbox_color)
+
         # Update DLC camera list
         self._refresh_dlc_camera_list()
 
@@ -1023,6 +1037,14 @@ class DLCLiveMainWindow(QMainWindow):
         self._settings_store.set_use_timestamp(self.use_timestamp_checkbox.isChecked())
         self._update_recording_path_preview()
 
+    def _on_bbox_color_changed(self, _index: int) -> None:
+        enum_item = self.bbox_color_combo.currentData()
+        if enum_item is None:
+            return
+        self._bbox_color = enum_item.value
+        if self._current_frame is not None:
+            self._display_frame(self._current_frame, force=True)
+
     # ------------------------------------------------------------------
     # Multi-camera
     def _open_camera_config_dialog(self) -> None:
@@ -1183,12 +1205,9 @@ class DLCLiveMainWindow(QMainWindow):
             )
         if self._bbox_enabled:
             output = draw_bbox(
-                output,
-                self._bbox_x0,
-                self._bbox_y0,
-                self._bbox_x1,
-                self._bbox_y1,
-                color=self._bbox_color,
+                frame=output,
+                bbox_xyxy=(self._bbox_x0, self._bbox_y0, self._bbox_x1, self._bbox_y1),
+                color_bgr=self._bbox_color,
                 offset=offset,
                 scale=scale,
             )
@@ -1347,8 +1366,6 @@ class DLCLiveMainWindow(QMainWindow):
     # Camera control
     def _show_logo_and_text(self):
         """Show the transparent logo with text below it in the preview area when not running."""
-        from PySide6.QtCore import QRect
-        from PySide6.QtGui import QColor
 
         size = self.video_label.size()
 
@@ -1821,6 +1838,30 @@ class DLCLiveMainWindow(QMainWindow):
         """Display an informational message dialog."""
         self.statusBar().showMessage(message, 5000)
         QMessageBox.information(self, "Information", message)
+
+    def _populate_bbox_color_combo_with_swatches(self):
+        self.bbox_color_combo.clear()
+        for enum_item in BBoxColors:
+            bgr = enum_item.value
+            name = enum_item.name.title()
+            pix = QPixmap(40, 16)
+            pix.fill(Qt.transparent)
+            p = QPainter(pix)
+            p.fillRect(0, 0, 40, 16, Qt.black)  # border/background
+            p.fillRect(1, 1, 38, 14, Qt.white)  # inner bg
+            # Convert BGR to RGB for QPainter/QColor
+            rgb = (bgr[2], bgr[1], bgr[0])
+            p.fillRect(2, 2, 36, 12, QColor(*rgb))
+            p.end()
+            self.bbox_color_combo.addItem(QIcon(pix), name, enum_item)
+
+    def _set_combo_from_color(self, bgr: tuple[int, int, int]) -> None:
+        # Find combo entry whose enum value matches bgr
+        for i in range(self.bbox_color_combo.count()):
+            enum_item = self.bbox_color_combo.itemData(i)
+            if enum_item is not None and getattr(enum_item, "value", None) == bgr:
+                self.bbox_color_combo.setCurrentIndex(i)
+                return
 
     # ------------------------------------------------------------------
     # Qt overrides

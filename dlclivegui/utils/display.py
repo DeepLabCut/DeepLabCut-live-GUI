@@ -1,9 +1,33 @@
 # dlclivegui/utils/display.py
 from __future__ import annotations
 
+import enum
+
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+
+
+class BBoxColors(enum.Enum):
+    RED = (0, 0, 255)
+    GREEN = (0, 255, 0)
+    BLUE = (255, 0, 0)
+    YELLOW = (0, 255, 255)
+    CYAN = (255, 255, 0)
+    MAGENTA = (255, 0, 255)
+    WHITE = (255, 255, 255)
+    BLACK = (0, 0, 0)
+
+    def get_all_display_names() -> list[str]:
+        return [color.name.capitalize() for color in BBoxColors]
+
+
+def color_to_rgb(color_name: str) -> tuple[int, int, int]:
+    """Convert a color name to an RGB tuple."""
+    try:
+        return BBoxColors[color_name.upper()].value
+    except KeyError:
+        raise ValueError(f"Unknown color name: {color_name}") from None
 
 
 def compute_tiling_geometry(
