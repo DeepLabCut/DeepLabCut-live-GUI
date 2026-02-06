@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
 from ..config import CameraSettings
+
+if TYPE_CHECKING:
+    from .factory import DetectedCamera
 
 _BACKEND_REGISTRY: dict[str, type[CameraBackend]] = {}
 
@@ -96,6 +99,28 @@ class CameraBackend(ABC):
         ns = (dc.properties or {}).get(cls.options_key(), {})
         dc.properties = {cls.options_key(): dict(ns)}
         return dc
+
+    @classmethod
+    def discover_devices(
+        cls,
+        *,
+        max_devices: int = 10,
+        should_cancel: callable[[], bool] | None = None,
+        progress_cb: callable[[str], None] | None = None,
+    ) -> list[DetectedCamera] | None:
+        """
+        Optional: return a rich list of devices without brute-force probing.
+        Return None to signal 'not implemented' (factory falls back to probing).
+        """
+        return None
+
+    @classmethod
+    def rebind_settings(cls, settings: CameraSettings) -> CameraSettings:
+        """
+        Optional: update settings in-place (or return a modified copy) by using stable identity,
+        e.g. device_id/VID/PID stored in settings.properties. Default: no-op.
+        """
+        return settings
 
     def stop(self) -> None:  # noqa B027
         """Optional: Request a graceful stop. No-op by default."""

@@ -14,11 +14,13 @@ import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
 from ..base import CameraBackend, register_backend
+from ..factory import DetectedCamera
 from .utils.opencv_discovery import (
     ModeRequest,
     apply_mode_with_verification,
     list_cameras,
     open_with_fallbacks,
+    preferred_backend_for_platform,
     select_camera,
 )
 
@@ -140,6 +142,12 @@ class OpenCVCameraBackend(CameraBackend):
             if opt.device_id is None:
                 ns = self.settings.properties.setdefault(self.OPTIONS_KEY, {})
                 ns["device_id"] = chosen.stable_id
+                if chosen.vid is not None:
+                    ns["device_vid"] = int(chosen.vid)
+                if chosen.pid is not None:
+                    ns["device_pid"] = int(chosen.pid)
+                if chosen.name:
+                    ns["device_name"] = chosen.name
                 logger.info("Persisted OpenCV device_id=%s", chosen.stable_id)
 
         self._capture, spec = open_with_fallbacks(index, backend_flag)
@@ -397,37 +405,107 @@ class OpenCVCameraBackend(CameraBackend):
         except Exception as exc:
             logger.debug(f"MJPG enable attempt raised: {exc}")
 
-    # def _set_resolution_if_needed(self, width: int, height: int, reconfigure_only: bool = False) -> bool:
-    #     """Set width/height only if different.
-    #     Returns True if the device ends up at the requested size.
-    #     """
-    #     try:
-    #         cur_w = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    #         cur_h = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    #     except Exception:
-    #         cur_w, cur_h = 0, 0
+        @classmethod
+        def discover_devices(
+            cls,
+            *,
+            max_devices: int = 10,
+            should_cancel: callable[[], bool] | None = None,
+            progress_cb: callable[[str], None] | None = None,
+        ) -> list[DetectedCamera] | None:
+            """
+            Use cv2-enumerate-cameras if available to return rich identity info.
+            Returns None if enumeration is not available (factory will fallback to probing).
+            """
 
-    #     if (cur_w != width) or (cur_h != height):
-    #         set_w_ok = self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
-    #         set_h_ok = self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
-    #         if not set_w_ok:
-    #             logger.debug(f"Failed to set frame width to {width}")
-    #         if not set_h_ok:
-    #             logger.debug(f"Failed to set frame height to {height}")
+            def canceled() -> bool:
+                return bool(should_cancel and should_cancel())
 
-    #     try:
-    #         self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    #         self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    #     except Exception:
-    #         self._actual_width, self._actual_height = 0, 0
+            if canceled():
+                return []
 
-    #     return (self._actual_width, self._actual_height) == (width, height)
+            # Prefer platform backend, but enumeration supports CAP_ANY too
+            api_pref = preferred_backend_for_platform()
+
+            cams = list_cameras(api_pref)
+            if not cams:
+                # Enumeration unavailable -> tell factory to probe
+                return None
+
+            out: list[DetectedCamera] = []
+            for c in cams:
+                if canceled():
+                    break
+                label = c.name or f"OpenCV camera #{c.index}"
+                if progress_cb:
+                    progress_cb(f"Found {label}")
+
+                out.append(
+                    DetectedCamera(
+                        index=int(c.index),
+                        label=label,
+                        device_id=c.stable_id,
+                        vid=c.vid,
+                        pid=c.pid,
+                        path=c.path or None,
+                        backend_hint=c.backend,
+                    )
+                )
+            return out
 
     def _resolve_backend(self, backend: str | None) -> int:
         if backend is None:
             return cv2.CAP_ANY
         key = backend.upper()
         return getattr(cv2, f"CAP_{key}", cv2.CAP_ANY)
+
+    @classmethod
+    def rebind_settings(cls, settings: CameraSettings) -> CameraSettings:
+        """
+        If stable identity exists in settings.properties['opencv'], update settings.index
+        (and keep identity fields fresh).
+        """
+        props = settings.properties or {}
+        opt = props.get(cls.OPTIONS_KEY, {}) if isinstance(props, dict) else {}
+
+        device_id = opt.get("device_id")
+        device_name = opt.get("device_name")
+        vid = opt.get("device_vid")
+        pid = opt.get("device_pid")
+
+        # Nothing to rebind with
+        if not (device_id or (vid and pid) or device_name):
+            return settings
+
+        api_pref = preferred_backend_for_platform()
+        cams = list_cameras(api_pref)
+        if not cams:
+            return settings
+
+        chosen = select_camera(
+            cams,
+            prefer_stable_id=device_id,
+            prefer_name_substr=device_name,
+            prefer_vid_pid=(int(vid), int(pid)) if vid and pid else None,
+            fallback_index=int(settings.index),
+        )
+        if not chosen:
+            return settings
+
+        # Update the index to current mapping
+        settings.index = int(chosen.index)
+
+        # Refresh persisted identity (max robustness)
+        ns = settings.properties.setdefault(cls.OPTIONS_KEY, {})
+        ns["device_id"] = chosen.stable_id
+        if chosen.name:
+            ns["device_name"] = chosen.name
+        if chosen.vid is not None:
+            ns["device_vid"] = int(chosen.vid)
+        if chosen.pid is not None:
+            ns["device_pid"] = int(chosen.pid)
+
+        return settings
 
     # ----------------------------
     # Discovery helper (optional use by factory)

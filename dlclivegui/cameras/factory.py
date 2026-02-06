@@ -24,6 +24,12 @@ class DetectedCamera:
 
     index: int
     label: str
+    # ---  Optional but nice for quick, robust discovery
+    device_id: str | None = None
+    vid: int | None = None
+    pid: int | None = None
+    path: str | None = None
+    backend_hint: int | None = None  # e.g. cv2.CAP_DSHOW (backend-specific)
 
 
 def _opencv_get_log_level(cv2):
@@ -196,6 +202,30 @@ class CameraFactory:
             except Exception:
                 pass
 
+        # ----------------------------------
+        # "Rich discovery" path
+        # Try backend-provided rich discovery first, which should retrieve more info.
+        # This is implemented per-backend and may be faster/more reliable than probing
+        # each index.
+        # ----------------------------------
+        try:
+            if hasattr(backend_cls, "discover_devices"):
+                rich = backend_cls.discover_devices(
+                    max_devices=max_devices,
+                    should_cancel=should_cancel,
+                    progress_cb=progress_cb,
+                )
+                if rich is not None:
+                    rich.sort(key=lambda c: c.index)
+                    return rich
+        except Exception:
+            # NOTE Never fail discovery completely; fallback to probing
+            logger.exception("Backend %s rich discovery failed; falling back to probing", backend)
+
+        # ----------------------------------
+        # "Probing" path : try to open each index and query info,
+        # with optional quick presence check
+        # ----------------------------------
         detected: list[DetectedCamera] = []
         # Suppress OpenCV warnings/errors during probing (e.g., "can't open camera by index")
         with _suppress_opencv_logging():
@@ -272,6 +302,11 @@ class CameraFactory:
         try:
             backend_cls = CameraFactory._resolve_backend(backend_name)
             try:
+                if hasattr(backend_cls, "rebind_settings"):
+                    settings = backend_cls.rebind_settings(settings)
+            except Exception:
+                logger.debug("Backend %s rebind_settings failed during creation", backend_name, exc_info=True)
+            try:
                 backend_cls.parse_options(settings)  # ensures bad config fails loudly here
             except Exception as exc:
                 raise RuntimeError(f"Invalid {backend_name} options: {exc}") from exc
@@ -301,6 +336,14 @@ class CameraFactory:
 
         if not backend_cls.is_available():
             return False, f"Backend '{backend_name}' is not available (missing drivers/packages)"
+
+        # Allow backend to rebind settings for probing
+        # This should be lightweight and avoid heavy settings like FPS/resolution
+        try:
+            if hasattr(backend_cls, "rebind_settings"):
+                dc = backend_cls.rebind_settings(dc)
+        except Exception:
+            logger.debug("Backend %s rebind_settings failed during availability check", backend_name, exc_info=True)
 
         # Prefer quick presence test
         if hasattr(backend_cls, "quick_ping"):

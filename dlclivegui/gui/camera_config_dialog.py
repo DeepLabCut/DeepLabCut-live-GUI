@@ -1,5 +1,6 @@
 """Camera configuration dialog for multi-camera setup (with async preview loading)."""
 
+# dlclivegui/gui/camera_config_dialog.py
 from __future__ import annotations
 
 import copy
@@ -35,6 +36,35 @@ from dlclivegui.cameras.factory import DetectedCamera
 from dlclivegui.config import CameraSettings, MultiCameraSettings
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _apply_detected_identity(cam: CameraSettings, detected: DetectedCamera, backend: str) -> None:
+    """Persist stable identity from a detected camera into cam.properties under backend namespace."""
+    if not isinstance(cam.properties, dict):
+        cam.properties = {}
+
+    ns = cam.properties.get(backend.lower())
+    if not isinstance(ns, dict):
+        ns = {}
+        cam.properties[backend.lower()] = ns
+
+    # Store whatever we have (backend-specific but written generically)
+    if getattr(detected, "device_id", None):
+        ns["device_id"] = detected.device_id
+    if getattr(detected, "vid", None) is not None:
+        ns["device_vid"] = int(detected.vid)
+    if getattr(detected, "pid", None) is not None:
+        ns["device_pid"] = int(detected.pid)
+    if getattr(detected, "path", None):
+        ns["device_path"] = detected.path
+
+    # Optional: store human name for matching fallback
+    if getattr(detected, "label", None):
+        ns["device_name"] = detected.label
+
+    # Optional: store backend_hint if you expose it (e.g., CAP_DSHOW)
+    if getattr(detected, "backend_hint", None) is not None:
+        ns["backend_hint"] = int(detected.backend_hint)
 
 
 # -------------------------------
@@ -199,6 +229,37 @@ class CameraConfigDialog(QDialog):
         #  Validate and coerce; if invalid, Pydantic will raise
         return CameraSettings.model_validate(payload)
 
+    def _merge_backend_settings_back(self, opened_settings: CameraSettings) -> None:
+        """Merge identity/index changes learned during preview open back into the working settings."""
+        if self._current_edit_index is None:
+            return
+        row = self._current_edit_index
+        if row < 0 or row >= len(self._working_settings.cameras):
+            return
+
+        target = self._working_settings.cameras[row]
+
+        # Update index if backend rebinding occurred
+        try:
+            target.index = int(opened_settings.index)
+        except Exception:
+            pass
+
+        # Merge properties (especially stable IDs) back
+        if isinstance(opened_settings.properties, dict):
+            if not isinstance(target.properties, dict):
+                target.properties = {}
+            # shallow merge is ok; backend namespaces are nested dicts
+            for k, v in opened_settings.properties.items():
+                if isinstance(v, dict) and isinstance(target.properties.get(k), dict):
+                    target.properties[k].update(v)
+                else:
+                    target.properties[k] = v
+
+        # Update UI list item text to reflect any changes
+        self._update_active_list_item(row, target)
+        self._load_camera_to_form(target)
+
     # -------------------------------
     # UI setup
     # -------------------------------
@@ -315,6 +376,10 @@ class CameraConfigDialog(QDialog):
         self.cam_name_label = QLabel("Camera 0")
         self.cam_name_label.setStyleSheet("font-weight: bold; font-size: 14px;")
         self.settings_form.addRow("Name:", self.cam_name_label)
+
+        self.cam_device_id_label = QLabel("")
+        self.cam_device_id_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.settings_form.addRow("Device ID:", self.cam_device_id_label)
 
         self.cam_index_label = QLabel("0")
         self.settings_form.addRow("Index:", self.cam_index_label)
@@ -524,6 +589,17 @@ class CameraConfigDialog(QDialog):
         gp = self.preview_label.mapTo(self.preview_group, self.preview_label.rect().topLeft())
         rect = self.preview_label.rect()
         self._loading_overlay.setGeometry(gp.x(), gp.y(), rect.width(), rect.height())
+
+    def _camera_identity_key(self, cam: CameraSettings) -> tuple:
+        backend = (cam.backend or "").lower()
+        props = cam.properties if isinstance(cam.properties, dict) else {}
+        ns = props.get(backend, {}) if isinstance(props, dict) else {}
+        device_id = ns.get("device_id")
+
+        # Prefer stable identity if present, otherwise fallback
+        if device_id:
+            return (backend, "device_id", device_id)
+        return (backend, "index", int(cam.index))
 
     # -------------------------------
     # Signals / population
@@ -776,8 +852,12 @@ class CameraConfigDialog(QDialog):
         self._update_button_states()
 
     def _load_camera_to_form(self, cam: CameraSettings) -> None:
+        backend = (cam.backend or "").lower()
+        props = cam.properties if isinstance(cam.properties, dict) else {}
+        ns = props.get(backend, {}) if isinstance(props, dict) else {}
         self.cam_enabled_checkbox.setChecked(cam.enabled)
         self.cam_name_label.setText(cam.name)
+        self.cam_device_id_label.setText(str(ns.get("device_id", "")))
         self.cam_index_label.setText(str(cam.index))
         self.cam_backend_label.setText(cam.backend)
         self._update_controls_for_backend(cam.backend)
@@ -807,6 +887,7 @@ class CameraConfigDialog(QDialog):
     def _clear_settings_form(self) -> None:
         self.cam_enabled_checkbox.setChecked(True)
         self.cam_name_label.setText("")
+        self.cam_device_id_label.setText("")
         self.cam_index_label.setText("")
         self.cam_backend_label.setText("")
         self.cam_fps.setValue(30.0)
@@ -836,14 +917,19 @@ class CameraConfigDialog(QDialog):
             return
         item = self.available_cameras_list.item(row)
         detected = item.data(Qt.ItemDataRole.UserRole)
-        backend = self.backend_combo.currentData() or "opencv"
+        # make sure this is to lower for comparison against camera_identity_key
+        backend = (self.backend_combo.currentData() or "opencv").lower()
+
+        det_key = None
+        if getattr(detected, "device_id", None):
+            det_key = (backend, "device_id", detected.device_id)
+        else:
+            det_key = (backend, "index", int(detected.index))
 
         for i in range(self.active_cameras_list.count()):
             existing_cam = self.active_cameras_list.item(i).data(Qt.ItemDataRole.UserRole)
-            if existing_cam.backend == backend and existing_cam.index == detected.index:
-                QMessageBox.warning(
-                    self, "Duplicate Camera", f"Camera '{backend}:{detected.index}' is already in the active list."
-                )
+            if self._camera_identity_key(existing_cam) == det_key:
+                QMessageBox.warning(self, "Duplicate Camera", "This camera is already in the active list.")
                 return
 
         new_cam = CameraSettings(
@@ -854,7 +940,9 @@ class CameraConfigDialog(QDialog):
             exposure=0,
             gain=0.0,
             enabled=True,
+            properties={},
         )
+        _apply_detected_identity(new_cam, detected, backend)
         self._working_settings.cameras.append(new_cam)
         new_index = len(self._working_settings.cameras) - 1
         new_item = QListWidgetItem(self._format_camera_label(new_cam, new_index))
@@ -1104,6 +1192,18 @@ class CameraConfigDialog(QDialog):
                 self._append_status("Opening camera…")
                 self._preview_backend = CameraFactory.create(cam_settings)
                 self._preview_backend.open()
+
+                opened_sttngs = getattr(self._preview_backend, "settings", None)
+                if isinstance(opened_sttngs, CameraSettings):
+                    backend = opened_sttngs.backend
+                    index = opened_sttngs.index
+                    device_id = (opened_sttngs.properties or {}).get(backend.lower(), {}).get("device_id", "")
+                    self._append_status(f"Opened {backend}:{index} device_id={device_id}")
+                    self._merge_backend_settings_back(opened_sttngs)
+                    if self._current_edit_index is not None and 0 <= self._current_edit_index < len(
+                        self._working_settings.cameras
+                    ):
+                        self._load_camera_to_form(self._working_settings.cameras[self._current_edit_index])
             else:
                 raise TypeError(f"Unexpected success payload type: {type(payload)}")
 
