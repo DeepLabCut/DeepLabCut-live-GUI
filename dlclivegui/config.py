@@ -69,7 +69,11 @@ class CameraSettings(BaseModel):
     def apply_defaults(self) -> CameraSettings:
         default = self.from_defaults()
         for field in CameraSettings.model_fields:
-            if getattr(self, field) in (None, 0, 0.0):
+            value = getattr(self, field)
+            if value is None or (isinstance(value, (int, float)) and value <= 0):
+                # auto means use default value
+                # TODO @C-Achard
+                # Consider a more explicit way to represent "use default" vs "explicitly disable/zero out"
                 setattr(self, field, getattr(default, field))
         return self
 
