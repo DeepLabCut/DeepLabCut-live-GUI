@@ -1,5 +1,6 @@
 """GenTL backend implemented using the Harvesters library."""
 
+#  dlclivegui/cameras/backends/gentl_backend.py
 from __future__ import annotations
 
 import glob
@@ -7,11 +8,12 @@ import logging
 import os
 import time
 from collections.abc import Iterable
+from typing import ClassVar
 
 import cv2
 import numpy as np
 
-from ..base import CameraBackend, register_backend
+from ..base import CameraBackend, SupportLevel, register_backend
 
 LOG = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ except Exception:  # pragma: no cover - optional dependency
 class GenTLCameraBackend(CameraBackend):
     """Capture frames from GenTL-compatible devices via Harvesters."""
 
+    OPTIONS_KEY: ClassVar[str] = "gentl"
     _DEFAULT_CTI_PATTERNS: tuple[str, ...] = (
         r"C:\\Program Files\\The Imaging Source Europe GmbH\\IC4 GenTL Driver for USB3Vision Devices *\\bin\\*.cti",
         r"C:\\Program Files\\The Imaging Source Europe GmbH\\TIS Grabber\\bin\\win64_x64\\*.cti",
@@ -40,27 +43,66 @@ class GenTLCameraBackend(CameraBackend):
 
     def __init__(self, settings):
         super().__init__(settings)
-        props = settings.properties
-        self._cti_file: str | None = props.get("cti_file")
-        self._serial_number: str | None = props.get("serial_number") or props.get("serial")
-        self._pixel_format: str = props.get("pixel_format", "Mono8")
-        self._rotate: int = int(props.get("rotate", 0)) % 360
-        self._crop: tuple[int, int, int, int] | None = self._parse_crop(props.get("crop"))
-        # Check settings first (from config), then properties (for backward compatibility)
-        self._exposure: float | None = settings.exposure if settings.exposure else props.get("exposure")
-        self._gain: float | None = settings.gain if settings.gain else props.get("gain")
-        self._timeout: float = float(props.get("timeout", 2.0))
-        self._cti_search_paths: tuple[str, ...] = self._parse_cti_paths(props.get("cti_search_paths"))
-        # Parse resolution (width, height) with defaults
-        self._resolution: tuple[int, int] | None = self._parse_resolution(props.get("resolution"))
+
+        props = settings.properties if isinstance(settings.properties, dict) else {}
+        ns = props.get(self.OPTIONS_KEY, {})
+        if not isinstance(ns, dict):
+            ns = {}
+
+        self._cti_file: str | None = ns.get("cti_file") or props.get("cti_file")
+        self._serial_number: str | None = (
+            ns.get("serial_number") or ns.get("serial") or props.get("serial_number") or props.get("serial")
+        )
+        self._pixel_format: str = ns.get("pixel_format") or props.get("pixel_format", "Mono8")
+        self._rotate: int = int(ns.get("rotate", props.get("rotate", 0))) % 360
+        self._crop: tuple[int, int, int, int] | None = self._parse_crop(ns.get("crop", props.get("crop")))
+
+        self._exposure: float | None = (
+            settings.exposure if settings.exposure else ns.get("exposure", props.get("exposure"))
+        )
+        self._gain: float | None = settings.gain if settings.gain else ns.get("gain", props.get("gain"))
+
+        self._timeout: float = float(ns.get("timeout", props.get("timeout", 2.0)))
+        self._cti_search_paths: tuple[str, ...] = self._parse_cti_paths(
+            ns.get("cti_search_paths", props.get("cti_search_paths"))
+        )
+
+        # Resolution request (None = device default)
+        self._requested_resolution: tuple[int, int] | None = self._get_requested_resolution_or_none()
+
+        # Actuals for GUI
+        self._actual_width: int | None = None
+        self._actual_height: int | None = None
+        self._actual_fps: float | None = None
 
         self._harvester = None
         self._acquirer = None
         self._device_label: str | None = None
 
+    @property
+    def actual_resolution(self) -> tuple[int, int] | None:
+        if self._actual_width and self._actual_height:
+            return (self._actual_width, self._actual_height)
+        return None
+
+    @property
+    def actual_fps(self) -> float | None:
+        return self._actual_fps
+
     @classmethod
     def is_available(cls) -> bool:
         return Harvester is not None
+
+    @classmethod
+    def static_capabilities(cls) -> dict[str, SupportLevel]:
+        return {
+            "set_resolution": SupportLevel.SUPPORTED,
+            "set_fps": SupportLevel.SUPPORTED,
+            "set_exposure": SupportLevel.SUPPORTED,
+            "set_gain": SupportLevel.SUPPORTED,
+            "device_discovery": SupportLevel.SUPPORTED,
+            "stable_identity": SupportLevel.SUPPORTED,
+        }
 
     @classmethod
     def get_device_count(cls) -> int:
@@ -158,6 +200,19 @@ class GenTLCameraBackend(CameraBackend):
         self._configure_gain(node_map)
         self._configure_frame_rate(node_map)
 
+        # Capture actual resolution even when using defaults
+        try:
+            self._actual_width = int(node_map.Width.value)
+            self._actual_height = int(node_map.Height.value)
+        except Exception:
+            pass
+
+        # Capture actual FPS if available
+        try:
+            self._actual_fps = float(node_map.ResultingFrameRate.value)
+        except Exception:
+            self._actual_fps = None
+
         self._acquirer.start()
 
     def read(self) -> tuple[np.ndarray, float]:
@@ -184,6 +239,12 @@ class GenTLCameraBackend(CameraBackend):
 
         frame = self._convert_frame(frame)
         timestamp = time.time()
+
+        if self._actual_width is None or self._actual_height is None:
+            h, w = frame.shape[:2]
+            self._actual_width = int(w)
+            self._actual_height = int(h)
+
         return frame, timestamp
 
     def stop(self) -> None:
@@ -232,26 +293,77 @@ class GenTLCameraBackend(CameraBackend):
             return tuple(int(v) for v in crop)
         return None
 
-    def _parse_resolution(self, resolution) -> tuple[int, int] | None:
-        """Parse resolution setting.
-
-        Args:
-            resolution: Can be a tuple/list [width, height], or None
-
-        Returns:
-            Tuple of (width, height) or None if not specified
-            Default is (720, 540) if parsing fails but value is provided
+    def _get_requested_resolution_or_none(self) -> tuple[int, int] | None:
         """
-        if resolution is None:
-            return (720, 540)  # Default resolution
+        Return (w, h) if user explicitly requested a resolution.
+        Return None to keep device defaults.
+        """
+        props = self.settings.properties if isinstance(self.settings.properties, dict) else {}
 
-        if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
+        legacy = props.get("resolution")
+        if isinstance(legacy, (list, tuple)) and len(legacy) == 2:
             try:
-                return (int(resolution[0]), int(resolution[1]))
-            except (ValueError, TypeError):
-                return (720, 540)
+                w, h = int(legacy[0]), int(legacy[1])
+                if w > 0 and h > 0:
+                    return (w, h)
+            except Exception:
+                pass
 
-        return (720, 540)
+        try:
+            w = int(getattr(self.settings, "width", 0) or 0)
+            h = int(getattr(self.settings, "height", 0) or 0)
+            if w > 0 and h > 0:
+                return (w, h)
+        except Exception:
+            pass
+
+        return None
+
+    def _configure_resolution(self, node_map) -> None:
+        """
+        Configure camera resolution only if explicitly requested.
+        If None, keep device defaults.
+        """
+        req = self._requested_resolution
+        if req is None:
+            LOG.info("Resolution: using device default.")
+            return
+
+        requested_width, requested_height = req
+        actual_width, actual_height = None, None
+
+        # Width
+        try:
+            node = node_map.Width
+            min_w, max_w = node.min, node.max
+            inc_w = getattr(node, "inc", 1)
+            width = self._adjust_to_increment(requested_width, min_w, max_w, inc_w)
+            node.value = int(width)
+            actual_width = node.value
+        except Exception as e:
+            LOG.warning(f"Failed to set width: {e}")
+
+        # Height
+        try:
+            node = node_map.Height
+            min_h, max_h = node.min, node.max
+            inc_h = getattr(node, "inc", 1)
+            height = self._adjust_to_increment(requested_height, min_h, max_h, inc_h)
+            node.value = int(height)
+            actual_height = node.value
+        except Exception as e:
+            LOG.warning(f"Failed to set height: {e}")
+
+        if actual_width is not None and actual_height is not None:
+            self._actual_width = int(actual_width)
+            self._actual_height = int(actual_height)
+            if (actual_width, actual_height) != (requested_width, requested_height):
+                LOG.warning(
+                    f"Resolution mismatch: requested {requested_width}x{requested_height}, "
+                    f"got {actual_width}x{actual_height}"
+                )
+            else:
+                LOG.info(f"Resolution set to {actual_width}x{actual_height}")
 
     @staticmethod
     def _search_cti_file(patterns: tuple[str, ...]) -> str | None:
