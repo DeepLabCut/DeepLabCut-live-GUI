@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "deeplabcut-live-gui"
-version = "2.0"
+dynamic = ["version"]
 description = "PySide6-based GUI to run real time DeepLabCut experiments"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "GNU Lesser General Public License v3 (LGPLv3)"}
+license-files = ["LICENSE"]
 authors = [
     {name = "A. & M. Mathis Labs", email = "adim@deeplabcut.org"}
 ]
@@ -18,11 +18,13 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: Qt",
+    "Environment :: X11 Applications :: Qt",
 ]
 
 dependencies = [
@@ -72,8 +74,14 @@ Documentation = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
 [project.scripts]
 dlclivegui = "dlclivegui:main"
 
-[tool.setuptools]
-include-package-data = true
+# [tool.setuptools]
+# include-package-data = true
+
+# This is more granular and explicit than include-package-data,
+# which can be too broad and include unwanted files.
+[tool.setuptools.package-data]
+"dlclivegui.assets" = ["*.png"]
+
 
 [tool.setuptools.packages.find]
 where = ["."]
