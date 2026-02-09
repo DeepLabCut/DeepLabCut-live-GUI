@@ -8,7 +8,7 @@ import sys
 import time
 from collections import deque
 from math import acos, atan2, copysign, degrees, pi, sqrt
-from multiprocessing.connection import Listener
+from multiprocessing.connection import Client, Listener
 from pathlib import Path
 from threading import Event, Thread
 
@@ -140,6 +140,9 @@ class BaseProcessorSocket(Processor):
         self.address = bind
         self.authkey = authkey if authkey is not None else (b"secret password" if bind is not None else None)
         self.listener = None
+        self._accept_thread = None
+        self._rx_thread = None
+        self._rx_threads = set()
         self._socket_timeout = float(socket_timeout)
 
         self._stop = Event()
@@ -180,6 +183,9 @@ class BaseProcessorSocket(Processor):
         if self.listener is not None:
             return
 
+        if self._stop.is_set():
+            self._stop.clear()
+
         self.address = bind
         self.authkey = authkey
 
@@ -190,7 +196,8 @@ class BaseProcessorSocket(Processor):
         except Exception:
             pass
 
-        Thread(target=self._accept_loop, daemon=True).start()
+        self._accept_thread = Thread(target=self._accept_loop, daemon=True)
+        self._accept_thread.start()
         logger.info(f"Processor server started on {bind[0]}:{bind[1]}")
 
     # --------------------------------------------------------------------------------------
@@ -215,7 +222,9 @@ class BaseProcessorSocket(Processor):
                 logger.debug(f"Client connected from {self.listener.last_accepted}")
                 self.conns.add(conn)
 
-                Thread(target=self._rx_loop, args=(conn,), daemon=True).start()
+                self._rx_thread = Thread(target=self._rx_loop, args=(conn,), daemon=True)
+                self._rx_threads.add(self._rx_thread)
+                self._rx_thread.start()
 
             except (TimeoutError, OSError, EOFError):
                 if self._stop.is_set():
@@ -323,10 +332,35 @@ class BaseProcessorSocket(Processor):
         logger.info("Stopping processor...")
         self._stop.set()
 
+        # Wake accept() so the accept loop exits quickly (especially helpful on Windows)
+        # This is safe even if no clients are connected.
+        try:
+            if self.address is not None and self.authkey is not None:
+                c = Client(self.address, authkey=self.authkey)
+                c.close()
+        except Exception:
+            pass
+
         for conn in list(self.conns):
             self._close_conn(conn)
 
         self._close_listener()
+
+        # Join accept thread to avoid race conditions on restart
+        if self._accept_thread is not None:
+            self._accept_thread.join(timeout=2.0)
+            if self._accept_thread.is_alive():
+                logger.warning("Accept thread did not terminate cleanly")
+            self._accept_thread = None
+
+        # Join rx threads briefly (best effort)
+        for t in list(self._rx_threads):
+            try:
+                t.join(timeout=1.0)
+            except Exception:
+                pass
+        self._rx_threads.clear()
+        self._rx_thread = None
 
         # Small Windows delay to help TIME_WAIT cleanup
         if sys.platform.startswith("win"):
