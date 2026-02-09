@@ -509,7 +509,7 @@ class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):
     PROCESSOR_PARAMS = {
         "bind": {
             "type": "tuple",
-            "default": ("0.0.0.0", 6000),
+            "default": ("127.0.0.1", 6000),
             "description": "Server address (host, port)",
         },
         "authkey": {
@@ -541,7 +541,7 @@ class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):
 
     def __init__(
         self,
-        bind=("0.0.0.0", 6000),
+        bind=("127.0.0.1", 6000),
         authkey=b"secret password",
         use_perf_counter=False,
         use_filter=False,
@@ -669,7 +669,7 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):
     PROCESSOR_PARAMS = {
         "bind": {
             "type": "tuple",
-            "default": ("0.0.0.0", 6000),
+            "default": ("127.0.0.1", 6000),
             "description": "Server address (host, port)",
         },
         "authkey": {
@@ -701,7 +701,7 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):
 
     def __init__(
         self,
-        bind=("0.0.0.0", 6000),
+        bind=("127.0.0.1", 6000),
         authkey=b"secret password",
         use_perf_counter=False,
         use_filter=False,

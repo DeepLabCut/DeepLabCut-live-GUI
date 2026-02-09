@@ -417,6 +417,12 @@ class DLCLiveMainWindow(QMainWindow):
         self.browse_processor_folder_button = QPushButton("Browse...")
         self.browse_processor_folder_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.browse_processor_folder_button.clicked.connect(self._action_browse_processor_folder)
+        self.browse_processor_folder_button.setToolTip(
+            "Select the folder to scan for DLC processor plugins."
+            "<br>Plugins must inherit from dlclive.Processor, see dlclivegui.processors for more details."
+            "<br><b>Important:</b> External processors are Python code that will be imported during discovery."
+            "<br>Only use processor plugins from trusted sources to avoid security risks."
+        )
         processor_path_layout.addWidget(self.browse_processor_folder_button)
 
         self.refresh_processors_button = QPushButton("Refresh")
@@ -457,12 +463,12 @@ class DLCLiveMainWindow(QMainWindow):
         self.show_predictions_checkbox.setChecked(True)
         form.addRow(self.show_predictions_checkbox)
 
-        self.auto_record_checkbox = QCheckBox("Auto-record video on processor command")
-        self.auto_record_checkbox.setChecked(False)
-        self.auto_record_checkbox.setToolTip(
-            "Automatically start/stop video recording when processor receives video recording commands"
+        self.allow_processor_ctrl_checkbox = QCheckBox("Allow processor-based control")
+        self.allow_processor_ctrl_checkbox.setChecked(False)
+        self.allow_processor_ctrl_checkbox.setToolTip(
+            "If enabled, the GUI will load and interact with the selected processor plugin.\n"
         )
-        form.addRow(self.auto_record_checkbox)
+        form.addRow(self.allow_processor_ctrl_checkbox)
 
         self.processor_status_label = QLabel("Processor: No clients | Recording: No")
         self.processor_status_label.setWordWrap(True)
@@ -957,6 +963,11 @@ class DLCLiveMainWindow(QMainWindow):
         except Exception as exc:
             logger.error(f"Failed to open folder: {exc}")
             self.statusBar().showMessage("Could not open recording folder.", 5000)
+
+    def _processor_control_enabled(self) -> bool:
+        return bool(
+            getattr(self, "allow_processor_ctrl_checkbox", None) and self.allow_processor_ctrl_checkbox.isChecked()
+        )
 
     def _refresh_processors(self) -> None:
         self.processor_combo.clear()
@@ -1481,20 +1492,23 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Instantiate processor if selected
         processor = None
-        selected_key = self.processor_combo.currentData()
-        if selected_key is not None and self._scanned_processors:
-            try:
-                # For now, instantiate with no parameters
-                # TODO: Add parameter dialog for processors that need params
-                # or pass kwargs from config ?
-                processor = instantiate_from_scan(self._scanned_processors, selected_key)
-                processor_name = self._scanned_processors[selected_key]["name"]
-                self.statusBar().showMessage(f"Loaded processor: {processor_name}", 3000)
-            except Exception as e:
-                error_msg = f"Failed to instantiate processor: {e}"
-                self._show_error(error_msg)
-                logger.error(error_msg)
-                return False
+        if self._processor_control_enabled():
+            selected_key = self.processor_combo.currentData()
+            if selected_key is not None and self._scanned_processors:
+                try:
+                    # For now, instantiate with no parameters
+                    processor = instantiate_from_scan(self._scanned_processors, selected_key)
+                    processor_name = self._scanned_processors[selected_key]["name"]
+                    self.statusBar().showMessage(f"Loaded processor: {processor_name}", 3000)
+                except Exception as e:
+                    error_msg = f"Failed to instantiate processor: {e}"
+                    self._show_error(error_msg)
+                    logger.error(error_msg)
+                    return False
+        else:
+            selected_key = self.processor_combo.currentData()
+            if selected_key is not None:
+                self.statusBar().showMessage(f"Processor selection ignored (control disabled): {selected_key}", 3000)
 
         self._dlc.configure(settings, processor=processor)
         self._model_path_store.save_if_valid(settings.model_path)
@@ -1508,18 +1522,24 @@ class DLCLiveMainWindow(QMainWindow):
     def _update_dlc_controls_enabled(self) -> None:
         """Enable/disable DLC settings based on inference state."""
         allow_changes = not self._dlc_active
+        processor_controls = allow_changes and self._processor_control_enabled()
+
         widgets = [
             self.model_path_edit,
             self.browse_model_button,
+            self.dlc_camera_combo,
+            # self.additional_options_edit,
+        ]
+        processor_widgets = [
             self.processor_folder_edit,
             self.browse_processor_folder_button,
             self.refresh_processors_button,
             self.processor_combo,
-            # self.additional_options_edit,
-            self.dlc_camera_combo,
         ]
         for widget in widgets:
             widget.setEnabled(allow_changes)
+        for widget in processor_widgets:
+            widget.setEnabled(processor_controls)
 
     def _update_camera_controls_enabled(self) -> None:
         multi_cam_recording = self._rec_manager.is_active
@@ -1606,7 +1626,7 @@ class DLCLiveMainWindow(QMainWindow):
                 self.dlc_stats_label.setText("DLC processor idle")
 
         # Update processor status (connection and recording state)
-        if hasattr(self, "processor_status_label"):
+        if hasattr(self, "processor_status_label") and self._processor_control_enabled():
             self._update_processor_status()
 
         # --- Recorder stats ---
@@ -1620,6 +1640,10 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _update_processor_status(self) -> None:
         """Update processor connection and recording status, handle auto-recording."""
+        if not self._processor_control_enabled():
+            self.processor_status_label.setText("Processor control disabled")
+            return
+
         if not self._dlc_active or not self._dlc_initialized:
             self.processor_status_label.setText("Processor: Not active")
             return
@@ -1646,7 +1670,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.processor_status_label.setText(f"Clients: {client_str} | Recording: {recording_str}")
 
         # Handle auto-recording based on processor's video recording flag
-        if hasattr(processor, "_vid_recording") and self.auto_record_checkbox.isChecked():
+        if hasattr(processor, "_vid_recording") and self.allow_processor_ctrl_checkbox.isChecked():
             current_vid_recording = processor.video_recording
 
             # Check if video recording state changed
