@@ -131,8 +131,8 @@ class OpenCVCameraBackend(CameraBackend):
             {
                 "set_resolution": SupportLevel.SUPPORTED,
                 "set_fps": SupportLevel.BEST_EFFORT,
-                "set_exposure": SupportLevel.BEST_EFFORT,
-                "set_gain": SupportLevel.BEST_EFFORT,
+                "set_exposure": SupportLevel.UNSUPPORTED,
+                "set_gain": SupportLevel.UNSUPPORTED,
                 "device_discovery": SupportLevel.SUPPORTED,
                 "stable_identity": SupportLevel.SUPPORTED,
             }
