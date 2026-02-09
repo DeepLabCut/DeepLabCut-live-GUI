@@ -280,7 +280,9 @@ class DLCLiveProcessor(QObject):
 
         end_ts = time.perf_counter()
         latency = end_ts - enqueue_time
-        total_process_time = end_ts - (end_ts - (inference_time + signal_time))  # keep for completeness
+        # service_time_no_queue = signal_time + inference_time (includes processor overhead when present)
+        # Actual end-to-end time from enqueue to signal emit
+        total_process_time = end_ts - enqueue_time
 
         with self._stats_lock:
             self._frames_processed += 1
