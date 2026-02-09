@@ -19,7 +19,7 @@ class SplashConfig:
     bg_color = Qt.black  # Fallback background color when image is missing
 
 
-def build_splash_pixmap(cfg: SplashConfig) -> QPixmap:
+def build_splash_pixmap(cfg: SplashConfig) -> QPixmap | None:
     """
     Build a splash pixmap from config. If the image is invalid, returns a filled pixmap
     with fallback size and background color.
@@ -35,7 +35,7 @@ def build_splash_pixmap(cfg: SplashConfig) -> QPixmap:
     return None
 
 
-def show_splash(cfg: SplashConfig) -> QSplashScreen:
+def show_splash(cfg: SplashConfig) -> QSplashScreen | None:
     """
     Create and show the splash screen from config. Returns the QSplashScreen instance.
     The caller is responsible for closing it.

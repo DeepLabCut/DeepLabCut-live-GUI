@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import importlib.util
 import inspect
 import logging
 import pkgutil
 import sys
+from importlib import import_module
 from importlib.resources import as_file, files
 from pathlib import Path
 
@@ -45,7 +48,7 @@ def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[
     all_processors: dict[str, dict] = {}
 
     try:
-        pkg = importlib.import_module(package_name)
+        pkg = import_module(package_name)
     except Exception:
         logger.exception(f"Could not import package '{package_name}'")
         return all_processors
@@ -55,7 +58,7 @@ def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[
         if ispkg:
             continue
         try:
-            mod = importlib.import_module(mod_name)
+            mod = import_module(mod_name)
 
             # Prefer module-level registry function if present
             if hasattr(mod, "get_available_processors"):

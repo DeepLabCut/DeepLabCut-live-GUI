@@ -18,6 +18,7 @@ class BBoxColors(enum.Enum):
     WHITE = (255, 255, 255)
     BLACK = (0, 0, 0)
 
+    @staticmethod
     def get_all_display_names() -> list[str]:
         return [color.name.capitalize() for color in BBoxColors]
 
