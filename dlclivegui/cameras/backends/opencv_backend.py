@@ -405,53 +405,53 @@ class OpenCVCameraBackend(CameraBackend):
         except Exception as exc:
             logger.debug(f"MJPG enable attempt raised: {exc}")
 
-        @classmethod
-        def discover_devices(
-            cls,
-            *,
-            max_devices: int = 10,
-            should_cancel: callable[[], bool] | None = None,
-            progress_cb: callable[[str], None] | None = None,
-        ) -> list[DetectedCamera] | None:
-            """
-            Use cv2-enumerate-cameras if available to return rich identity info.
-            Returns None if enumeration is not available (factory will fallback to probing).
-            """
+    @classmethod
+    def discover_devices(
+        cls,
+        *,
+        max_devices: int = 10,
+        should_cancel: callable[[], bool] | None = None,
+        progress_cb: callable[[str], None] | None = None,
+    ) -> list[DetectedCamera] | None:
+        """
+        Use cv2-enumerate-cameras if available to return rich identity info.
+        Returns None if enumeration is not available (factory will fallback to probing).
+        """
 
-            def canceled() -> bool:
-                return bool(should_cancel and should_cancel())
+        def canceled() -> bool:
+            return bool(should_cancel and should_cancel())
 
+        if canceled():
+            return []
+
+        # Prefer platform backend, but enumeration supports CAP_ANY too
+        api_pref = preferred_backend_for_platform()
+
+        cams = list_cameras(api_pref)
+        if not cams:
+            # Enumeration unavailable -> tell factory to probe
+            return None
+
+        out: list[DetectedCamera] = []
+        for c in cams:
             if canceled():
-                return []
+                break
+            label = c.name or f"OpenCV camera #{c.index}"
+            if progress_cb:
+                progress_cb(f"Found {label}")
 
-            # Prefer platform backend, but enumeration supports CAP_ANY too
-            api_pref = preferred_backend_for_platform()
-
-            cams = list_cameras(api_pref)
-            if not cams:
-                # Enumeration unavailable -> tell factory to probe
-                return None
-
-            out: list[DetectedCamera] = []
-            for c in cams:
-                if canceled():
-                    break
-                label = c.name or f"OpenCV camera #{c.index}"
-                if progress_cb:
-                    progress_cb(f"Found {label}")
-
-                out.append(
-                    DetectedCamera(
-                        index=int(c.index),
-                        label=label,
-                        device_id=c.stable_id,
-                        vid=c.vid,
-                        pid=c.pid,
-                        path=c.path or None,
-                        backend_hint=c.backend,
-                    )
+            out.append(
+                DetectedCamera(
+                    index=int(c.index),
+                    label=label,
+                    device_id=c.stable_id,
+                    vid=c.vid,
+                    pid=c.pid,
+                    path=c.path or None,
+                    backend_hint=c.backend,
                 )
-            return out
+            )
+        return out
 
     def _resolve_backend(self, backend: str | None) -> int:
         if backend is None:
