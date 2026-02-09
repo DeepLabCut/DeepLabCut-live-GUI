@@ -308,7 +308,13 @@ class CameraConfigDialog(QDialog):
     # UI setup
     # -------------------------------
     def _make_two_field_row(
-        self, left_label: str, left_widget: QWidget, right_label: str, right_widget: QWidget
+        self,
+        left_label: str,
+        left_widget: QWidget,
+        right_label: str,
+        right_widget: QWidget,
+        left_stretch: int = 1,
+        right_stretch: int = 1,
     ) -> QWidget:
         """Create a compact two-field row widget: (label+widget) (label+widget)."""
         row = QWidget()
@@ -317,16 +323,16 @@ class CameraConfigDialog(QDialog):
         layout.setSpacing(8)
 
         l1 = QLabel(left_label)
-        l1.setMinimumWidth(10)
+        l1.setMinimumWidth(30)
         layout.addWidget(l1, 0)
-        layout.addWidget(left_widget, 1)
+        layout.addWidget(left_widget, left_stretch)
 
-        layout.addSpacing(12)
+        layout.addSpacing(8)
 
         l2 = QLabel(right_label)
-        l2.setMinimumWidth(10)
+        l2.setMinimumWidth(30)
         layout.addWidget(l2, 0)
-        layout.addWidget(right_widget, 1)
+        layout.addWidget(right_widget, right_stretch)
 
         return row
 
@@ -626,7 +632,7 @@ class CameraConfigDialog(QDialog):
         scroll_contents.setMinimumWidth(scroll.viewport().width())
         scroll.viewport().installEventFilter(self)
         scroll_layout = QVBoxLayout(scroll_contents)
-        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setContentsMargins(0, 0, 0, 10)
         scroll_layout.setSpacing(10)
 
         # Give groups a sane size policy; scroll handles overflow
