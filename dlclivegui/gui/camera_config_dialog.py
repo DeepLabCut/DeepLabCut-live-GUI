@@ -996,6 +996,8 @@ class CameraConfigDialog(QDialog):
         new_cam = CameraSettings(
             name=detected.label,
             index=detected.index,
+            width=0,
+            height=0,
             fps=30.0,
             backend=backend,
             exposure=0,
