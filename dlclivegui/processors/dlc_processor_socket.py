@@ -1,6 +1,10 @@
+"""Example of socket-based DLC Processor with multi-client support and optional One-Euro filtering."""
+
+# dlclivegui/processors/dlc_processor_socket.py
 import logging
 import pickle
 import socket
+import sys
 import time
 from collections import deque
 from math import acos, atan2, copysign, degrees, pi, sqrt
@@ -12,11 +16,14 @@ import numpy as np
 import pandas as pd
 from dlclive import Processor  # type: ignore
 
-LOG = logging.getLogger("dlc_processor_socket")
-LOG.setLevel(logging.INFO)
-_handler = logging.StreamHandler()
-_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-LOG.addHandler(_handler)
+logger = logging.getLogger("dlc_processor_socket")
+logger.setLevel(logging.INFO)
+
+# Avoid duplicate handlers if module is imported multiple times
+if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(_handler)
 
 # Registry for GUI discovery
 PROCESSOR_REGISTRY = {}
@@ -76,10 +83,12 @@ class OneEuroFilter:
 # pragma: cover
 
 
-# @register_processor # Not registering base class in the GUI
 class BaseProcessorSocket(Processor):
     """
-    Patched version with safe Windows socket cleanup.
+    Base processor class that implements a socket server to help remote control recording in experiments.
+    Clients can connect to start/stop recording and receive real-time pose data.
+    - Socket server is OPTIONAL: you can instantiate without bind/authkey.
+    - Call start_server(...) to enable networking.
     """
 
     PROCESSOR_NAME = "Base Socket Processor"
@@ -88,32 +97,31 @@ class BaseProcessorSocket(Processor):
 
     def __init__(
         self,
-        bind=("0.0.0.0", 6000),
-        authkey=b"secret password",
+        bind=None,
+        authkey=None,
         use_perf_counter=False,
         save_original=False,
+        *,
+        start_server: bool = True,
+        socket_timeout: float = 1.0,
     ):
+        """
+        Args:
+            bind: Optional (host, port) tuple. If None, no server is started.
+            authkey: Optional auth key bytes. If None and bind is set, defaults to b"secret password".
+            use_perf_counter: If True, uses time.perf_counter; else time.time.
+            save_original: If True, stores raw pose arrays.
+            start_server: If True and bind is not None, starts the socket server in __init__.
+            socket_timeout: Socket poll/accept timeout.
+        """
         super().__init__()
         self.dlc_cfg = None  # DeepLabCut config for saving original pose data
 
-        self.address = bind
-        self.authkey = authkey
-        self.listener = Listener(bind, authkey=authkey)
-
-        # Important: grab underlying socket and enforce timeout
-        try:
-            self.listener._listener.settimeout(1.0)
-        except Exception:
-            pass
-
-        self._stop = Event()
-        self.conns = set()
-
-        Thread(target=self._accept_loop, daemon=True).start()
-
+        # Timing
         self.timing_func = time.perf_counter if use_perf_counter else time.time
         self.start_time = self.timing_func()
 
+        # Recording buffers
         self.time_stamp = deque()
         self.step = deque()
         self.frame_time = deque()
@@ -125,9 +133,20 @@ class BaseProcessorSocket(Processor):
 
         self._recording = Event()
         self._vid_recording = Event()
-
         self.curr_step = 0
         self.save_original = save_original
+
+        # Networking (optional)
+        self.address = bind
+        self.authkey = authkey if authkey is not None else (b"secret password" if bind is not None else None)
+        self.listener = None
+        self._socket_timeout = float(socket_timeout)
+
+        self._stop = Event()
+        self.conns = set()
+
+        if start_server and self.address is not None:
+            self.start_server(self.address, self.authkey, timeout=self._socket_timeout)
 
     # --------------------------------------------------------------------------------------
     # PROPERTIES
@@ -151,23 +170,49 @@ class BaseProcessorSocket(Processor):
         self.filename = f"{name}_dlc_processor_data.pkl"
 
     # --------------------------------------------------------------------------------------
+    # SERVER CONTROL
+    # --------------------------------------------------------------------------------------
+    def start_server(self, bind, authkey=b"secret password", *, timeout: float = 1.0):
+        """
+        Start the socket server if not already running.
+        Safe to call multiple times.
+        """
+        if self.listener is not None:
+            return
+
+        self.address = bind
+        self.authkey = authkey
+
+        self.listener = Listener(bind, authkey=authkey)
+        try:
+            # Underlying socket timeout
+            self.listener._listener.settimeout(timeout)
+        except Exception:
+            pass
+
+        Thread(target=self._accept_loop, daemon=True).start()
+        logger.info(f"Processor server started on {bind[0]}:{bind[1]}")
+
+    # --------------------------------------------------------------------------------------
     # ACCEPT LOOP
     # --------------------------------------------------------------------------------------
 
     def _accept_loop(self):
-        LOG.debug(f"DLC Processor listening on {self.address[0]}:{self.address[1]}")
+        if self.listener is None:
+            return
 
+        logger.debug(f"DLC Processor listening on {self.address[0]}:{self.address[1]}")
         while not self._stop.is_set():
             try:
                 conn = self.listener.accept()
 
                 # Apply safe timeout to client socket
                 try:
-                    conn._socket.settimeout(1.0)
+                    conn._socket.settimeout(self._socket_timeout)
                 except Exception:
                     pass
 
-                LOG.debug(f"Client connected from {self.listener.last_accepted}")
+                logger.debug(f"Client connected from {self.listener.last_accepted}")
                 self.conns.add(conn)
 
                 Thread(target=self._rx_loop, args=(conn,), daemon=True).start()
@@ -183,13 +228,11 @@ class BaseProcessorSocket(Processor):
     def _rx_loop(self, conn):
         while not self._stop.is_set():
             try:
-                # Force check for socket death
                 if conn.poll(0.1):
                     msg = conn.recv()
                     self._handle_client_message(msg)
                     continue
 
-                # Check if socket is still open
                 if getattr(conn._socket, "_closed", False):
                     raise EOFError
 
@@ -197,7 +240,7 @@ class BaseProcessorSocket(Processor):
                 break
 
         self._close_conn(conn)
-        LOG.info("Client disconnected")
+        logger.info("Client disconnected")
 
     # --------------------------------------------------------------------------------------
     # SOCKET CLOSE HELPERS
@@ -217,6 +260,8 @@ class BaseProcessorSocket(Processor):
 
     def _close_listener(self):
         """Close both outer and inner listener sockets."""
+        if self.listener is None:
+            return
         try:
             self.listener._listener.close()  # Raw OS socket
         except Exception:
@@ -225,6 +270,7 @@ class BaseProcessorSocket(Processor):
             self.listener.close()  # Python wrapper
         except Exception:
             pass
+        self.listener = None
 
     # --------------------------------------------------------------------------------------
     # HANDLE MESSAGES
@@ -243,16 +289,27 @@ class BaseProcessorSocket(Processor):
             self._vid_recording.set()
             self._clear_data_queues()
             self.curr_step = 0
-            LOG.info("Recording started")
+            logger.info("Recording started")
 
         elif cmd == "stop_recording":
             self._recording.clear()
             self._vid_recording.clear()
-            LOG.info("Recording stopped")
+            logger.info("Recording stopped")
 
         elif cmd == "save":
             file = msg.get("filename", self.filename)
             self.save(file)
+
+    # Optional public helpers (nice for non-socket usage)
+    def start_recording(self):
+        self._recording.set()
+        self._vid_recording.set()
+        self._clear_data_queues()
+        self.curr_step = 0
+
+    def stop_recording(self):
+        self._recording.clear()
+        self._vid_recording.clear()
 
     # --------------------------------------------------------------------------------------
     # STOP / SHUTDOWN
@@ -260,11 +317,10 @@ class BaseProcessorSocket(Processor):
 
     def stop(self):
         """Gracefully stop listener and clients."""
-
         if self._stop.is_set():
             return
 
-        LOG.info("Stopping processor...")
+        logger.info("Stopping processor...")
         self._stop.set()
 
         for conn in list(self.conns):
@@ -272,12 +328,12 @@ class BaseProcessorSocket(Processor):
 
         self._close_listener()
 
-        # Windows needs a longer delay for TIME_WAIT cleanup
-        if socket.gethostname().lower().endswith(".local") or True:
+        # Small Windows delay to help TIME_WAIT cleanup
+        if sys.platform.startswith("win"):
             if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-                time.sleep(0.3)  # increased from 0.1
+                time.sleep(0.3)
 
-        LOG.info("Processor stopped")
+        logger.info("Processor stopped")
 
     def __del__(self):
         try:
@@ -290,6 +346,10 @@ class BaseProcessorSocket(Processor):
     # --------------------------------------------------------------------------------------
 
     def broadcast(self, payload):
+        """Send payload to all connected clients. No-op if server isn't running."""
+        if not self.conns:
+            return
+
         dead = []
         for conn in list(self.conns):
             try:
@@ -332,7 +392,7 @@ class BaseProcessorSocket(Processor):
         self.step.clear()
         self.frame_time.clear()
         self.pose_time.clear()
-        if self.save_original:
+        if self.save_original and self.original_pose is not None:
             self.original_pose.clear()
 
     def save(self, file=None):
@@ -347,10 +407,10 @@ class BaseProcessorSocket(Processor):
                 self.save_original_pose(original_pose, save_dict["frame_time"], save_dict["time_stamp"], path2save)
             with open(path2save, "wb") as f:
                 pickle.dump(save_dict, f)
-            LOG.info(f"Saved data to {path2save}")
+            logger.info(f"Saved data to {path2save}")
             return 1
         except Exception as e:
-            LOG.error(f"Save failed: {e}")
+            logger.error(f"Save failed: {e}")
             return -1
 
     def save_original_pose(
@@ -371,7 +431,7 @@ class BaseProcessorSocket(Processor):
             pdindex = pd.MultiIndex.from_product([bodyparts, ["x", "y", "likelihood"]], names=["bodyparts", "coords"])
             pose_df = pd.DataFrame(poses, columns=pdindex)
         else:
-            LOG.warning("Bodyparts information not found in dlc_cfg; saving without column labels.")
+            logger.warning("Bodyparts information not found in dlc_cfg; saving without column labels.")
             pose_df = pd.DataFrame(poses)
         pose_df["frame_time"] = pose_frame_times
         pose_df["pose_time"] = pose_times
@@ -398,7 +458,7 @@ class BaseProcessorSocket(Processor):
 
 
 @register_processor
-class MyProcessorSocket(BaseProcessorSocket):
+class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):
     """
     DLC Processor with pose calculations (center, heading, head angle) and optional filtering.
 
@@ -410,8 +470,7 @@ class MyProcessorSocket(BaseProcessorSocket):
     Broadcasts: [timestamp, center_x, center_y, heading, head_angle]
     """
 
-    # Metadata for GUI discovery
-    PROCESSOR_NAME = "Mouse Pose Processor"
+    PROCESSOR_NAME = "Example Experiment Pose Processor"
     PROCESSOR_DESCRIPTION = "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
     PROCESSOR_PARAMS = {
         "bind": {
@@ -455,17 +514,6 @@ class MyProcessorSocket(BaseProcessorSocket):
         filter_kwargs: dict | None = None,
         save_original=False,
     ):
-        """
-        DLC Processor with multi-client broadcasting support.
-
-        Args:
-            bind: (host, port) tuple for server binding
-            authkey: Authentication key for client connections
-            use_perf_counter: If True, use time.perf_counter() instead of time.time()
-            use_filter: If True, apply One-Euro filter to pose data
-            filter_kwargs: Dict with OneEuroFilter parameters (min_cutoff, beta, d_cutoff)
-            save_original: If True, save raw pose arrays
-        """
         super().__init__(
             bind=bind,
             authkey=authkey,
@@ -473,19 +521,16 @@ class MyProcessorSocket(BaseProcessorSocket):
             save_original=save_original,
         )
 
-        # Additional data storage for processed values
         self.center_x = deque()
         self.center_y = deque()
         self.heading_direction = deque()
         self.head_angle = deque()
 
-        # Filtering
         self.use_filter = use_filter
         self.filter_kwargs = filter_kwargs if filter_kwargs is not None else {}
-        self.filters = None  # Will be initialized on first pose
+        self.filters = None
 
     def _clear_data_queues(self):
-        """Clear all data storage queues including pose-specific ones."""
         super()._clear_data_queues()
         self.center_x.clear()
         self.center_y.clear()
@@ -493,7 +538,6 @@ class MyProcessorSocket(BaseProcessorSocket):
         self.head_angle.clear()
 
     def _initialize_filters(self, vals):
-        """Initialize One-Euro filters for each output variable."""
         t0 = self.timing_func()
         self.filters = {
             "center_x": OneEuroFilter(t0, vals[0], **self.filter_kwargs),
@@ -501,20 +545,9 @@ class MyProcessorSocket(BaseProcessorSocket):
             "heading": OneEuroFilter(t0, vals[2], **self.filter_kwargs),
             "head_angle": OneEuroFilter(t0, vals[3], **self.filter_kwargs),
         }
-        LOG.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
+        logger.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
 
     def process(self, pose, **kwargs):
-        """
-        Process pose: calculate center/heading/head_angle, optionally filter, and broadcast.
-
-        Args:
-            pose: DLC pose array (N_keypoints x 3) with [x, y, confidence]
-            **kwargs: Additional metadata (frame_time, pose_time, etc.)
-
-        Returns:
-            pose: Unmodified pose array
-        """
-        # Save original pose if requested (from base class)
         if self.save_original:
             self.original_pose.append(pose.copy())
 
@@ -538,14 +571,14 @@ class MyProcessorSocket(BaseProcessorSocket):
         # Calculate head angle relative to body
         cross = body_axis[0] * head_axis[1] - head_axis[0] * body_axis[1]
         sign = copysign(1, cross)  # Positive when looking left
+        sign = copysign(1, cross)
         try:
             head_angle = acos(body_axis @ head_axis) * sign
         except ValueError:
             head_angle = 0
 
         # Calculate heading (body orientation)
-        heading = atan2(body_axis[1], body_axis[0])
-        heading = degrees(heading)
+        heading = degrees(atan2(body_axis[1], body_axis[0]))
 
         # Raw values (heading unwrapped for filtering)
         vals = [center[0], center[1], heading, head_angle]
@@ -556,18 +589,15 @@ class MyProcessorSocket(BaseProcessorSocket):
             if self.filters is None:
                 self._initialize_filters(vals)
 
-            # Filter each value (heading is filtered in unwrapped space)
-            filtered_vals = [
+            vals = [
                 self.filters["center_x"](curr_time, vals[0]),
                 self.filters["center_y"](curr_time, vals[1]),
                 self.filters["heading"](curr_time, vals[2]),
                 self.filters["head_angle"](curr_time, vals[3]),
             ]
-            vals = filtered_vals
 
         # Wrap heading to [0, 360) after filtering
         vals[2] = vals[2] % 360
-
         # Update step counter
         self.curr_step = self.curr_step + 1
 
@@ -583,42 +613,23 @@ class MyProcessorSocket(BaseProcessorSocket):
             if "pose_time" in kwargs:
                 self.pose_time.append(kwargs["pose_time"])
 
-        # Broadcast processed values to all connected clients
         payload = [curr_time, vals[0], vals[1], vals[2], vals[3]]
         self.broadcast(payload)
-
         return pose
 
     def get_data(self):
-        """Get logged data including base class data and processed values."""
-        # Get base class data
         save_dict = super().get_data()
-
-        # Add processed values
         save_dict["x_pos"] = np.array(self.center_x)
         save_dict["y_pos"] = np.array(self.center_y)
         save_dict["heading_direction"] = np.array(self.heading_direction)
         save_dict["head_angle"] = np.array(self.head_angle)
         save_dict["use_filter"] = self.use_filter
         save_dict["filter_kwargs"] = self.filter_kwargs
-
         return save_dict
 
 
 @register_processor
-class MyProcessorTorchmodelsSocket(BaseProcessorSocket):
-    """
-    DLC Processor with pose calculations (center, heading, head angle) and optional filtering.
-
-    Calculates:
-    - center: Weighted average of head keypoints
-    - heading: Body orientation (degrees)
-    - head_angle: Head rotation relative to body (radians)
-
-    Broadcasts: [timestamp, center_x, center_y, heading, head_angle]
-    """
-
-    # Metadata for GUI discovery
+class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):
     PROCESSOR_NAME = "Mouse Pose with less keypoints"
     PROCESSOR_DESCRIPTION = "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
     PROCESSOR_PARAMS = {
@@ -664,17 +675,6 @@ class MyProcessorTorchmodelsSocket(BaseProcessorSocket):
         save_original=False,
         p_cutoff=0.4,
     ):
-        """
-        DLC Processor with multi-client broadcasting support.
-
-        Args:
-            bind: (host, port) tuple for server binding
-            authkey: Authentication key for client connections
-            use_perf_counter: If True, use time.perf_counter() instead of time.time()
-            use_filter: If True, apply One-Euro filter to pose data
-            filter_kwargs: Dict with OneEuroFilter parameters (min_cutoff, beta, d_cutoff)
-            save_original: If True, save raw pose arrays
-        """
         super().__init__(
             bind=bind,
             authkey=authkey,
@@ -682,7 +682,6 @@ class MyProcessorTorchmodelsSocket(BaseProcessorSocket):
             save_original=save_original,
         )
 
-        # Additional data storage for processed values
         self.center_x = deque()
         self.center_y = deque()
         self.heading_direction = deque()
@@ -690,13 +689,11 @@ class MyProcessorTorchmodelsSocket(BaseProcessorSocket):
 
         self.p_cutoff = p_cutoff
 
-        # Filtering
         self.use_filter = use_filter
         self.filter_kwargs = filter_kwargs if filter_kwargs is not None else {}
-        self.filters = None  # Will be initialized on first pose
+        self.filters = None
 
     def _clear_data_queues(self):
-        """Clear all data storage queues including pose-specific ones."""
         super()._clear_data_queues()
         self.center_x.clear()
         self.center_y.clear()
@@ -704,7 +701,6 @@ class MyProcessorTorchmodelsSocket(BaseProcessorSocket):
         self.head_angle.clear()
 
     def _initialize_filters(self, vals):
-        """Initialize One-Euro filters for each output variable."""
         t0 = self.timing_func()
         self.filters = {
             "center_x": OneEuroFilter(t0, vals[0], **self.filter_kwargs),
@@ -712,20 +708,9 @@ class MyProcessorTorchmodelsSocket(BaseProcessorSocket):
             "heading": OneEuroFilter(t0, vals[2], **self.filter_kwargs),
             "head_angle": OneEuroFilter(t0, vals[3], **self.filter_kwargs),
         }
-        LOG.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
+        logger.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
 
     def process(self, pose, **kwargs):
-        """
-        Process pose: calculate center/heading/head_angle, optionally filter, and broadcast.
-
-        Args:
-            pose: DLC pose array (N_keypoints x 3) with [x, y, confidence]
-            **kwargs: Additional metadata (frame_time, pose_time, etc.)
-
-        Returns:
-            pose: Unmodified pose array
-        """
-        # Save original pose if requested (from base class)
         if self.save_original:
             self.original_pose.append(pose.copy())
 
@@ -757,36 +742,30 @@ class MyProcessorTorchmodelsSocket(BaseProcessorSocket):
         # Calculate head angle relative to body
         cross = body_axis[0] * head_axis[1] - head_axis[0] * body_axis[1]
         sign = copysign(1, cross)  # Positive when looking left
+        sign = copysign(1, cross)
         try:
             head_angle = acos(body_axis @ head_axis) * sign
         except ValueError:
             head_angle = 0
 
         # Calculate heading (body orientation)
-        heading = atan2(body_axis[1], body_axis[0])
-        heading = degrees(heading)
-
-        # Raw values (heading unwrapped for filtering)
+        heading = degrees(atan2(body_axis[1], body_axis[0]))
         vals = [center[0], center[1], heading, head_angle]
 
-        # Apply filtering if enabled
         curr_time = self.timing_func()
         if self.use_filter:
             if self.filters is None:
                 self._initialize_filters(vals)
 
-            # Filter each value (heading is filtered in unwrapped space)
-            filtered_vals = [
+            vals = [
                 self.filters["center_x"](curr_time, vals[0]),
                 self.filters["center_y"](curr_time, vals[1]),
                 self.filters["heading"](curr_time, vals[2]),
                 self.filters["head_angle"](curr_time, vals[3]),
             ]
-            vals = filtered_vals
 
         # Wrap heading to [0, 360) after filtering
         vals[2] = vals[2] % 360
-
         # Update step counter
         self.curr_step = self.curr_step + 1
 
@@ -802,25 +781,18 @@ class MyProcessorTorchmodelsSocket(BaseProcessorSocket):
             if "pose_time" in kwargs:
                 self.pose_time.append(kwargs["pose_time"])
 
-        # Broadcast processed values to all connected clients
         payload = [curr_time, vals[0], vals[1], vals[2], vals[3]]
         self.broadcast(payload)
-
         return pose
 
     def get_data(self):
-        """Get logged data including base class data and processed values."""
-        # Get base class data
         save_dict = super().get_data()
-
-        # Add processed values
         save_dict["x_pos"] = np.array(self.center_x)
         save_dict["y_pos"] = np.array(self.center_y)
         save_dict["heading_direction"] = np.array(self.heading_direction)
         save_dict["head_angle"] = np.array(self.head_angle)
         save_dict["use_filter"] = self.use_filter
         save_dict["filter_kwargs"] = self.filter_kwargs
-
         return save_dict
 
 
@@ -829,15 +801,7 @@ def get_available_processors():
     Get list of available processor classes.
 
     Returns:
-        dict: Dictionary mapping class names to processor info:
-            {
-                "ClassName": {
-                    "class": ProcessorClass,
-                    "name": "Display Name",
-                    "description": "Description text",
-                    "params": {...}
-                }
-            }
+        dict: Dictionary mapping registry keys to processor info.
     """
     return {
         name: {
@@ -855,11 +819,8 @@ def instantiate_processor(class_name, **kwargs):
     Instantiate a processor by class name with given parameters.
 
     Args:
-        class_name: Name of the processor class (e.g., "MyProcessorSocket")
-        **kwargs: Parameters to pass to the processor constructor
-
-    Returns:
-        Processor instance
+        class_name: Registry key (e.g., "MyProcessorSocket")
+        **kwargs: Constructor kwargs
 
     Raises:
         ValueError: If class_name is not in registry
