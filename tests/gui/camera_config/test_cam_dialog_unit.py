@@ -68,7 +68,36 @@ def test_apply_settings_updates_model(dialog, qtbot):
 
 
 @pytest.mark.gui
-def test_backend_control_disables_exposure_gain_for_opencv(dialog):
+def test_backend_control_disables_exposure_gain_for_opencv(dialog, monkeypatch):
+    from dlclivegui.cameras.base import SupportLevel
+
+    def fake_caps(name: str):
+        if name == "opencv":
+            return {
+                "set_exposure": SupportLevel.UNSUPPORTED,  # or UNSUPPORTED if you prefer
+                "set_gain": SupportLevel.UNSUPPORTED,
+                "set_resolution": SupportLevel.SUPPORTED,
+                "set_fps": SupportLevel.BEST_EFFORT,
+                "device_discovery": SupportLevel.SUPPORTED,
+                "stable_identity": SupportLevel.SUPPORTED,
+            }
+        if name == "basler":
+            return {
+                "set_exposure": SupportLevel.SUPPORTED,
+                "set_gain": SupportLevel.SUPPORTED,
+                "set_resolution": SupportLevel.SUPPORTED,
+                "set_fps": SupportLevel.SUPPORTED,
+                "device_discovery": SupportLevel.BEST_EFFORT,
+                "stable_identity": SupportLevel.SUPPORTED,
+            }
+        return {}
+
+    monkeypatch.setattr(
+        "dlclivegui.cameras.CameraFactory.backend_capabilities",
+        lambda backend_name: fake_caps(backend_name),
+        raising=False,
+    )
+
     dialog._update_controls_for_backend("opencv")
     assert not dialog.cam_exposure.isEnabled()
     assert not dialog.cam_gain.isEnabled()

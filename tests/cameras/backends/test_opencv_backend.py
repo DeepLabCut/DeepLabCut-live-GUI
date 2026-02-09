@@ -8,20 +8,45 @@ import dlclivegui.cameras.backends.opencv_backend as ob
 pytestmark = pytest.mark.unit
 
 
-def make_settings(index=0, fps=30.0, properties=None):
-    """Minimal settings object compatible with CameraBackend usage."""
+def make_settings(index=0, fps=30.0, properties=None, *, width=0, height=0, backend="opencv", name="Test"):
+    """Minimal settings object compatible with OpenCVCameraBackend usage."""
     if properties is None:
         properties = {}
-    return SimpleNamespace(index=index, fps=fps, properties=properties)
+    return SimpleNamespace(
+        index=index,
+        fps=fps,
+        properties=properties,
+        width=width,
+        height=height,
+        backend=backend,
+        name=name,
+    )
 
 
-def test_parse_resolution_defaults_and_invalid_values():
-    backend = ob.OpenCVCameraBackend(make_settings(properties={}))
-    assert backend._parse_resolution(None) == (720, 540)
-    assert backend._parse_resolution([1280, 720]) == (1280, 720)
-    assert backend._parse_resolution(("1920", "1080")) == (1920, 1080)
-    assert backend._parse_resolution(("bad", 123)) == (720, 540)
-    assert backend._parse_resolution("nope") == (720, 540)
+def test_requested_resolution_precedence_property_over_width_height():
+    settings = make_settings(
+        properties={"resolution": (800, 600)},
+        width=1280,
+        height=720,
+    )
+    backend = ob.OpenCVCameraBackend(settings)
+    assert backend._get_requested_resolution() == (800, 600)
+
+
+def test_requested_resolution_uses_width_height_when_no_property_resolution():
+    settings = make_settings(
+        properties={},
+        width=1280,
+        height=720,
+    )
+    backend = ob.OpenCVCameraBackend(settings)
+    assert backend._get_requested_resolution() == (1280, 720)
+
+
+def test_requested_resolution_defaults_when_no_request():
+    settings = make_settings(properties={}, width=0, height=0)
+    backend = ob.OpenCVCameraBackend(settings)
+    assert backend._get_requested_resolution() == (720, 540)
 
 
 def test_try_open_windows_fallback_to_msmf(monkeypatch, fake_capture_factory):
@@ -68,7 +93,7 @@ def test_open_does_not_use_alt_index_probe_when_disabled_in_code(monkeypatch, fa
 
     monkeypatch.setattr(ob.cv2, "VideoCapture", fake_videocapture)
 
-    settings = make_settings(index=0, fps=30.0, properties={"alt_index_probe": True})
+    settings = make_settings(index=0, fps=30.0, properties={"opencv": {"alt_index_probe": True}})
     backend = ob.OpenCVCameraBackend(settings)
     backend.open()
 
@@ -145,7 +170,6 @@ def test_configure_capture_sets_resolution_and_fps_non_faststart_windows(monkeyp
     backend._configure_capture()
 
     assert backend.actual_resolution == (800, 600)
-    assert settings.properties["resolution"] == (800, 600)
     assert backend.actual_fps is not None
     assert isinstance(backend.actual_fps, float)
 
@@ -157,18 +181,20 @@ def test_configure_capture_fast_start_does_not_force_resolution(monkeypatch, fak
     cap.props[ob.cv2.CAP_PROP_FRAME_WIDTH] = 1920.0
     cap.props[ob.cv2.CAP_PROP_FRAME_HEIGHT] = 1080.0
 
-    settings = make_settings(index=0, fps=30.0, properties={"resolution": (1280, 720), "opencv": {"fast_start": True}})
+    settings = make_settings(
+        index=0,
+        fps=30.0,
+        properties={"resolution": (1280, 720), "opencv": {"fast_start": True}},
+    )
     backend = ob.OpenCVCameraBackend(settings)
     backend._capture = cap
 
     backend._configure_capture()
 
-    assert backend.actual_resolution == (1920, 1080)
+    # Fast-start still applies requested resolution, just without verification
+    assert backend.actual_resolution == (1280, 720)
 
-    # Fast-start does not configure the camera; it only reports the current mode.
-    # Keep "resolution" as the requested intent (do not overwrite with observed values).
-    # Settings are applied later when user clicks "Apply settings" in the UI,
-    # so it's important not to overwrite them here.
+    # Requested intent must remain unchanged
     assert settings.properties["resolution"] == (1280, 720)
 
 
@@ -181,9 +207,7 @@ def test_configure_capture_applies_only_safe_numeric_properties(monkeypatch, fak
         fps=30.0,
         properties={
             "resolution": (640, 480),
-            "api": "ANY",
-            "fast_start": False,
-            "alt_index_probe": False,
+            "opencv": {"api": "ANY", "fast_start": False, "alt_index_probe": False},
             str(int(getattr(ob.cv2, "CAP_PROP_GAIN", 14))): 7,
             "999": 123,
             "not-a-number": 1,
@@ -213,3 +237,20 @@ def test_close_and_stop_release_capture(fake_capture_factory):
     backend.stop()
     assert backend._capture is None
     assert cap2.released is True
+
+
+def test_configure_capture_uses_width_height_when_no_legacy_resolution(monkeypatch, fake_capture_factory):
+    monkeypatch.setattr(ob.platform, "system", lambda: "Windows")
+
+    cap = fake_capture_factory(opened=True, backend_name="DSHOW")
+    cap.props[ob.cv2.CAP_PROP_FRAME_WIDTH] = 640.0
+    cap.props[ob.cv2.CAP_PROP_FRAME_HEIGHT] = 480.0
+    cap.props[ob.cv2.CAP_PROP_FPS] = 30.0
+
+    settings = make_settings(index=0, fps=30.0, properties={}, width=1024, height=768)
+    backend = ob.OpenCVCameraBackend(settings)
+    backend._capture = cap
+
+    backend._configure_capture()
+
+    assert backend.actual_resolution == (1024, 768)

@@ -645,7 +645,15 @@ class CameraConfigDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.scan_started.connect(lambda _: setattr(self, "_dialog_active", True))
         self.scan_finished.connect(lambda: setattr(self, "_dialog_active", False))
-        for sb in (self.cam_fps, self.cam_crop_x0, self.cam_crop_y0, self.cam_crop_x1, self.cam_crop_y1):
+        for sb in (
+            self.cam_fps,
+            self.cam_crop_x0,
+            self.cam_crop_y0,
+            self.cam_crop_x1,
+            self.cam_crop_y1,
+            self.cam_width,
+            self.cam_height,
+        ):
             if hasattr(sb, "valueChanged"):
                 sb.valueChanged.connect(lambda _=None: self.apply_settings_btn.setEnabled(True))
         self.cam_rotation.currentIndexChanged.connect(lambda _: self.apply_settings_btn.setEnabled(True))

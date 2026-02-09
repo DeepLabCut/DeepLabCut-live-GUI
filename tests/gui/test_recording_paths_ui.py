@@ -139,7 +139,7 @@ def test_processor_overrides_session_name_and_persists(window, start_all_spy, mo
     # Arrange window state so processor status logic runs
     window._dlc_active = True
     window._dlc_initialized = True
-    window.auto_record_checkbox.setChecked(True)
+    window.allow_processor_ctrl_checkbox.setChecked(True)
 
     # Patch start_recording to avoid preview start/timers
     monkeypatch.setattr(window, "_start_recording", lambda: window._start_multi_camera_recording())
