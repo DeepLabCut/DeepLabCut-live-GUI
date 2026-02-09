@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
@@ -54,6 +55,24 @@ def reset_backends():
     _BACKEND_REGISTRY.clear()
 
 
+class SupportLevel(str, Enum):
+    """Allows definition of backend capabilities for UI"""
+
+    UNSUPPORTED = "unsupported"
+    BEST_EFFORT = "best_effort"
+    SUPPORTED = "supported"
+
+
+DEFAULT_CAPABILITIES: dict[str, SupportLevel] = {
+    "set_resolution": SupportLevel.UNSUPPORTED,
+    "set_fps": SupportLevel.UNSUPPORTED,
+    "set_exposure": SupportLevel.UNSUPPORTED,
+    "set_gain": SupportLevel.UNSUPPORTED,
+    "device_discovery": SupportLevel.UNSUPPORTED,
+    "stable_identity": SupportLevel.UNSUPPORTED,
+}
+
+
 class CameraBackend(ABC):
     """Abstract base class for camera backends."""
 
@@ -72,6 +91,11 @@ class CameraBackend(ABC):
     def is_available(cls) -> bool:
         """Return whether the backend can be used on this system."""
         return True
+
+    @classmethod
+    def static_capabilities(cls) -> dict[str, SupportLevel]:
+        """Return a dict describing supported features for UI purposes."""
+        return DEFAULT_CAPABILITIES
 
     @classmethod
     def options_key(cls) -> str:

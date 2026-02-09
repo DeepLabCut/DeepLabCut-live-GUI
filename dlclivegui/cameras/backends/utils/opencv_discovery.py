@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ....config import CameraSettings
+    pass
 
 import cv2
 
@@ -84,40 +84,6 @@ def _try_import_enumerator():
         return enumerate_cameras
     except Exception:
         return None
-
-
-def _try_rebind_opencv(self, cam: CameraSettings) -> bool:
-    if (cam.backend or "").lower() != "opencv":
-        return False
-
-    opt = (cam.properties or {}).get("opencv", {})
-    device_id = opt.get("device_id")
-    vid = opt.get("device_vid")
-    pid = opt.get("device_pid")
-    name = opt.get("device_name")
-
-    if not (device_id or (vid and pid) or name):
-        return False
-
-    import cv2
-
-    from dlclivegui.cameras.backends.utils.opencv_discovery import list_cameras, select_camera
-
-    cams = list_cameras(cv2.CAP_ANY)
-    chosen = select_camera(
-        cams,
-        prefer_stable_id=device_id,
-        prefer_vid_pid=(int(vid), int(pid)) if vid and pid else None,
-        prefer_name_substr=name,
-        fallback_index=int(cam.index),
-    )
-    if not chosen:
-        return False
-
-    cam.index = int(chosen.index)
-    opt["device_id"] = chosen.stable_id
-    cam.properties["opencv"] = opt
-    return True
 
 
 def list_cameras(
@@ -309,10 +275,12 @@ def apply_mode_with_verification(
     warmup_grabs: int = 3,
 ) -> ModeResult:
     """
-    Attempt to configure the camera as close as possible to request.
+    Attempt to set width/height (and fps if provided) and read back actual values.
 
-    Returns ModeResult(accepted=True) if we achieved a “close enough” match based on policy.
+    `accepted` only reflects internal constraints used during probing (e.g. strict aspect),
+    not whether the backend should accept the result. The backend enforces its own policy.
     """
+
     req_w, req_h = int(request.width), int(request.height)
     req_fps = float(request.fps or 0.0)
     req_aspect = _aspect(req_w, req_h)

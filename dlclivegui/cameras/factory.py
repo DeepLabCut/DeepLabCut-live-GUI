@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from os import environ
 
 from ..config import CameraSettings
-from .base import _BACKEND_REGISTRY, CameraBackend
+from .base import _BACKEND_REGISTRY, DEFAULT_CAPABILITIES, CameraBackend, SupportLevel
 
 logger = logging.getLogger(__name__)
 _BACKEND_IMPORT_ERRORS: dict[str, str] = {}
@@ -149,6 +149,23 @@ class CameraFactory:
                 continue
             availability[name] = backend_cls.is_available()
         return availability
+
+    @staticmethod
+    def backend_capabilities(backend: str) -> dict[str, SupportLevel]:
+        """
+        Return the backend’s static capabilities (safe to call even if backend unavailable).
+        """
+        _ensure_backends_loaded()
+        key = (backend or "opencv").lower()
+        try:
+            backend_cls = CameraFactory._resolve_backend(key)
+        except Exception:
+            return dict(DEFAULT_CAPABILITIES)
+
+        try:
+            return backend_cls.static_capabilities()
+        except Exception:
+            return dict(DEFAULT_CAPABILITIES)
 
     @staticmethod
     def detect_cameras(

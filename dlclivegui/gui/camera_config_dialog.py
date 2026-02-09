@@ -118,7 +118,9 @@ class CameraLoadWorker(QThread):
         self._cam = copy.deepcopy(cam)
         # Make first-time opening snappier by allowing backend fast-path if supported
         if isinstance(self._cam.properties, dict):
-            self._cam.properties.setdefault("fast_start", True)
+            ns = self._cam.properties.setdefault(self._cam.backend.lower(), {})
+            if isinstance(ns, dict):
+                ns.setdefault("fast_start", True)
         self._cancel = False
         self._backend: CameraBackend | None = None
 
@@ -216,6 +218,8 @@ class CameraConfigDialog(QDialog):
         payload.update(
             {
                 "enabled": bool(self.cam_enabled_checkbox.isChecked()),
+                "width": int(self.cam_width.value()),
+                "height": int(self.cam_height.value()),
                 "fps": float(self.cam_fps.value()),
                 "exposure": int(self.cam_exposure.value()),
                 "gain": float(self.cam_gain.value()),
@@ -387,6 +391,17 @@ class CameraConfigDialog(QDialog):
         self.cam_backend_label = QLabel("opencv")
         self.settings_form.addRow("Backend:", self.cam_backend_label)
 
+        self.cam_width = QSpinBox()
+        self.cam_width.setRange(0, 10000)  # 0 -> auto
+        self.cam_width.setValue(0)
+        self.cam_width.setSpecialValueText("Auto")
+        self.settings_form.addRow("Width:", self.cam_width)
+        self.cam_height = QSpinBox()
+        self.cam_height.setRange(0, 10000)  # 0 -> auto
+        self.cam_height.setValue(0)
+        self.cam_height.setSpecialValueText("Auto")
+        self.settings_form.addRow("Height:", self.cam_height)
+
         self.cam_fps = QDoubleSpinBox()
         self.cam_fps.setRange(1.0, 240.0)
         self.cam_fps.setDecimals(2)
@@ -521,6 +536,8 @@ class CameraConfigDialog(QDialog):
         self.cam_fps.setKeyboardTracking(False)
         fields = [
             self.cam_enabled_checkbox,
+            self.cam_width,
+            self.cam_height,
             self.cam_fps,
             self.cam_exposure,
             self.cam_gain,
@@ -552,7 +569,15 @@ class CameraConfigDialog(QDialog):
         # Intercept Enter in FPS and crop spinboxes
         if event.type() == QEvent.KeyPress and isinstance(event, QKeyEvent):
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                if obj in (self.cam_fps, self.cam_crop_x0, self.cam_crop_y0, self.cam_crop_x1, self.cam_crop_y1):
+                if obj in (
+                    self.cam_fps,
+                    self.cam_width,
+                    self.cam_height,
+                    self.cam_crop_x0,
+                    self.cam_crop_y0,
+                    self.cam_crop_x1,
+                    self.cam_crop_y1,
+                ):
                     # Commit any pending text → value
                     try:
                         obj.interpretText()
@@ -660,19 +685,36 @@ class CameraConfigDialog(QDialog):
         return backend_name.lower() == "opencv"
 
     def _update_controls_for_backend(self, backend_name: str) -> None:
-        # FIXME in camera backend ABC, we should have a method to query supported features
-        is_opencv = self._is_backend_opencv(backend_name)
-        self.cam_exposure.setEnabled(not is_opencv)
-        self.cam_gain.setEnabled(not is_opencv)
+        backend_key = (backend_name or "opencv").lower()
+        caps = CameraFactory.backend_capabilities(backend_key)
 
-        tip = ""
-        if is_opencv:
-            tip = (
-                "Exposure/Gain are not configurable via the generic OpenCV backend and "
-                "will be ignored by most UVC devices."
-            )
-        self.cam_exposure.setToolTip(tip)
-        self.cam_gain.setToolTip(tip)
+        def apply(widget, feature: str, label: str, *, allow_best_effort: bool = True):
+            level = caps.get(feature, None)
+            if level is None:
+                widget.setEnabled(False)
+                widget.setToolTip(f"{label} is not supported by this backend.")
+                return
+
+            if level.value == "unsupported":
+                widget.setEnabled(False)
+                widget.setToolTip(f"{label} is not supported by the {backend_key} backend.")
+            elif level.value == "best_effort":
+                widget.setEnabled(bool(allow_best_effort))
+                widget.setToolTip(f"{label} is best-effort in {backend_key}. Some cameras/drivers may ignore it.")
+            else:  # supported
+                widget.setEnabled(True)
+                widget.setToolTip("")
+
+        # Resolution controls
+        apply(self.cam_width, "set_resolution", "Resolution")
+        apply(self.cam_height, "set_resolution", "Resolution")
+
+        # FPS
+        apply(self.cam_fps, "set_fps", "Frame rate")
+
+        # Exposure / Gain
+        apply(self.cam_exposure, "set_exposure", "Exposure")
+        apply(self.cam_gain, "set_gain", "Gain")
 
     def _refresh_available_cameras(self) -> None:
         """Refresh the list of available cameras asynchronously."""
@@ -785,6 +827,11 @@ class CameraConfigDialog(QDialog):
 
         # FPS: for OpenCV, treat FPS changes as requiring reopen.
         if self._is_backend_opencv(cam.backend):
+            prev_w = getattr(self._preview_backend.settings, "width", None)
+            prev_h = getattr(self._preview_backend.settings, "height", None)
+            if isinstance(prev_w, int) and isinstance(prev_h, int):
+                if (cam.width, cam.height) != (prev_w, prev_h):
+                    return True
             prev_fps = getattr(self._preview_backend.settings, "fps", None)
             if isinstance(prev_fps, (int, float)) and abs(cam.fps - float(prev_fps)) > 0.1:
                 return True
@@ -861,6 +908,8 @@ class CameraConfigDialog(QDialog):
         self.cam_index_label.setText(str(cam.index))
         self.cam_backend_label.setText(cam.backend)
         self._update_controls_for_backend(cam.backend)
+        self.cam_width.setValue(cam.width)
+        self.cam_height.setValue(cam.height)
         self.cam_fps.setValue(cam.fps)
         self.cam_exposure.setValue(cam.exposure)
         self.cam_gain.setValue(cam.gain)
@@ -875,6 +924,8 @@ class CameraConfigDialog(QDialog):
 
     def _write_form_to_cam(self, cam: CameraSettings) -> None:
         cam.enabled = bool(self.cam_enabled_checkbox.isChecked())
+        cam.width = int(self.cam_width.value())
+        cam.height = int(self.cam_height.value())
         cam.fps = float(self.cam_fps.value())
         cam.exposure = int(self.cam_exposure.value())
         cam.gain = float(self.cam_gain.value())
@@ -890,6 +941,8 @@ class CameraConfigDialog(QDialog):
         self.cam_device_id_label.setText("")
         self.cam_index_label.setText("")
         self.cam_backend_label.setText("")
+        self.cam_width.setValue(0)
+        self.cam_height.setValue(0)
         self.cam_fps.setValue(30.0)
         self.cam_exposure.setValue(0)
         self.cam_gain.setValue(0.0)
@@ -988,9 +1041,18 @@ class CameraConfigDialog(QDialog):
 
     def _apply_camera_settings(self) -> None:
         try:
-            for sb in (self.cam_fps, self.cam_crop_x0, self.cam_crop_y0, self.cam_crop_x1, self.cam_crop_y1):
+            for sb in (
+                self.cam_fps,
+                self.cam_crop_x0,
+                self.cam_width,
+                self.cam_height,
+                self.cam_crop_y0,
+                self.cam_crop_x1,
+                self.cam_crop_y1,
+            ):
                 try:
-                    sb.interpretText()
+                    if hasattr(sb, "interpretText"):
+                        sb.interpretText()
                 except Exception:
                     pass
             if self._current_edit_index is None:
@@ -1192,6 +1254,17 @@ class CameraConfigDialog(QDialog):
                 self._append_status("Opening camera…")
                 self._preview_backend = CameraFactory.create(cam_settings)
                 self._preview_backend.open()
+
+                req_w = getattr(self._preview_backend.settings, "width", None)
+                req_h = getattr(self._preview_backend.settings, "height", None)
+                actual_res = getattr(self._preview_backend, "actual_resolution", None)
+                if req_w and req_h:
+                    if actual_res:
+                        self._append_status(
+                            f"Requested resolution: {req_w}x{req_h}, actual: {actual_res[0]}x{actual_res[1]}"
+                        )
+                    else:
+                        self._append_status(f"Requested resolution: {req_w}x{req_h}, actual: unknown")
 
                 opened_sttngs = getattr(self._preview_backend, "settings", None)
                 if isinstance(opened_sttngs, CameraSettings):

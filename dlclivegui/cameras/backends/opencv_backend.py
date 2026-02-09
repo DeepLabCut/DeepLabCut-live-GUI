@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
-from ..base import CameraBackend, register_backend
+from ..base import CameraBackend, SupportLevel, register_backend
 from ..factory import DetectedCamera
 from .utils.opencv_discovery import (
     ModeRequest,
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 AspectPolicy = Literal["strict", "prefer", "ignore"]
 FourCC = Literal["MJPG", "YUY2", "NV12", "H264", "XRGB", "BGR3"]  # expand as needed
+ResolutionPolicy = Literal["warn", "strict", "accept"]
 
 
 class OpenCVOptions(BaseModel):
@@ -48,6 +49,8 @@ class OpenCVOptions(BaseModel):
     alt_index_probe: bool = False
 
     # --- format negotiation policy ---
+    resolution_policy: ResolutionPolicy = "warn"
+    persist_last_applied_resolution: bool = False
     enforce_aspect: AspectPolicy = "strict"
     aspect_tol: float = Field(default=0.01, ge=0.0, le=0.2)  # 1% default
     area_tol: float = Field(default=0.05, ge=0.0, le=1.0)  # 5% default
@@ -98,7 +101,10 @@ class OpenCVCameraBackend(CameraBackend):
     def __init__(self, settings):
         super().__init__(settings)
         self._capture: cv2.VideoCapture | None = None
-        self._resolution: tuple[int, int] = self._parse_resolution(settings.properties.get("resolution"))
+
+        # do not overwrite based on actual resolution
+        self._requested_resolution: tuple[int, int] = self._get_requested_resolution()
+
         opt = self.parse_options(settings)
         self._fast_start: bool = opt.fast_start
         self._alt_index_probe: bool = opt.alt_index_probe
@@ -117,6 +123,21 @@ class OpenCVCameraBackend(CameraBackend):
     @classmethod
     def options_schema(cls) -> dict:
         return OpenCVOptions.model_json_schema()
+
+    @classmethod
+    def static_capabilities(cls) -> dict[str, SupportLevel]:
+        caps = super().static_capabilities()
+        caps.update(
+            {
+                "set_resolution": SupportLevel.SUPPORTED,
+                "set_fps": SupportLevel.BEST_EFFORT,
+                "set_exposure": SupportLevel.BEST_EFFORT,
+                "set_gain": SupportLevel.BEST_EFFORT,
+                "device_discovery": SupportLevel.SUPPORTED,
+                "stable_identity": SupportLevel.SUPPORTED,
+            }
+        )
+        return caps
 
     # ----------------------------
     # Public API
@@ -238,16 +259,60 @@ class OpenCVCameraBackend(CameraBackend):
                 self._capture = None
             time.sleep(0.02 if platform.system() == "Windows" else 0.0)
 
-    def _parse_resolution(self, resolution) -> tuple[int, int]:
-        if resolution is None:
-            return (720, 540)
-        if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
+    def _get_requested_resolution(self) -> tuple[int, int]:
+        """Return (w, h) requested by settings with precedence."""
+        # 1) legacy / explicit property
+        props = self.settings.properties or {}
+        res = props.get("resolution", None)
+        if isinstance(res, (list, tuple)) and len(res) == 2:
             try:
-                return (int(resolution[0]), int(resolution[1]))
-            except (ValueError, TypeError):
-                logger.debug(f"Invalid resolution values: {resolution}, defaulting to 720x540")
-                return (720, 540)
+                w, h = int(res[0]), int(res[1])
+                if w > 0 and h > 0:
+                    return (w, h)
+            except Exception:
+                pass
+
+        # 2) canonical GUI fields
+        try:
+            w, h = int(getattr(self.settings, "width", 0)), int(getattr(self.settings, "height", 0))
+            if w > 0 and h > 0:
+                return (w, h)
+        except Exception:
+            pass
+
+        # 3) default
         return (720, 540)
+
+    def _apply_resolution_policy(
+        self,
+        *,
+        requested: tuple[int, int],
+        actual: tuple[int, int] | None,
+        policy: ResolutionPolicy,
+    ) -> None:
+        """Enforce mismatch policy (warn/strict/accept)."""
+        if not actual:
+            if policy == "strict":
+                logger.warning("Cannot verify resolution; proceeding in strict mode")
+            return
+
+        req_w, req_h = requested
+        act_w, act_h = actual
+
+        if req_w <= 0 or req_h <= 0:
+            return  # no request
+
+        if (act_w, act_h) == (req_w, req_h):
+            return
+
+        msg = f"Resolution mismatch: requested {req_w}x{req_h}, got {act_w}x{act_h}"
+
+        if policy == "strict":
+            raise RuntimeError(msg)
+        elif policy == "warn":
+            logger.warning(msg)
+        else:  # "accept"
+            logger.info(msg)
 
     def _preferred_backend_flag(self, backend: str | None) -> int:
         """Resolve preferred backend by platform."""
@@ -296,42 +361,66 @@ class OpenCVCameraBackend(CameraBackend):
         if not self._capture:
             return
 
-        # --- FOURCC (Windows benefits from setting this first) ---
+        opt = self.parse_options(self.settings)
+
+        # --- FOURCC ---
         self._codec_str = self._read_codec_string()
         logger.info(f"Camera using codec: {self._codec_str}")
 
-        # --- Resolution ---
-        req_w, req_h = self._resolution
-        enforce_aspect = self.parse_options(self.settings).enforce_aspect
+        # --- Resolution (explicit request) ---
+        req_w, req_h = self._requested_resolution
+        enforce_aspect = opt.enforce_aspect
 
         if not self._fast_start:
+            # verified, robust path
             result = apply_mode_with_verification(
                 self._capture,
                 ModeRequest(
-                    width=req_w, height=req_h, fps=float(self.settings.fps or 0.0), enforce_aspect=enforce_aspect
+                    width=req_w,
+                    height=req_h,
+                    fps=float(self.settings.fps or 0.0),
+                    enforce_aspect=enforce_aspect,
+                    aspect_tol=float(opt.aspect_tol),
+                    area_tol=float(opt.area_tol),
                 ),
             )
             self._actual_width, self._actual_height, self._actual_fps = result.width, result.height, result.fps
         else:
+            # fast-start: best-effort set (no heavy negotiation)
+            if req_w > 0 and req_h > 0:
+                try:
+                    self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(req_w))
+                    self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(req_h))
+                except Exception as exc:
+                    logger.debug(f"Fast-start resolution set failed: {exc}")
+
             self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
             self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        # if self._actual_width and self._actual_height:
-        #     self.settings.properties["resolution"] = (self._actual_width, self._actual_height)
 
-        # Handle mismatch quickly with a few known-good UVC fallbacks (Windows only)
-        if platform.system() == "Windows" and self._actual_width and self._actual_height:
-            if (self._actual_width, self._actual_height) != (req_w, req_h) and not self._fast_start:
-                logger.warning(
-                    f"Resolution mismatch: requested {req_w}x{req_h}, got {self._actual_width}x{self._actual_height}"
-                )
-                self._resolution = (self._actual_width or req_w, self._actual_height or req_h)
-        else:
-            # Non-Windows: accept actual as-is
-            self._resolution = (self._actual_width or req_w, self._actual_height or req_h)
+        actual_res = None
+        if (self._actual_width or 0) > 0 and (self._actual_height or 0) > 0:
+            actual_res = (int(self._actual_width), int(self._actual_height))
 
-        logger.info(f"Camera configured with resolution: {self._resolution[0]}x{self._resolution[1]}")
+        logger.info(
+            "Resolution requested=%sx%s, actual=%s",
+            req_w,
+            req_h,
+            f"{actual_res[0]}x{actual_res[1]}" if actual_res else "unknown",
+        )
 
-        # --- FPS ---
+        # enforce mismatch policy (warn/strict/accept)
+        self._apply_resolution_policy(
+            requested=(req_w, req_h),
+            actual=actual_res,
+            policy=opt.resolution_policy,
+        )
+
+        # optional persistence of "what worked"
+        if opt.persist_last_applied_resolution and actual_res:
+            ns = self.settings.properties.setdefault(self.OPTIONS_KEY, {})
+            ns["last_applied_resolution"] = [actual_res[0], actual_res[1]]
+
+        # --- FPS (keep your current logic) ---
         requested_fps = float(self.settings.fps or 0.0)
         if not self._fast_start and requested_fps > 0.0:
             current_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
@@ -342,20 +431,10 @@ class OpenCVCameraBackend(CameraBackend):
         else:
             self._actual_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
 
-        # Log any mismatch
         if self._actual_fps and requested_fps and abs(self._actual_fps - requested_fps) > 0.1:
             logger.warning(f"FPS mismatch: requested {requested_fps:.2f}, got {self._actual_fps:.2f}")
 
-        # Always reconcile the settings with what we measured/obtained
-        # if self._actual_fps:
-        #     self.settings.fps = float(self._actual_fps)
         logger.info(f"Camera configured with FPS: {self._actual_fps:.2f}")
-        logger.debug(
-            "CAP_PROP_FPS requested=%s set_ok=%s get=%s",
-            self.settings.fps,
-            self._capture.set(cv2.CAP_PROP_FPS, float(self.settings.fps)),
-            self._capture.get(cv2.CAP_PROP_FPS),
-        )
 
         # --- Extra properties (safe whitelist) ---
         for prop, value in self.settings.properties.items():

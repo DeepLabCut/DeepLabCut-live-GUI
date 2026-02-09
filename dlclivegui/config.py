@@ -17,6 +17,8 @@ class CameraSettings(BaseModel):
     index: int = 0
     fps: float = 25.0
     backend: str = "opencv"
+    width: int = 720
+    height: int = 540
     exposure: int = 500  # 0=auto else µs
     gain: float = 10.0  # 0.0=auto else value
     crop_x0: int = 0
