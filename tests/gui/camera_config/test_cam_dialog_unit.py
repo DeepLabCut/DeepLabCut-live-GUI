@@ -32,6 +32,7 @@ def dialog(qtbot, monkeypatch):
 
 
 # ---------------------- UNIT TESTS ----------------------
+@pytest.mark.gui
 def test_add_camera_populates_working_settings(dialog, qtbot):
     dialog._on_scan_result([DetectedCamera(index=2, label="ExtraCam2")])
     dialog.available_cameras_list.setCurrentRow(0)
@@ -43,6 +44,7 @@ def test_add_camera_populates_working_settings(dialog, qtbot):
     assert added.name == "ExtraCam2"
 
 
+@pytest.mark.gui
 def test_remove_camera(dialog, qtbot):
     dialog.active_cameras_list.setCurrentRow(0)
     qtbot.mouseClick(dialog.remove_camera_btn, Qt.LeftButton)
@@ -51,6 +53,7 @@ def test_remove_camera(dialog, qtbot):
     assert dialog._working_settings.cameras[0].name == "CamB"
 
 
+@pytest.mark.gui
 def test_apply_settings_updates_model(dialog, qtbot):
     dialog.active_cameras_list.setCurrentRow(0)
 
@@ -64,6 +67,7 @@ def test_apply_settings_updates_model(dialog, qtbot):
     assert updated.gain == 12.0
 
 
+@pytest.mark.gui
 def test_backend_control_disables_exposure_gain_for_opencv(dialog):
     dialog._update_controls_for_backend("opencv")
     assert not dialog.cam_exposure.isEnabled()

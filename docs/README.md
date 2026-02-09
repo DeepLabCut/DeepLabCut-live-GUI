@@ -7,7 +7,6 @@ Welcome to the DeepLabCut-live-GUI documentation! This index will help you find 
 ### New Users
 1. **[README](../README.md)** - Project overview, installation, and quick start
 2. **[User Guide](user_guide.md)** - Step-by-step walkthrough of all features
-3. **[Installation Guide](install.md)** - Detailed installation instructions
 
 ### Quick References
 - **[ARAVIS_QUICK_REF](../ARAVIS_QUICK_REF.md)** - Aravis backend quick reference

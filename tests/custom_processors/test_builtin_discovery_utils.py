@@ -1,4 +1,4 @@
-# tests/custom_processors/test_builtin_receptor.py
+# tests/custom_processors/test_builtin_discovery_utils.py
 from __future__ import annotations
 
 import importlib

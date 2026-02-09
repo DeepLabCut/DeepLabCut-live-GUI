@@ -1,3 +1,4 @@
+<!-- FIXME @C-Achard out of date -->
 # DeepLabCut Live GUI
 
 A modern PySide6 GUI for running [DeepLabCut-live](https://github.com/DeepLabCut/DeepLabCut-live) experiments with real-time pose estimation. The application streams frames from industrial or consumer cameras, performs DLCLive inference, and records high-quality video with synchronized pose data.
