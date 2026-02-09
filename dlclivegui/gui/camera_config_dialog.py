@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStyle,
     QTextEdit,
@@ -95,6 +97,40 @@ class DetectCamerasWorker(QThread):
                 progress_cb=self.progress.emit,
             )
             self.result.emit(cams)
+        except Exception as exc:
+            self.error.emit(f"{type(exc).__name__}: {exc}")
+        finally:
+            self.finished.emit()
+
+
+class CameraProbeWorker(QThread):
+    """Request a quick device probe (open/close) without starting preview."""
+
+    progress = Signal(str)
+    success = Signal(object)  # emits CameraSettings
+    error = Signal(str)
+    finished = Signal()
+
+    def __init__(self, cam: CameraSettings, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._cam = copy.deepcopy(cam)
+        self._cancel = False
+
+        # Enable fast_start when supported (backend reads namespace options)
+        if isinstance(self._cam.properties, dict):
+            ns = self._cam.properties.setdefault(self._cam.backend.lower(), {})
+            if isinstance(ns, dict):
+                ns.setdefault("fast_start", True)
+
+    def request_cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            self.progress.emit("Probing device defaults…")
+            if self._cancel:
+                return
+            self.success.emit(self._cam)
         except Exception as exc:
             self.error.emit(f"{type(exc).__name__}: {exc}")
         finally:
@@ -193,6 +229,10 @@ class CameraConfigDialog(QDialog):
         self._loader: CameraLoadWorker | None = None
         self._loading_active: bool = False
 
+        # UI elements for eventFilter
+        self._settings_scroll: QScrollArea | None = None
+        self._settings_scroll_contents: QWidget | None = None
+
         self._setup_ui()
         self._populate_from_settings()
         self._connect_signals()
@@ -267,6 +307,52 @@ class CameraConfigDialog(QDialog):
     # -------------------------------
     # UI setup
     # -------------------------------
+    def _make_two_field_row(
+        self, left_label: str, left_widget: QWidget, right_label: str, right_widget: QWidget
+    ) -> QWidget:
+        """Create a compact two-field row widget: (label+widget) (label+widget)."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        l1 = QLabel(left_label)
+        l1.setMinimumWidth(10)
+        layout.addWidget(l1, 0)
+        layout.addWidget(left_widget, 1)
+
+        layout.addSpacing(12)
+
+        l2 = QLabel(right_label)
+        l2.setMinimumWidth(10)
+        layout.addWidget(l2, 0)
+        layout.addWidget(right_widget, 1)
+
+        return row
+
+    def _set_detected_labels(self, cam: CameraSettings) -> None:
+        """Update the read-only detected labels based on cam.properties[backend]."""
+        backend = (cam.backend or "").lower()
+        props = cam.properties if isinstance(cam.properties, dict) else {}
+        ns = props.get(backend, {}) if isinstance(props.get(backend, None), dict) else {}
+
+        det_res = ns.get("detected_resolution")
+        det_fps = ns.get("detected_fps")
+
+        if isinstance(det_res, (list, tuple)) and len(det_res) == 2:
+            try:
+                w, h = int(det_res[0]), int(det_res[1])
+                self.detected_resolution_label.setText(f"{w}×{h}")
+            except Exception:
+                self.detected_resolution_label.setText("—")
+        else:
+            self.detected_resolution_label.setText("—")
+
+        if isinstance(det_fps, (int, float)) and float(det_fps) > 0:
+            self.detected_fps_label.setText(f"{float(det_fps):.2f}")
+        else:
+            self.detected_fps_label.setText("—")
+
     def _setup_ui(self) -> None:
         # Main layout for the dialog
         main_layout = QVBoxLayout(self)
@@ -372,7 +458,10 @@ class CameraConfigDialog(QDialog):
 
         settings_group = QGroupBox("Camera Settings")
         self.settings_form = QFormLayout(settings_group)
+        self.settings_form.setVerticalSpacing(6)
+        self.settings_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
+        # --- Basic toggles/labels ---
         self.cam_enabled_checkbox = QCheckBox("Enabled")
         self.cam_enabled_checkbox.setChecked(True)
         self.settings_form.addRow(self.cam_enabled_checkbox)
@@ -383,6 +472,7 @@ class CameraConfigDialog(QDialog):
 
         self.cam_device_id_label = QLabel("")
         self.cam_device_id_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.cam_device_id_label.setWordWrap(True)
         self.settings_form.addRow("Device ID:", self.cam_device_id_label)
 
         self.cam_index_label = QLabel("0")
@@ -391,46 +481,61 @@ class CameraConfigDialog(QDialog):
         self.cam_backend_label = QLabel("opencv")
         self.settings_form.addRow("Backend:", self.cam_backend_label)
 
+        # --- Detected read-only labels (do NOT change requested values) ---
+        self.detected_resolution_label = QLabel("—")
+        self.detected_resolution_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.settings_form.addRow("Detected res:", self.detected_resolution_label)
+
+        self.detected_fps_label = QLabel("—")
+        self.detected_fps_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.settings_form.addRow("Detected FPS:", self.detected_fps_label)
+
+        # --- Requested resolution controls (Auto = 0) ---
         self.cam_width = QSpinBox()
-        self.cam_width.setRange(0, 10000)  # 0 -> auto
+        self.cam_width.setRange(0, 10000)
         self.cam_width.setValue(0)
         self.cam_width.setSpecialValueText("Auto")
-        self.settings_form.addRow("Width:", self.cam_width)
+
         self.cam_height = QSpinBox()
-        self.cam_height.setRange(0, 10000)  # 0 -> auto
+        self.cam_height.setRange(0, 10000)
         self.cam_height.setValue(0)
         self.cam_height.setSpecialValueText("Auto")
-        self.settings_form.addRow("Height:", self.cam_height)
 
+        res_row = self._make_two_field_row("W", self.cam_width, "H", self.cam_height)
+        self.settings_form.addRow("Resolution:", res_row)
+
+        # --- FPS + Rotation grouped (CREATE cam_rotation ONCE) ---
         self.cam_fps = QDoubleSpinBox()
         self.cam_fps.setRange(1.0, 240.0)
         self.cam_fps.setDecimals(2)
         self.cam_fps.setValue(30.0)
-        self.settings_form.addRow("Frame Rate:", self.cam_fps)
 
+        self.cam_rotation = QComboBox()
+        self.cam_rotation.addItem("0°", 0)
+        self.cam_rotation.addItem("90°", 90)
+        self.cam_rotation.addItem("180°", 180)
+        self.cam_rotation.addItem("270°", 270)
+
+        fps_rot_row = self._make_two_field_row("FPS", self.cam_fps, "Rot", self.cam_rotation)
+        self.settings_form.addRow("Capture:", fps_rot_row)
+
+        # --- Exposure + Gain grouped ---
         self.cam_exposure = QSpinBox()
         self.cam_exposure.setRange(0, 1000000)
         self.cam_exposure.setValue(0)
         self.cam_exposure.setSpecialValueText("Auto")
         self.cam_exposure.setSuffix(" μs")
-        self.settings_form.addRow("Exposure:", self.cam_exposure)
 
         self.cam_gain = QDoubleSpinBox()
         self.cam_gain.setRange(0.0, 100.0)
         self.cam_gain.setValue(0.0)
         self.cam_gain.setSpecialValueText("Auto")
         self.cam_gain.setDecimals(2)
-        self.settings_form.addRow("Gain:", self.cam_gain)
 
-        # Rotation
-        self.cam_rotation = QComboBox()
-        self.cam_rotation.addItem("0° (default)", 0)
-        self.cam_rotation.addItem("90°", 90)
-        self.cam_rotation.addItem("180°", 180)
-        self.cam_rotation.addItem("270°", 270)
-        self.settings_form.addRow("Rotation:", self.cam_rotation)
+        exp_gain_row = self._make_two_field_row("Exp", self.cam_exposure, "Gain", self.cam_gain)
+        self.settings_form.addRow("Analog:", exp_gain_row)
 
-        # Crop settings
+        # --- Crop row (keep as you already have it) ---
         crop_widget = QWidget()
         crop_layout = QHBoxLayout(crop_widget)
         crop_layout.setContentsMargins(0, 0, 0, 0)
@@ -459,22 +564,21 @@ class CameraConfigDialog(QDialog):
         self.cam_crop_y1.setSpecialValueText("y1:None")
         crop_layout.addWidget(self.cam_crop_y1)
 
-        self.settings_form.addRow("Crop (x0,y0,x1,y1):", crop_widget)
+        self.settings_form.addRow("Crop:", crop_widget)
 
         self.apply_settings_btn = QPushButton("Apply Settings")
         self.apply_settings_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.apply_settings_btn.setEnabled(False)
         self.settings_form.addRow(self.apply_settings_btn)
 
-        # Preview button
         self.preview_btn = QPushButton("Start Preview")
         self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.preview_btn.setEnabled(False)
         self.settings_form.addRow(self.preview_btn)
 
-        right_layout.addWidget(settings_group)
-
-        # Preview widget
+        # ----------------------------
+        # Preview group
+        # ----------------------------
         self.preview_group = QGroupBox("Camera Preview")
         preview_layout = QVBoxLayout(self.preview_group)
 
@@ -484,9 +588,8 @@ class CameraConfigDialog(QDialog):
         self.preview_label.setMaximumSize(400, 300)
         self.preview_label.setStyleSheet("background-color: #1a1a1a; color: #888;")
         preview_layout.addWidget(self.preview_label)
-        self.preview_label.installEventFilter(self)  # For resize events
+        self.preview_label.installEventFilter(self)
 
-        # Small, read-only status console for loader messages
         self.preview_status = QTextEdit()
         self.preview_status.setReadOnly(True)
         self.preview_status.setFixedHeight(45)
@@ -498,7 +601,6 @@ class CameraConfigDialog(QDialog):
         self.preview_status.setFont(font)
         preview_layout.addWidget(self.preview_status)
 
-        # Overlay label for loading glass pane
         self._loading_overlay = QLabel(self.preview_group)
         self._loading_overlay.setVisible(False)
         self._loading_overlay.setAlignment(Qt.AlignCenter)
@@ -506,9 +608,37 @@ class CameraConfigDialog(QDialog):
         self._loading_overlay.setText("Loading camera…")
 
         self.preview_group.setVisible(False)
-        right_layout.addWidget(self.preview_group)
 
-        right_layout.addStretch(1)
+        # ----------------------------
+        # Scroll area to prevent squishing
+        # ----------------------------
+        scroll = QScrollArea()
+        # scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+
+        scroll_contents = QWidget()
+        scroll_contents.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        self._settings_scroll = scroll
+        self._settings_scroll_contents = scroll_contents
+        scroll_contents.setMinimumWidth(scroll.viewport().width())
+        scroll.viewport().installEventFilter(self)
+        scroll_layout = QVBoxLayout(scroll_contents)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(10)
+
+        # Give groups a sane size policy; scroll handles overflow
+        settings_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.preview_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+
+        scroll_layout.addWidget(settings_group)
+        scroll_layout.addWidget(self.preview_group)
+        scroll_layout.addStretch(1)
+
+        scroll.setWidget(scroll_contents)
+        right_layout.addWidget(scroll)
 
         # Dialog buttons
         button_layout = QHBoxLayout()
@@ -560,6 +690,22 @@ class CameraConfigDialog(QDialog):
             self._position_loading_overlay()
 
     def eventFilter(self, obj, event):
+        # --- Keep scroll contents locked to viewport width (prevents horizontal scrolling/clipping) ---
+        if (
+            hasattr(self, "_settings_scroll")
+            and self._settings_scroll is not None
+            and obj is self._settings_scroll.viewport()
+            and event.type() == QEvent.Type.Resize
+        ):
+            try:
+                if self._settings_scroll_contents is not None:
+                    vw = self._settings_scroll.viewport().width()
+                    # Set minimum width to viewport width to force wrapping/reflow instead of horizontal overflow
+                    self._settings_scroll_contents.setMinimumWidth(vw)
+            except Exception:
+                pass
+            return False  # allow normal processing
+
         # Keep your existing overlay resize handling
         if obj is self.available_cameras_list and event.type() == event.Type.Resize:
             if self._scan_overlay and self._scan_overlay.isVisible():
@@ -929,6 +1075,7 @@ class CameraConfigDialog(QDialog):
         self.cam_crop_x1.setValue(cam.crop_x1)
         self.cam_crop_y1.setValue(cam.crop_y1)
         self.apply_settings_btn.setEnabled(True)
+        self._set_detected_labels(cam)
 
     def _write_form_to_cam(self, cam: CameraSettings) -> None:
         cam.enabled = bool(self.cam_enabled_checkbox.isChecked())
@@ -960,6 +1107,81 @@ class CameraConfigDialog(QDialog):
         self.cam_crop_x1.setValue(0)
         self.cam_crop_y1.setValue(0)
         self.apply_settings_btn.setEnabled(False)
+
+    def _start_probe_for_camera(self, cam: CameraSettings) -> None:
+        """Start a quick probe to fill detected labels without changing requested fields."""
+        # Don’t probe if preview is active/loading
+        if self._loading_active:
+            return
+
+        # If we already have detected values, just show them
+        self._set_detected_labels(cam)
+        backend = (cam.backend or "").lower()
+        props = cam.properties if isinstance(cam.properties, dict) else {}
+        ns = props.get(backend, {}) if isinstance(props.get(backend, None), dict) else {}
+        if "detected_resolution" in ns and "detected_fps" in ns:
+            return
+
+        # Start probe worker (settings will be opened in GUI thread for safety)
+        self._probe_worker = CameraProbeWorker(cam, self)
+        self._probe_worker.progress.connect(self._append_status)
+        self._probe_worker.success.connect(self._on_probe_success)
+        self._probe_worker.error.connect(self._on_probe_error)
+        self._probe_worker.finished.connect(self._on_probe_finished)
+        self._probe_worker.start()
+
+    def _on_probe_success(self, payload) -> None:
+        """Open/close quickly to read actual_resolution/actual_fps and store as detected_*."""
+        if not isinstance(payload, CameraSettings):
+            return
+        cam_settings = payload
+
+        try:
+            be = CameraFactory.create(cam_settings)
+            be.open()
+
+            actual_res = getattr(be, "actual_resolution", None)
+            actual_fps = getattr(be, "actual_fps", None)
+
+            # Close immediately (this is a probe only)
+            try:
+                be.close()
+            except Exception:
+                pass
+
+            # Write detected values back into the *working* model (not requested fields)
+            # Find the matching camera in working settings by index+backend (or device_id if present)
+            backend = (cam_settings.backend or "").lower()
+            for i, c in enumerate(self._working_settings.cameras):
+                if (c.backend or "").lower() == backend and int(c.index) == int(cam_settings.index):
+                    if not isinstance(c.properties, dict):
+                        c.properties = {}
+                    ns = c.properties.setdefault(backend, {})
+                    if not isinstance(ns, dict):
+                        ns = {}
+                        c.properties[backend] = ns
+
+                    if actual_res and isinstance(actual_res, (list, tuple)) and len(actual_res) == 2:
+                        ns["detected_resolution"] = [int(actual_res[0]), int(actual_res[1])]
+                    elif actual_res and isinstance(actual_res, tuple) and len(actual_res) == 2:
+                        ns["detected_resolution"] = [int(actual_res[0]), int(actual_res[1])]
+
+                    if isinstance(actual_fps, (int, float)) and float(actual_fps) > 0:
+                        ns["detected_fps"] = float(actual_fps)
+
+                    # If this camera is currently selected, refresh labels
+                    if self._current_edit_index == i:
+                        self._set_detected_labels(c)
+                    break
+
+        except Exception as exc:
+            self._append_status(f"[Probe] Error: {exc}")
+
+    def _on_probe_error(self, msg: str) -> None:
+        self._append_status(f"[Probe] {msg}")
+
+    def _on_probe_finished(self) -> None:
+        self._probe_worker = None
 
     def _add_selected_camera(self) -> None:
         row = self.available_cameras_list.currentRow()
@@ -1014,6 +1236,7 @@ class CameraConfigDialog(QDialog):
         self.active_cameras_list.setCurrentItem(new_item)
         self._refresh_camera_labels()
         self._update_button_states()
+        self._start_probe_for_camera(new_cam)
 
     def _remove_selected_camera(self) -> None:
         row = self.active_cameras_list.currentRow()
