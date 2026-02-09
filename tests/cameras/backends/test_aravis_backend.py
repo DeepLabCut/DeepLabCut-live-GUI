@@ -65,9 +65,31 @@ class FakeAravis:
             self.payload = 100
             self.stream = None  # should be a FakeStream
 
+            # Device default "features"
+            self._features_int = {
+                "Width": 1920,
+                "Height": 1080,
+            }
+            self._features_float = {
+                "AcquisitionFrameRate": 30.0,
+            }
+
         @classmethod
         def new(cls, device_id):
             return cls(device_id)
+
+        # GenICam feature-style access used by backend
+        def set_integer(self, name: str, value: int):
+            self._features_int[name] = int(value)
+
+        def get_integer(self, name: str) -> int:
+            return int(self._features_int[name])
+
+        def set_float(self, name: str, value: float):
+            self._features_float[name] = float(value)
+
+        def get_float(self, name: str) -> float:
+            return float(self._features_float[name])
 
         # Pixel format
         def set_pixel_format(self, fmt):
@@ -96,9 +118,10 @@ class FakeAravis:
         def get_gain(self):
             return self._gain
 
-        # FPS
+        # FPS (legacy methods still used by your backend)
         def set_frame_rate(self, v):
             self._fps = v
+            self._features_float["AcquisitionFrameRate"] = float(v)
 
         def get_frame_rate(self):
             return self._fps
@@ -118,7 +141,6 @@ class FakeAravis:
             return self.payload
 
         def create_stream(self, *_):
-            # In tests we often set self.stream in advance
             return self.stream
 
         def start_acquisition(self):
@@ -179,14 +201,26 @@ class FakeStream:
 class Settings:
     """Mimic the settings object used by CameraBackend."""
 
-    def __init__(self, properties=None, index=0, exposure=0, gain=0.0, fps=None, name="Test"):
+    def __init__(
+        self,
+        properties=None,
+        index=0,
+        exposure=0,
+        gain=0.0,
+        fps=None,
+        width=0,
+        height=0,
+        name="Test",
+    ):
         self.properties = properties or {}
         self.index = index
         self.exposure = exposure
         self.gain = gain
         self.fps = fps
+        self.width = width
+        self.height = height
         self.name = name
-        self.backend = "aravis"  # for completeness
+        self.backend = "aravis"
 
 
 def make_backend(settings, buffers):
@@ -404,7 +438,7 @@ def test_open_success_pushes_initial_buffers_and_configures(monkeypatch):
 
     # Use a pixel_format and runtime settings to test configuration calls
     settings = Settings(
-        properties={"pixel_format": "Mono8", "n_buffers": 4},  # speed up test
+        properties={"aravis": {"pixel_format": "Mono8", "n_buffers": 4}},  # speed up test
         index=0,
         fps=15.0,
         exposure=1200.0,
@@ -428,6 +462,64 @@ def test_open_success_pushes_initial_buffers_and_configures(monkeypatch):
 
     # Device label should be resolved
     assert be.device_name().startswith("FakeVendor FakeModel")
+    be.close()
+
+
+@pytest.mark.unit
+@pytest.mark.integration
+def test_open_device_default_resolution_sets_actual_resolution(monkeypatch):
+    import dlclivegui.cameras.backends.aravis_backend as ar
+
+    monkeypatch.setattr(ar, "ARAVIS_AVAILABLE", True, raising=False)
+    monkeypatch.setattr(ar, "Aravis", FakeAravis, raising=False)
+
+    cam = FakeAravis.Camera("dev0")
+    cam.set_integer("Width", 1600)
+    cam.set_integer("Height", 900)
+    stream = FakeStream([])
+    cam.stream = stream
+
+    monkeypatch.setattr(FakeAravis.Camera, "new", staticmethod(lambda device_id: cam))
+
+    settings = Settings(
+        properties={"aravis": {"pixel_format": "Mono8", "n_buffers": 1}},
+        index=0,
+        width=0,
+        height=0,
+    )
+    be = AravisCameraBackend(settings)
+    be.open()
+
+    assert be.actual_resolution == (1600, 900)
+    be.close()
+
+
+@pytest.mark.unit
+@pytest.mark.integration
+def test_open_requested_resolution_applies_and_reports_actual(monkeypatch):
+    import dlclivegui.cameras.backends.aravis_backend as ar
+
+    monkeypatch.setattr(ar, "ARAVIS_AVAILABLE", True, raising=False)
+    monkeypatch.setattr(ar, "Aravis", FakeAravis, raising=False)
+
+    cam = FakeAravis.Camera("dev0")
+    stream = FakeStream([])
+    cam.stream = stream
+
+    monkeypatch.setattr(FakeAravis.Camera, "new", staticmethod(lambda device_id: cam))
+
+    settings = Settings(
+        properties={"aravis": {"pixel_format": "Mono8", "n_buffers": 1}},
+        index=0,
+        width=640,
+        height=480,
+    )
+    be = AravisCameraBackend(settings)
+    be.open()
+
+    assert cam.get_integer("Width") == 640
+    assert cam.get_integer("Height") == 480
+    assert be.actual_resolution == (640, 480)
     be.close()
 
 

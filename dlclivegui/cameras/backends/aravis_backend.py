@@ -1,14 +1,16 @@
 """Aravis backend for GenICam cameras."""
 
+# dlclivegui/cameras/backends/aravis_backend.py
 from __future__ import annotations
 
 import logging
 import time
+from typing import ClassVar
 
 import cv2
 import numpy as np
 
-from ..base import CameraBackend, register_backend
+from ..base import CameraBackend, SupportLevel, register_backend
 
 LOG = logging.getLogger(__name__)
 
@@ -28,22 +30,63 @@ except Exception:  # pragma: no cover - optional dependency
 class AravisCameraBackend(CameraBackend):
     """Capture frames from GenICam-compatible devices via Aravis."""
 
+    OPTIONS_KEY: ClassVar[str] = "aravis"
+
     def __init__(self, settings):
         super().__init__(settings)
-        props = settings.properties
-        self._camera_id: str | None = props.get("camera_id")
-        self._pixel_format: str = props.get("pixel_format", "Mono8")
-        self._timeout: int = int(props.get("timeout", 2000000))  # microseconds
-        self._n_buffers: int = int(props.get("n_buffers", 10))
+
+        props = settings.properties if isinstance(settings.properties, dict) else {}
+        ns = props.get(self.OPTIONS_KEY, {})
+        if not isinstance(ns, dict):
+            ns = {}
+
+        self._camera_id: str | None = ns.get("camera_id") or props.get("camera_id")
+        self._pixel_format: str = ns.get("pixel_format") or props.get("pixel_format", "Mono8")
+        self._timeout: int = int(ns.get("timeout", props.get("timeout", 2_000_000)))
+        self._n_buffers: int = int(ns.get("n_buffers", props.get("n_buffers", 10)))
+
+        # Resolution handling
+        self._requested_resolution: tuple[int, int] | None = self._get_requested_resolution_or_none()
+        self._actual_width: int | None = None
+        self._actual_height: int | None = None
+        self._actual_fps: float | None = None
 
         self._camera = None
         self._stream = None
         self._device_label: str | None = None
 
+    @property
+    def actual_resolution(self) -> tuple[int, int] | None:
+        """Return the actual resolution of the camera after opening."""
+        if self._actual_width is not None and self._actual_height is not None:
+            return (self._actual_width, self._actual_height)
+        return None
+
+    @property
+    def actual_fps(self) -> float | None:
+        """Return the actual frame rate of the camera after opening."""
+        return self._actual_fps
+
     @classmethod
     def is_available(cls) -> bool:
         """Check if Aravis is available on this system."""
         return ARAVIS_AVAILABLE
+
+    @classmethod
+    def static_capabilities(cls) -> dict[str, SupportLevel]:
+        """Return a dict describing supported features for UI purposes."""
+        caps = super().static_capabilities()
+        caps.update(
+            {
+                "set_resolution": SupportLevel.SUPPORTED,
+                "set_fps": SupportLevel.SUPPORTED,
+                "set_exposure": SupportLevel.SUPPORTED,
+                "set_gain": SupportLevel.SUPPORTED,
+                "device_discovery": SupportLevel.SUPPORTED,
+                "stable_identity": SupportLevel.SUPPORTED,
+            }
+        )
+        return caps
 
     @classmethod
     def get_device_count(cls) -> int:
@@ -61,54 +104,54 @@ class AravisCameraBackend(CameraBackend):
             return -1
 
     def open(self) -> None:
-        """Open the Aravis camera device."""
-        if not ARAVIS_AVAILABLE:  # pragma: no cover - optional dependency
-            raise RuntimeError(
-                "The 'aravis' library is required for the Aravis backend. "
-                "Install it via your system package manager (e.g., 'sudo apt install gir1.2-aravis-0.8' on Ubuntu)."
-            )
+        if not ARAVIS_AVAILABLE:
+            raise RuntimeError("Aravis library not available")
 
-        # Update device list
         Aravis.update_device_list()
         n_devices = Aravis.get_n_devices()
-
         if n_devices == 0:
             raise RuntimeError("No Aravis cameras detected")
 
-        # Open camera by ID or index
         if self._camera_id:
             self._camera = Aravis.Camera.new(self._camera_id)
-            if self._camera is None:
-                raise RuntimeError(f"Failed to open camera with ID '{self._camera_id}'")
         else:
             index = int(self.settings.index or 0)
             if index < 0 or index >= n_devices:
                 raise RuntimeError(f"Camera index {index} out of range for {n_devices} Aravis device(s)")
             camera_id = Aravis.get_device_id(index)
             self._camera = Aravis.Camera.new(camera_id)
-            if self._camera is None:
-                raise RuntimeError(f"Failed to open camera at index {index}")
 
-        # Get device information for label
+        if self._camera is None:
+            raise RuntimeError("Failed to open Aravis camera")
+
         self._device_label = self._resolve_device_label()
 
-        # Configure camera
         self._configure_pixel_format()
+        self._configure_resolution()
         self._configure_exposure()
         self._configure_gain()
         self._configure_frame_rate()
 
-        # Create stream
+        # Capture actual resolution even when using defaults
+        try:
+            self._actual_width = int(self._camera.get_integer("Width"))
+            self._actual_height = int(self._camera.get_integer("Height"))
+        except Exception:
+            pass
+
+        try:
+            self._actual_fps = float(self._camera.get_float("AcquisitionFrameRate"))
+        except Exception:
+            self._actual_fps = None
+
         self._stream = self._camera.create_stream(None, None)
         if self._stream is None:
             raise RuntimeError("Failed to create Aravis stream")
 
-        # Push buffers to stream
         payload_size = self._camera.get_payload()
         for _ in range(self._n_buffers):
             self._stream.push_buffer(Aravis.Buffer.new_allocate(payload_size))
 
-        # Start acquisition
         self._camera.start_acquisition()
 
     def read(self) -> tuple[np.ndarray, float]:
@@ -135,6 +178,10 @@ class AravisCameraBackend(CameraBackend):
             width = buffer.get_image_width()
             height = buffer.get_image_height()
             pixel_format = buffer.get_image_pixel_format()
+
+            if self._actual_width is None or self._actual_height is None:
+                self._actual_width = int(width)
+                self._actual_height = int(height)
 
             # Convert to numpy array
             if pixel_format == Aravis.PIXEL_FORMAT_MONO_8:
@@ -214,6 +261,61 @@ class AravisCameraBackend(CameraBackend):
     # ------------------------------------------------------------------
     # Configuration helpers
     # ------------------------------------------------------------------
+    def _get_requested_resolution_or_none(self) -> tuple[int, int] | None:
+        """
+        Return (w, h) if user explicitly requested a resolution.
+        Return None to keep device defaults.
+        """
+        props = self.settings.properties if isinstance(self.settings.properties, dict) else {}
+
+        legacy = props.get("resolution")
+        if isinstance(legacy, (list, tuple)) and len(legacy) == 2:
+            try:
+                w, h = int(legacy[0]), int(legacy[1])
+                if w > 0 and h > 0:
+                    return (w, h)
+            except Exception:
+                pass
+
+        try:
+            w = int(getattr(self.settings, "width", 0) or 0)
+            h = int(getattr(self.settings, "height", 0) or 0)
+            if w > 0 and h > 0:
+                return (w, h)
+        except Exception:
+            pass
+
+        return None
+
+    def _configure_resolution(self) -> None:
+        """
+        Apply width/height only if explicitly requested.
+        If None, keep device defaults.
+        """
+        if self._camera is None:
+            return
+
+        req = self._requested_resolution
+        if req is None:
+            LOG.info("Resolution: using device default.")
+            return
+
+        req_w, req_h = req
+        try:
+            self._camera.set_integer("Width", int(req_w))
+            self._camera.set_integer("Height", int(req_h))
+
+            aw = int(self._camera.get_integer("Width"))
+            ah = int(self._camera.get_integer("Height"))
+            self._actual_width = aw
+            self._actual_height = ah
+
+            if (aw, ah) != (req_w, req_h):
+                LOG.warning(f"Resolution mismatch: requested {req_w}x{req_h}, got {aw}x{ah}")
+            else:
+                LOG.info(f"Resolution set to {aw}x{ah}")
+        except Exception as exc:
+            LOG.warning(f"Failed to set resolution to {req_w}x{req_h}: {exc}")
 
     def _configure_pixel_format(self) -> None:
         """Configure the camera pixel format."""
