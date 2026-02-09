@@ -1,5 +1,6 @@
 """Video recording support using the vidgear library."""
 
+# dlclivegui/services/video_recorder.py
 from __future__ import annotations
 
 import json
@@ -162,7 +163,7 @@ class VideoRecorder:
 
         try:
             assert self._queue is not None
-            self._queue.put(frame, block=False)
+            self._queue.put((frame, timestamp), block=False)
         except queue.Full:
             with self._stats_lock:
                 self._dropped_frames += 1
@@ -175,7 +176,6 @@ class VideoRecorder:
             return False
         with self._stats_lock:
             self._frames_enqueued += 1
-            self._frame_timestamps.append(timestamp)
         return True
 
     def stop(self) -> None:
@@ -248,7 +248,7 @@ class VideoRecorder:
                 if item is _SENTINEL:
                     self._queue.task_done()
                     break
-                frame = item
+                frame, timestamp = item
                 start = time.perf_counter()
                 try:
                     assert self._writer is not None
@@ -267,6 +267,7 @@ class VideoRecorder:
                     self._total_latency += elapsed
                     self._last_latency = elapsed
                     self._written_times.append(now)
+                    self._frame_timestamps.append(timestamp)
                     if now - self._last_log_time >= 1.0:
                         self._compute_write_fps_locked()
                         self._queue.qsize()
