@@ -322,23 +322,59 @@ class CameraConfigDialog(QDialog):
         right_widget: QWidget,
         left_stretch: int = 1,
         right_stretch: int = 1,
+        *,
+        label_min_width: int = 30,
     ) -> QWidget:
-        """Create a compact two-field row widget: (label+widget) (label+widget)."""
+        """Create a compact two-field row widget: (label+value) (label+value), with clear label/value styling."""
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        l1 = QLabel(left_label)
-        l1.setMinimumWidth(30)
-        layout.addWidget(l1, 0)
-        layout.addWidget(left_widget, left_stretch)
+        def style_key(lbl: QLabel):
+            # Muted label styling
+            lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            # lbl.setMinimumWidth(label_min_width)
+            # lbl.setStyleSheet(
+            #     """
+            #     QLabel {
+            #         color: rgba(255,255,255,0.65);   /* works OK on dark themes */
+            #         color: palette(mid);             /* fallback on light themes */
+            #         font-weight: 500;
+            #     }
+            #     """
+            # )
 
-        layout.addSpacing(8)
+        def style_value(w: QWidget):
+            # Make values stand out (works for QLabel and custom value widgets like ElidingPathLabel)
+            # Using QSS that gives a subtle "field" look.
+            w.setStyleSheet(
+                """
+                QLabel, ElidingPathLabel {
+                    font-weight: 700;
+                    color: palette(text);
+                    background-color: rgba(127,127,127,0.12);
+                    border: 1px solid rgba(127,127,127,0.18);
+                    border-radius: 6px;
+                    padding: 2px 6px;
+                }
+                """
+            )
+            if isinstance(w, QLabel):
+                w.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        l1 = QLabel(left_label)
+        style_key(l1)
+        style_value(left_widget)
 
         l2 = QLabel(right_label)
-        l2.setMinimumWidth(30)
-        layout.addWidget(l2, 0)
+        style_key(l2)
+        style_value(right_widget)
+
+        layout.addWidget(l1, 1)
+        layout.addWidget(left_widget, left_stretch)
+        layout.addSpacing(8)
+        layout.addWidget(l2, 1)
         layout.addWidget(right_widget, right_stretch)
 
         return row
@@ -499,11 +535,9 @@ class CameraConfigDialog(QDialog):
         # --- Detected read-only labels (do NOT change requested values) ---
         self.detected_resolution_label = QLabel("—")
         self.detected_resolution_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        # self.settings_form.addRow("Detected res:", self.detected_resolution_label)
 
         self.detected_fps_label = QLabel("—")
         self.detected_fps_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        # self.settings_form.addRow("Detected FPS:", self.detected_fps_label)
         detected_row = self._make_two_field_row(
             "Detected resolution:", self.detected_resolution_label, "Detected FPS:", self.detected_fps_label
         )
