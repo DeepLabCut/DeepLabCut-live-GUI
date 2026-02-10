@@ -466,7 +466,7 @@ class CameraConfigDialog(QDialog):
         self.cam_backend_label = QLabel("opencv")
         # self.settings_form.addRow("Backend:", self.cam_backend_label)
         id_backend_row = _make_two_field_row(
-            "Index:", self.cam_index_label, "Backend:", self.cam_backend_label, key_width=120
+            "Index:", self.cam_index_label, "Backend:", self.cam_backend_label, key_width=120, gap=15
         )
         self.settings_form.addRow(id_backend_row)
 
@@ -1124,6 +1124,7 @@ class CameraConfigDialog(QDialog):
         self.cam_index_label.setText("")
         self.cam_backend_label.setText("")
         self.detected_resolution_label.setText("—")
+        self.detected_fps_label.setText("—")
         self.cam_width.setValue(0)
         self.cam_height.setValue(0)
         self.cam_fps.setValue(0.0)
