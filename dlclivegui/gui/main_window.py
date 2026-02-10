@@ -72,6 +72,7 @@ from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import format_dlc_stats
 from ..utils.utils import FPSTracker
 from .camera_config_dialog import CameraConfigDialog
+from .misc.drag_spinbox import ScrubSpinBox
 from .misc.eliding_label import ElidingPathLabel
 from .recording_manager import RecordingManager
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
@@ -636,25 +637,25 @@ class DLCLiveMainWindow(QMainWindow):
         form.addRow(row_widget)
 
         bbox_layout = QHBoxLayout()
-        self.bbox_x0_spin = QSpinBox()
+        self.bbox_x0_spin = ScrubSpinBox()
         self.bbox_x0_spin.setRange(0, 7680)
         self.bbox_x0_spin.setPrefix("x0:")
         self.bbox_x0_spin.setValue(0)
         bbox_layout.addWidget(self.bbox_x0_spin)
 
-        self.bbox_y0_spin = QSpinBox()
+        self.bbox_y0_spin = ScrubSpinBox()
         self.bbox_y0_spin.setRange(0, 4320)
         self.bbox_y0_spin.setPrefix("y0:")
         self.bbox_y0_spin.setValue(0)
         bbox_layout.addWidget(self.bbox_y0_spin)
 
-        self.bbox_x1_spin = QSpinBox()
+        self.bbox_x1_spin = ScrubSpinBox()
         self.bbox_x1_spin.setRange(0, 7680)
         self.bbox_x1_spin.setPrefix("x1:")
         self.bbox_x1_spin.setValue(100)
         bbox_layout.addWidget(self.bbox_x1_spin)
 
-        self.bbox_y1_spin = QSpinBox()
+        self.bbox_y1_spin = ScrubSpinBox()
         self.bbox_y1_spin.setRange(0, 4320)
         self.bbox_y1_spin.setPrefix("y1:")
         self.bbox_y1_spin.setValue(100)

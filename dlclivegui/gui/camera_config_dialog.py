@@ -32,11 +32,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from dlclivegui.cameras import CameraFactory
-from dlclivegui.cameras.base import CameraBackend
-from dlclivegui.cameras.factory import DetectedCamera
-from dlclivegui.config import CameraSettings, MultiCameraSettings
-
+from ..cameras import CameraFactory
+from ..cameras.base import CameraBackend
+from ..cameras.factory import DetectedCamera
+from ..config import CameraSettings, MultiCameraSettings
+from .misc.drag_spinbox import ScrubSpinBox
 from .misc.eliding_label import ElidingPathLabel
 from .misc.layouts import _make_two_field_row
 
@@ -538,25 +538,25 @@ class CameraConfigDialog(QDialog):
         crop_layout = QHBoxLayout(crop_widget)
         crop_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.cam_crop_x0 = QSpinBox()
+        self.cam_crop_x0 = ScrubSpinBox()
         self.cam_crop_x0.setRange(0, 7680)
         self.cam_crop_x0.setPrefix("x0:")
         self.cam_crop_x0.setSpecialValueText("x0:None")
         crop_layout.addWidget(self.cam_crop_x0)
 
-        self.cam_crop_y0 = QSpinBox()
+        self.cam_crop_y0 = ScrubSpinBox()
         self.cam_crop_y0.setRange(0, 4320)
         self.cam_crop_y0.setPrefix("y0:")
         self.cam_crop_y0.setSpecialValueText("y0:None")
         crop_layout.addWidget(self.cam_crop_y0)
 
-        self.cam_crop_x1 = QSpinBox()
+        self.cam_crop_x1 = ScrubSpinBox()
         self.cam_crop_x1.setRange(0, 7680)
         self.cam_crop_x1.setPrefix("x1:")
         self.cam_crop_x1.setSpecialValueText("x1:None")
         crop_layout.addWidget(self.cam_crop_x1)
 
-        self.cam_crop_y1 = QSpinBox()
+        self.cam_crop_y1 = ScrubSpinBox()
         self.cam_crop_y1.setRange(0, 4320)
         self.cam_crop_y1.setPrefix("y1:")
         self.cam_crop_y1.setSpecialValueText("y1:None")
@@ -1123,6 +1123,7 @@ class CameraConfigDialog(QDialog):
         self.cam_device_name_label.setText("")
         self.cam_index_label.setText("")
         self.cam_backend_label.setText("")
+        self.detected_resolution_label.setText("—")
         self.cam_width.setValue(0)
         self.cam_height.setValue(0)
         self.cam_fps.setValue(0.0)
