@@ -28,7 +28,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "deeplabcut-live>=2.0.0", # might be missing timm and scipy
+    # "deeplabcut-live>=2.0.0", # might be missing timm and scipy
     "PySide6",
     "qdarkstyle",
     "numpy",
@@ -43,11 +43,21 @@ dependencies = [
 basler = ["pypylon"]
 gentl = ["harvesters"]
 all = ["pypylon", "harvesters"]
+live-latest = [
+    "deeplabcut-live@git+https://github.com/DeepLabCut/DeepLabCut-live.git@main#egg=deeplabcut-live",
+]
+live-latest-pytorch = [
+    # this includes timm and scipy
+    "deeplabcut-live@git+https://github.com/DeepLabCut/DeepLabCut-live.git@main#egg=deeplabcut-live[pytorch]",
+]
 pytorch = [
     "deeplabcut-live[pytorch]>=2.0.0", # this includes timm and scipy
 ]
 tf = [
     "deeplabcut-live[tf]>=2.0.0",
+]
+live-latest-tf = [
+    "deeplabcut-live@git+https://github.com/DeepLabCut/DeepLabCut-live.git@main#egg=deeplabcut-live[tf]",
 ]
 dev = [
     "pytest>=7.0",
