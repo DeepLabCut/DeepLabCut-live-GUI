@@ -134,7 +134,25 @@ class CameraProbeWorker(QThread):
             self.progress.emit("Probing device defaults…")
             if self._cancel:
                 return
-            self.success.emit(self._cam)
+            be = CameraFactory.create(self._cam)
+            be.open()
+
+            actual_res = getattr(be, "actual_resolution", None)
+            actual_fps = getattr(be, "actual_fps", None)
+
+            try:
+                be.close()
+            except Exception:
+                pass
+
+            if self._cancel:
+                return
+
+            self.success.emit({
+                "cam": self._cam,
+                "actual_resolution": actual_res,
+                "actual_fps": actual_fps,
+            })
         except Exception as exc:
             self.error.emit(f"{type(exc).__name__}: {exc}")
         finally:
@@ -1221,27 +1239,20 @@ class CameraConfigDialog(QDialog):
         self.apply_settings_btn.setEnabled(True)
 
     def _on_probe_success(self, payload) -> None:
-        """Open/close quickly to read actual_resolution/actual_fps and store as detected_*.
+        """Apply probe results to working model and refresh UI.
 
         If self._probe_apply_to_requested is True, also overwrite requested width/height/fps
         for the targeted camera row (Reset behavior).
         """
-        if not isinstance(payload, CameraSettings):
+        if not isinstance(payload, dict):
             return
-        cam_settings = payload
+        cam_settings = payload.get("cam")
+        if not isinstance(cam_settings, CameraSettings):
+            return
+        actual_res = payload.get("actual_resolution")
+        actual_fps = payload.get("actual_fps")
 
         try:
-            be = CameraFactory.create(cam_settings)
-            be.open()
-
-            actual_res = getattr(be, "actual_resolution", None)
-            actual_fps = getattr(be, "actual_fps", None)
-
-            try:
-                be.close()
-            except Exception:
-                pass
-
             backend = (cam_settings.backend or "").lower()
 
             for i, c in enumerate(self._working_settings.cameras):
