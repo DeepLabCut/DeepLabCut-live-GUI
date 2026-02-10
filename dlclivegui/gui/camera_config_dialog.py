@@ -38,6 +38,7 @@ from dlclivegui.cameras.factory import DetectedCamera
 from dlclivegui.config import CameraSettings, MultiCameraSettings
 
 from .misc.eliding_label import ElidingPathLabel
+from .misc.layouts import _make_two_field_row
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.DEBUG)  # TODO @C-Achard remove for release
@@ -314,71 +315,6 @@ class CameraConfigDialog(QDialog):
     # -------------------------------
     # UI setup
     # -------------------------------
-    def _make_two_field_row(
-        self,
-        left_label: str,
-        left_widget: QWidget,
-        right_label: str,
-        right_widget: QWidget,
-        left_stretch: int = 1,
-        right_stretch: int = 1,
-        *,
-        label_min_width: int = 30,
-    ) -> QWidget:
-        """Create a compact two-field row widget: (label+value) (label+value), with clear label/value styling."""
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        def style_key(lbl: QLabel):
-            # Muted label styling
-            lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            # lbl.setMinimumWidth(label_min_width)
-            # lbl.setStyleSheet(
-            #     """
-            #     QLabel {
-            #         color: rgba(255,255,255,0.65);   /* works OK on dark themes */
-            #         color: palette(mid);             /* fallback on light themes */
-            #         font-weight: 500;
-            #     }
-            #     """
-            # )
-
-        def style_value(w: QWidget):
-            # Make values stand out (works for QLabel and custom value widgets like ElidingPathLabel)
-            # Using QSS that gives a subtle "field" look.
-            w.setStyleSheet(
-                """
-                QLabel, ElidingPathLabel {
-                    font-weight: 700;
-                    color: palette(text);
-                    background-color: rgba(127,127,127,0.12);
-                    border: 1px solid rgba(127,127,127,0.18);
-                    border-radius: 6px;
-                    padding: 2px 6px;
-                }
-                """
-            )
-            if isinstance(w, QLabel):
-                w.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-
-        l1 = QLabel(left_label)
-        style_key(l1)
-        style_value(left_widget)
-
-        l2 = QLabel(right_label)
-        style_key(l2)
-        style_value(right_widget)
-
-        layout.addWidget(l1, 1)
-        layout.addWidget(left_widget, left_stretch)
-        layout.addSpacing(8)
-        layout.addWidget(l2, 1)
-        layout.addWidget(right_widget, right_stretch)
-
-        return row
-
     def _set_detected_labels(self, cam: CameraSettings) -> None:
         """Update the read-only detected labels based on cam.properties[backend]."""
         backend = (cam.backend or "").lower()
@@ -529,7 +465,9 @@ class CameraConfigDialog(QDialog):
 
         self.cam_backend_label = QLabel("opencv")
         # self.settings_form.addRow("Backend:", self.cam_backend_label)
-        id_backend_row = self._make_two_field_row("Index:", self.cam_index_label, "Backend:", self.cam_backend_label)
+        id_backend_row = _make_two_field_row(
+            "Index:", self.cam_index_label, "Backend:", self.cam_backend_label, key_width=120
+        )
         self.settings_form.addRow(id_backend_row)
 
         # --- Detected read-only labels (do NOT change requested values) ---
@@ -538,8 +476,13 @@ class CameraConfigDialog(QDialog):
 
         self.detected_fps_label = QLabel("—")
         self.detected_fps_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        detected_row = self._make_two_field_row(
-            "Detected resolution:", self.detected_resolution_label, "Detected FPS:", self.detected_fps_label
+        detected_row = _make_two_field_row(
+            "Detected resolution:",
+            self.detected_resolution_label,
+            "Detected FPS:",
+            self.detected_fps_label,
+            key_width=120,
+            gap=10,
         )
         self.settings_form.addRow(detected_row)
 
@@ -554,7 +497,7 @@ class CameraConfigDialog(QDialog):
         self.cam_height.setValue(0)
         self.cam_height.setSpecialValueText("Auto")
 
-        res_row = self._make_two_field_row("W", self.cam_width, "H", self.cam_height)
+        res_row = _make_two_field_row("W", self.cam_width, "H", self.cam_height, key_width=30)
         self.settings_form.addRow("Resolution:", res_row)
 
         # --- FPS + Rotation grouped (CREATE cam_rotation ONCE) ---
@@ -571,7 +514,7 @@ class CameraConfigDialog(QDialog):
         self.cam_rotation.addItem("180°", 180)
         self.cam_rotation.addItem("270°", 270)
 
-        fps_rot_row = self._make_two_field_row("FPS", self.cam_fps, "Rot", self.cam_rotation)
+        fps_rot_row = _make_two_field_row("FPS", self.cam_fps, "Rot", self.cam_rotation, key_width=30)
         self.settings_form.addRow("Capture:", fps_rot_row)
 
         # --- Exposure + Gain grouped ---
@@ -587,7 +530,7 @@ class CameraConfigDialog(QDialog):
         self.cam_gain.setSpecialValueText("Auto")
         self.cam_gain.setDecimals(2)
 
-        exp_gain_row = self._make_two_field_row("Exp", self.cam_exposure, "Gain", self.cam_gain)
+        exp_gain_row = _make_two_field_row("Exp", self.cam_exposure, "Gain", self.cam_gain, key_width=30)
         self.settings_form.addRow("Analog:", exp_gain_row)
 
         # --- Crop row (keep as you already have it) ---
