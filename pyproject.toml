@@ -50,12 +50,13 @@ live-latest-pytorch = [
     # this includes timm and scipy
     "deeplabcut-live@git+https://github.com/DeepLabCut/DeepLabCut-live.git@main#egg=deeplabcut-live[pytorch]",
 ]
-pytorch = [
-    "deeplabcut-live[pytorch]>=2.0.0", # this includes timm and scipy
-]
-tf = [
-    "deeplabcut-live[tf]>=2.0.0",
-]
+# TODO @C-Achard uncomment when 2.0 is released on PyPI, and remove live-latest*
+# pytorch = [
+#     "deeplabcut-live[pytorch]>=2.0.0", # this includes timm and scipy
+# ]
+# tf = [
+#     "deeplabcut-live[tf]>=2.0.0",
+# ]
 live-latest-tf = [
     "deeplabcut-live@git+https://github.com/DeepLabCut/DeepLabCut-live.git@main#egg=deeplabcut-live[tf]",
 ]
