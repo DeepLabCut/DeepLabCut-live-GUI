@@ -57,10 +57,29 @@ class GenTLCameraBackend(CameraBackend):
         self._rotate: int = int(ns.get("rotate", props.get("rotate", 0))) % 360
         self._crop: tuple[int, int, int, int] | None = self._parse_crop(ns.get("crop", props.get("crop")))
 
+        # Exposure / Gain: 0 means Auto (do not set)
+        exp_val = getattr(settings, "exposure", 0)
+        gain_val = getattr(settings, "gain", 0.0)
+
         self._exposure: float | None = (
-            settings.exposure if settings.exposure else ns.get("exposure", props.get("exposure"))
+            float(exp_val) if isinstance(exp_val, (int, float)) and float(exp_val) > 0 else None
         )
-        self._gain: float | None = settings.gain if settings.gain else ns.get("gain", props.get("gain"))
+        if self._exposure is None:
+            v = ns.get("exposure", props.get("exposure"))
+            try:
+                self._exposure = float(v) if v is not None and float(v) > 0 else None
+            except Exception:
+                self._exposure = None
+
+        self._gain: float | None = (
+            float(gain_val) if isinstance(gain_val, (int, float)) and float(gain_val) > 0 else None
+        )
+        if self._gain is None:
+            v = ns.get("gain", props.get("gain"))
+            try:
+                self._gain = float(v) if v is not None and float(v) > 0 else None
+            except Exception:
+                self._gain = None
 
         self._timeout: float = float(ns.get("timeout", props.get("timeout", 2.0)))
         self._cti_search_paths: tuple[str, ...] = self._parse_cti_paths(
@@ -74,6 +93,8 @@ class GenTLCameraBackend(CameraBackend):
         self._actual_width: int | None = None
         self._actual_height: int | None = None
         self._actual_fps: float | None = None
+        self._actual_gain: float | None = None
+        self._actual_exposure: float | None = None
 
         self._harvester = None
         self._acquirer = None
@@ -88,6 +109,14 @@ class GenTLCameraBackend(CameraBackend):
     @property
     def actual_fps(self) -> float | None:
         return self._actual_fps
+
+    @property
+    def actual_exposure(self) -> float | None:
+        return self._actual_exposure
+
+    @property
+    def actual_gain(self) -> float | None:
+        return self._actual_gain
 
     @classmethod
     def is_available(cls) -> bool:
@@ -213,6 +242,16 @@ class GenTLCameraBackend(CameraBackend):
         except Exception:
             self._actual_fps = None
 
+        try:
+            self._actual_exposure = float(node_map.ExposureTime.value)
+        except Exception:
+            self._actual_exposure = None
+
+        try:
+            self._actual_gain = float(node_map.Gain.value)
+        except Exception:
+            self._actual_gain = None
+
         self._acquirer.start()
 
     def read(self) -> tuple[np.ndarray, float]:
@@ -244,6 +283,18 @@ class GenTLCameraBackend(CameraBackend):
             h, w = frame.shape[:2]
             self._actual_width = int(w)
             self._actual_height = int(h)
+
+        if self._actual_exposure is None:
+            try:
+                self._actual_exposure = float(self._acquirer.node_map.ExposureTime.value)
+            except Exception:
+                self._actual_exposure = None
+
+        if self._actual_gain is None:
+            try:
+                self._actual_gain = float(self._acquirer.node_map.Gain.value)
+            except Exception:
+                self._actual_gain = None
 
         return frame, timestamp
 

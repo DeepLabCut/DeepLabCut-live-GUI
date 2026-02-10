@@ -43,6 +43,8 @@ class BaslerCameraBackend(CameraBackend):
         self._actual_width: int | None = None
         self._actual_height: int | None = None
         self._actual_fps: float | None = None
+        self._actual_exposure: float | None = None
+        self._actual_gain: float | None = None
 
     @property
     def actual_resolution(self) -> tuple[int, int] | None:
@@ -53,6 +55,14 @@ class BaslerCameraBackend(CameraBackend):
     @property
     def actual_fps(self) -> float | None:
         return self._actual_fps
+
+    @property
+    def actual_exposure(self) -> float | None:
+        return self._actual_exposure
+
+    @property
+    def actual_gain(self) -> float | None:
+        return self._actual_gain
 
     @classmethod
     def is_available(cls) -> bool:
@@ -85,16 +95,20 @@ class BaslerCameraBackend(CameraBackend):
         self._camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateDevice(device))
         self._camera.Open()
 
-        # Exposure
-        exposure = self._settings_value("exposure", self.settings.properties)
+        # Exposure (0 = Auto -> do not set)
+        exposure = self._settings_value(
+            "exposure", self.settings.properties, fallback=self.settings.exposure, treat_nonpositive_as_none=True
+        )
         if exposure is not None:
             try:
                 self._camera.ExposureTime.SetValue(float(exposure))
             except Exception:
                 pass
 
-        # Gain
-        gain = self._settings_value("gain", self.settings.properties)
+        # Gain (0 = Auto -> do not set)
+        gain = self._settings_value(
+            "gain", self.settings.properties, fallback=self.settings.gain, treat_nonpositive_as_none=True
+        )
         if gain is not None:
             try:
                 self._camera.Gain.SetValue(float(gain))
@@ -104,15 +118,22 @@ class BaslerCameraBackend(CameraBackend):
         # Resolution (device default if None)
         self._configure_resolution()
 
-        # Frame rate
-        fps = self._settings_value("fps", self.settings.properties, fallback=self.settings.fps)
+        # Frame rate (0.0 = Auto -> do not set)
+        fps = self._settings_value(
+            "fps", self.settings.properties, fallback=self.settings.fps, treat_nonpositive_as_none=True
+        )
         if fps is not None:
             try:
                 self._camera.AcquisitionFrameRateEnable.SetValue(True)
                 self._camera.AcquisitionFrameRate.SetValue(float(fps))
-                self._actual_fps = float(self._camera.AcquisitionFrameRate.GetValue())
             except Exception:
-                self._actual_fps = None
+                pass
+
+        # Always try to read actual FPS for probing / GUI
+        try:
+            self._actual_fps = float(self._camera.AcquisitionFrameRate.GetValue())
+        except Exception:
+            self._actual_fps = None
 
         # Capture actual resolution even when using defaults
         try:
@@ -120,6 +141,16 @@ class BaslerCameraBackend(CameraBackend):
             self._actual_height = int(self._camera.Height.GetValue())
         except Exception:
             pass
+
+        try:
+            self._actual_exposure = float(self._camera.ExposureTime.GetValue())
+        except Exception:
+            self._actual_exposure = None
+
+        try:
+            self._actual_gain = float(self._camera.Gain.GetValue())
+        except Exception:
+            self._actual_gain = None
 
         self._camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
 
@@ -250,6 +281,28 @@ class BaslerCameraBackend(CameraBackend):
             LOG.warning(f"Failed to set resolution to {req_w}x{req_h}: {exc}")
 
     @staticmethod
-    def _settings_value(key: str, source: dict, fallback: float | None = None):
+    def _settings_value(
+        key: str, source: dict, fallback: float | None = None, *, treat_nonpositive_as_none: bool = True
+    ):
+        """
+        Fetch setting from a dict with an optional fallback.
+
+        If treat_nonpositive_as_none is True:
+        - numeric values <= 0 are treated as "Auto" and returned as None
+        """
         value = source.get(key, fallback)
-        return None if value is None else value
+
+        if value is None:
+            return None
+
+        # Treat 0 / <=0 as Auto by default
+        if treat_nonpositive_as_none and isinstance(value, (int, float)):
+            try:
+                fv = float(value)
+                if fv <= 0.0:
+                    return None
+                return fv
+            except Exception:
+                return None
+
+        return value
