@@ -129,12 +129,12 @@ class OpenCVCameraBackend(CameraBackend):
         caps = super().static_capabilities()
         caps.update(
             {
-                "set_resolution": SupportLevel.SUPPORTED,
-                "set_fps": SupportLevel.BEST_EFFORT,
+                "set_resolution": SupportLevel.BEST_EFFORT,  # see tolerance values in OpenCVOptions
+                "set_fps": SupportLevel.BEST_EFFORT,  # ditto
                 "set_exposure": SupportLevel.UNSUPPORTED,
                 "set_gain": SupportLevel.UNSUPPORTED,
-                "device_discovery": SupportLevel.SUPPORTED,
-                "stable_identity": SupportLevel.SUPPORTED,
+                "device_discovery": SupportLevel.SUPPORTED,  # uses opencv2-enumerate-cameras
+                "stable_identity": SupportLevel.SUPPORTED,  # to get VID/PID/path
             }
         )
         return caps
@@ -245,6 +245,16 @@ class OpenCVCameraBackend(CameraBackend):
             return (self._actual_width, self._actual_height)
         return None
 
+    @property
+    def actual_exposure(self) -> None:
+        """Not supported by OpenCV backend."""
+        return None
+
+    @property
+    def actual_gain(self) -> None:
+        """Not supported by OpenCV backend."""
+        return None
+
     # ----------------------------
     # Internal helpers
     # ----------------------------
@@ -280,8 +290,8 @@ class OpenCVCameraBackend(CameraBackend):
         except Exception:
             pass
 
-        # 3) default
-        return (720, 540)
+        # 3) default -> auto (0,0)
+        return (0, 0)
 
     def _apply_resolution_policy(
         self,
@@ -367,76 +377,115 @@ class OpenCVCameraBackend(CameraBackend):
         self._codec_str = self._read_codec_string()
         logger.info(f"Camera using codec: {self._codec_str}")
 
-        # --- Resolution (explicit request) ---
+        # Requested values
         req_w, req_h = self._requested_resolution
         enforce_aspect = opt.enforce_aspect
+        requested_fps = float(self.settings.fps or 0.0)
 
-        if not self._fast_start:
-            # verified, robust path
+        # -------------------------
+        # Resolution
+        # -------------------------
+        # If Auto (0,0), do NOT set resolution. Just read device defaults.
+        if req_w <= 0 or req_h <= 0:
+            # Some backends only populate width/height after a few grabs.
+            try:
+                # for _ in range(3):
+                self._capture.grab()
+            except Exception:
+                pass
+
+            self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            self._actual_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
+
+            # For clarity in logs
+            logger.info("Resolution requested=Auto, actual=%sx%s", self._actual_width, self._actual_height)
+
+        elif not self._fast_start:
+            # Verified, robust path (tries candidates + verifies)
             result = apply_mode_with_verification(
                 self._capture,
                 ModeRequest(
                     width=req_w,
                     height=req_h,
-                    fps=float(self.settings.fps or 0.0),
+                    fps=requested_fps,
                     enforce_aspect=enforce_aspect,
                     aspect_tol=float(opt.aspect_tol),
                     area_tol=float(opt.area_tol),
                 ),
             )
             self._actual_width, self._actual_height, self._actual_fps = result.width, result.height, result.fps
+
         else:
             # fast-start: best-effort set (no heavy negotiation)
-            if req_w > 0 and req_h > 0:
-                try:
-                    self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(req_w))
-                    self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(req_h))
-                except Exception as exc:
-                    logger.debug(f"Fast-start resolution set failed: {exc}")
+            try:
+                self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(req_w))
+                self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(req_h))
+            except Exception as exc:
+                logger.debug(f"Fast-start resolution set failed: {exc}")
 
             self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
             self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
 
+        # Compute actual_res tuple if known
         actual_res = None
         if (self._actual_width or 0) > 0 and (self._actual_height or 0) > 0:
             actual_res = (int(self._actual_width), int(self._actual_height))
 
         logger.info(
-            "Resolution requested=%sx%s, actual=%s",
-            req_w,
-            req_h,
+            "Resolution requested=%s, actual=%s",
+            f"{req_w}x{req_h}" if (req_w > 0 and req_h > 0) else "Auto",
             f"{actual_res[0]}x{actual_res[1]}" if actual_res else "unknown",
         )
 
-        # enforce mismatch policy (warn/strict/accept)
-        self._apply_resolution_policy(
-            requested=(req_w, req_h),
-            actual=actual_res,
-            policy=opt.resolution_policy,
-        )
+        # Enforce mismatch policy only if a real request was made
+        if req_w > 0 and req_h > 0:
+            self._apply_resolution_policy(
+                requested=(req_w, req_h),
+                actual=actual_res,
+                policy=opt.resolution_policy,
+            )
 
-        # optional persistence of "what worked"
+        # Optional persistence of "what worked"
         if opt.persist_last_applied_resolution and actual_res:
             ns = self.settings.properties.setdefault(self.OPTIONS_KEY, {})
             ns["last_applied_resolution"] = [actual_res[0], actual_res[1]]
 
-        # --- FPS (keep your current logic) ---
-        requested_fps = float(self.settings.fps or 0.0)
-        if not self._fast_start and requested_fps > 0.0:
-            current_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        # -------------------------
+        # FPS (best-effort always)
+        # -------------------------
+        # IMPORTANT CHANGE:
+        # Try to set FPS even in fast_start (best-effort). Many drivers ignore it,
+        # and CAP_PROP_FPS often reads back 0, but at least we attempt consistently.
+        if requested_fps > 0.0:
+            try:
+                current_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
+            except Exception:
+                current_fps = 0.0
+
+            # Only attempt if clearly different or unknown
             if current_fps <= 0.0 or abs(current_fps - requested_fps) > 0.1:
-                if not self._capture.set(cv2.CAP_PROP_FPS, requested_fps):
-                    logger.debug(f"Device ignored FPS set to {requested_fps:.2f}")
+                try:
+                    ok = self._capture.set(cv2.CAP_PROP_FPS, float(requested_fps))
+                    if not ok:
+                        logger.debug(f"Device ignored FPS set to {requested_fps:.2f}")
+                except Exception as exc:
+                    logger.debug(f"FPS set raised: {exc}")
+
+        # Read back (may be 0.0 on many backends)
+        try:
             self._actual_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
-        else:
-            self._actual_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        except Exception:
+            self._actual_fps = 0.0
 
         if self._actual_fps and requested_fps and abs(self._actual_fps - requested_fps) > 0.1:
             logger.warning(f"FPS mismatch: requested {requested_fps:.2f}, got {self._actual_fps:.2f}")
 
         logger.info(f"Camera configured with FPS: {self._actual_fps:.2f}")
 
-        # --- Extra properties (safe whitelist) ---
+        # -------------------------
+        # Extra properties (safe whitelist)
+        # -------------------------
         for prop, value in self.settings.properties.items():
             if prop in ("api", "resolution", "fast_start", "alt_index_probe"):
                 continue

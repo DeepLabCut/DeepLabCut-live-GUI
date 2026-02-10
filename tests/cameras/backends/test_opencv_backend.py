@@ -46,7 +46,7 @@ def test_requested_resolution_uses_width_height_when_no_property_resolution():
 def test_requested_resolution_defaults_when_no_request():
     settings = make_settings(properties={}, width=0, height=0)
     backend = ob.OpenCVCameraBackend(settings)
-    assert backend._get_requested_resolution() == (720, 540)
+    assert backend._get_requested_resolution() == (0, 0)
 
 
 def test_try_open_windows_fallback_to_msmf(monkeypatch, fake_capture_factory):

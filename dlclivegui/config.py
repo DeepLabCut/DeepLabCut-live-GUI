@@ -15,32 +15,68 @@ Precision = Literal["FP32", "FP16"]
 class CameraSettings(BaseModel):
     name: str = "Camera 0"
     index: int = 0
-    fps: float = 25.0
     backend: str = "opencv"
-    width: int = 720
-    height: int = 540
-    exposure: int = 500  # 0=auto else µs
-    gain: float = 10.0  # 0.0=auto else value
+
+    # 0.0 = Auto (device default / don't request)
+    fps: float = 0.0
+    # 0 = Auto (device default / don't request)
+    width: int = 0
+    height: int = 0
+
+    exposure: int = 0  # 0=auto else µs
+    gain: float = 0.0  # 0.0=auto else value
+
     crop_x0: int = 0
     crop_y0: int = 0
     crop_x1: int = 0
     crop_y1: int = 0
+
     max_devices: int = 3
     rotation: Rotation = 0
     enabled: bool = True
     properties: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("fps")
+    @field_validator("fps", mode="before")
     @classmethod
-    def _fps_positive(cls, v):
-        return float(v) if v and v > 0 else 30.0
+    def _coerce_fps(cls, v):
+        """
+        Accept:
+          - None -> 0.0 (Auto)
+          - 0 / 0.0 -> Auto
+          - >0 -> requested fps
+        """
+        if v is None:
+            return 0.0
+        try:
+            fv = float(v)
+        except Exception:
+            return 0.0
+        # clamp negatives to Auto
+        return fv if fv >= 0.0 else 0.0
 
-    @field_validator("exposure")
+    @field_validator("width", "height", mode="before")
+    @classmethod
+    def _coerce_resolution(cls, v):
+        """
+        Accept:
+          - None -> 0 (Auto)
+          - 0 -> Auto
+          - >0 -> requested dimension
+        """
+        if v is None:
+            return 0
+        try:
+            iv = int(v)
+        except Exception:
+            return 0
+        return iv if iv >= 0 else 0
+
+    @field_validator("exposure", mode="before")
     @classmethod
     def _coerce_exposure(cls, v):  # allow None->0 and int
         return int(v) if v is not None else 0
 
-    @field_validator("gain")
+    @field_validator("gain", mode="before")
     @classmethod
     def _coerce_gain(cls, v):
         return float(v) if v is not None else 0.0
@@ -69,14 +105,29 @@ class CameraSettings(BaseModel):
         return cls()
 
     def apply_defaults(self) -> CameraSettings:
+        """
+        IMPORTANT:
+        0 means "Auto" for fps/width/height/exposure/gain.
+        So do NOT treat <=0 as "missing" for those fields.
+        Only fill in defaults when the value is None.
+        """
         default = self.from_defaults()
+
+        # Fields where 0 is meaningful ("Auto"), so we must not replace 0 with defaults.
+        auto_zero_fields = {"fps", "width", "height", "exposure", "gain"}
+
         for field in CameraSettings.model_fields:
             value = getattr(self, field)
-            if value is None or (isinstance(value, (int, float)) and value <= 0):
-                # auto means use default value
-                # TODO @C-Achard
-                # Consider a more explicit way to represent "use default" vs "explicitly disable/zero out"
+
+            # Only replace None with defaults universally
+            if value is None:
                 setattr(self, field, getattr(default, field))
+                continue
+
+            # Careful: crop uses 0 legitimately too, though default is also 0
+            if field not in auto_zero_fields and isinstance(value, (int, float)) and value < 0:
+                setattr(self, field, getattr(default, field))
+
         return self
 
 

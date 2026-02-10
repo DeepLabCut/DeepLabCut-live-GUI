@@ -37,7 +37,10 @@ from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import DetectedCamera
 from dlclivegui.config import CameraSettings, MultiCameraSettings
 
+from .misc.eliding_label import ElidingPathLabel
+
 LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.DEBUG)  # TODO @C-Achard remove for release
 
 
 def _apply_detected_identity(cam: CameraSettings, detected: DetectedCamera, backend: str) -> None:
@@ -150,13 +153,15 @@ class CameraLoadWorker(QThread):
 
     def __init__(self, cam: CameraSettings, parent: QWidget | None = None):
         super().__init__(parent)
-        # Work on a defensive copy so we never mutate the original settings
         self._cam = copy.deepcopy(cam)
-        # Make first-time opening snappier by allowing backend fast-path if supported
-        if isinstance(self._cam.properties, dict):
-            ns = self._cam.properties.setdefault(self._cam.backend.lower(), {})
-            if isinstance(ns, dict):
-                ns.setdefault("fast_start", True)
+
+        # Do not use fast_start here as we want to actually open the camera to probe capabilities
+        # If you want a quick probe without full open, use CameraProbeWorker instead which sets fast_start=True
+        # if isinstance(self._cam.properties, dict):
+        #     ns = self._cam.properties.setdefault(self._cam.backend.lower(), {})
+        #     if isinstance(ns, dict):
+        #         ns.setdefault("fast_start", True)
+
         self._cancel = False
         self._backend: CameraBackend | None = None
 
@@ -215,6 +220,8 @@ class CameraConfigDialog(QDialog):
         self._multi_camera_settings = multi_camera_settings
         self._working_settings = self._multi_camera_settings.model_copy(deep=True)
         self._detected_cameras: list[DetectedCamera] = []
+        self._probe_apply_to_requested: bool = False
+        self._probe_target_row: int | None = None
         self._current_edit_index: int | None = None
 
         # Preview state
@@ -476,25 +483,31 @@ class CameraConfigDialog(QDialog):
         self.cam_name_label.setStyleSheet("font-weight: bold; font-size: 14px;")
         self.settings_form.addRow("Name:", self.cam_name_label)
 
-        self.cam_device_id_label = QLabel("")
-        self.cam_device_id_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.cam_device_id_label.setWordWrap(True)
-        self.settings_form.addRow("Device ID:", self.cam_device_id_label)
+        self.cam_device_name_label = ElidingPathLabel("")
+        self.cam_device_name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.cam_device_name_label.setWordWrap(True)
+        self.settings_form.addRow("Device ID:", self.cam_device_name_label)
 
         self.cam_index_label = QLabel("0")
-        self.settings_form.addRow("Index:", self.cam_index_label)
+        # self.settings_form.addRow("Index:", self.cam_index_label)
 
         self.cam_backend_label = QLabel("opencv")
-        self.settings_form.addRow("Backend:", self.cam_backend_label)
+        # self.settings_form.addRow("Backend:", self.cam_backend_label)
+        id_backend_row = self._make_two_field_row("Index:", self.cam_index_label, "Backend:", self.cam_backend_label)
+        self.settings_form.addRow(id_backend_row)
 
         # --- Detected read-only labels (do NOT change requested values) ---
         self.detected_resolution_label = QLabel("—")
         self.detected_resolution_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.settings_form.addRow("Detected res:", self.detected_resolution_label)
+        # self.settings_form.addRow("Detected res:", self.detected_resolution_label)
 
         self.detected_fps_label = QLabel("—")
         self.detected_fps_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.settings_form.addRow("Detected FPS:", self.detected_fps_label)
+        # self.settings_form.addRow("Detected FPS:", self.detected_fps_label)
+        detected_row = self._make_two_field_row(
+            "Detected resolution:", self.detected_resolution_label, "Detected FPS:", self.detected_fps_label
+        )
+        self.settings_form.addRow(detected_row)
 
         # --- Requested resolution controls (Auto = 0) ---
         self.cam_width = QSpinBox()
@@ -512,9 +525,11 @@ class CameraConfigDialog(QDialog):
 
         # --- FPS + Rotation grouped (CREATE cam_rotation ONCE) ---
         self.cam_fps = QDoubleSpinBox()
-        self.cam_fps.setRange(1.0, 240.0)
+        self.cam_fps.setRange(0.0, 240.0)
         self.cam_fps.setDecimals(2)
-        self.cam_fps.setValue(30.0)
+        self.cam_fps.setSingleStep(1.0)
+        self.cam_fps.setValue(0.0)
+        self.cam_fps.setSpecialValueText("Auto")
 
         self.cam_rotation = QComboBox()
         self.cam_rotation.addItem("0°", 0)
@@ -575,7 +590,21 @@ class CameraConfigDialog(QDialog):
         self.apply_settings_btn = QPushButton("Apply Settings")
         self.apply_settings_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.apply_settings_btn.setEnabled(False)
-        self.settings_form.addRow(self.apply_settings_btn)
+        # self.settings_form.addRow(self.apply_settings_btn)
+
+        self.reset_settings_btn = QPushButton("Reset Settings")
+        self.reset_settings_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
+        self.reset_settings_btn.setEnabled(False)
+        # self.settings_form.addRow(self.reset_settings_btn)
+
+        sttgs_buttons_row = QWidget()
+        sttgs_button_layout = QHBoxLayout(sttgs_buttons_row)
+        sttgs_button_layout.setContentsMargins(0, 0, 0, 0)
+        sttgs_button_layout.setSpacing(8)
+        sttgs_button_layout.addWidget(self.apply_settings_btn)
+        sttgs_button_layout.addWidget(self.reset_settings_btn)
+
+        self.settings_form.addRow(sttgs_buttons_row)
 
         self.preview_btn = QPushButton("Start Preview")
         self.preview_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
@@ -647,7 +676,7 @@ class CameraConfigDialog(QDialog):
         right_layout.addWidget(scroll)
 
         # Dialog buttons
-        button_layout = QHBoxLayout()
+        sttgs_button_layout = QHBoxLayout()
         self.ok_btn = QPushButton("OK")
         self.ok_btn.setAutoDefault(False)
         self.ok_btn.setDefault(False)
@@ -656,9 +685,9 @@ class CameraConfigDialog(QDialog):
         self.cancel_btn.setAutoDefault(False)
         self.cancel_btn.setDefault(False)
         self.cancel_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
-        button_layout.addStretch(1)
-        button_layout.addWidget(self.ok_btn)
-        button_layout.addWidget(self.cancel_btn)
+        sttgs_button_layout.addStretch(1)
+        sttgs_button_layout.addWidget(self.ok_btn)
+        sttgs_button_layout.addWidget(self.cancel_btn)
 
         # Add panels to horizontal layout
         panels_layout.addWidget(left_panel, stretch=1)
@@ -666,7 +695,7 @@ class CameraConfigDialog(QDialog):
 
         # Add everything to main layout
         main_layout.addLayout(panels_layout)
-        main_layout.addLayout(button_layout)
+        main_layout.addLayout(sttgs_button_layout)
 
         # Pressing enter on any settings field applies settings
         self.cam_fps.setKeyboardTracking(False)
@@ -792,6 +821,7 @@ class CameraConfigDialog(QDialog):
         self.available_cameras_list.currentRowChanged.connect(self._on_available_camera_selected)
         self.available_cameras_list.itemDoubleClicked.connect(self._on_available_camera_double_clicked)
         self.apply_settings_btn.clicked.connect(self._apply_camera_settings)
+        self.reset_settings_btn.clicked.connect(self._reset_selected_camera)
         self.preview_btn.clicked.connect(self._toggle_preview)
         self.ok_btn.clicked.connect(self._on_ok_clicked)
         self.cancel_btn.clicked.connect(self.reject)
@@ -975,7 +1005,9 @@ class CameraConfigDialog(QDialog):
         cam = item.data(Qt.ItemDataRole.UserRole)
         if cam:
             self.apply_settings_btn.setEnabled(True)
+            self.reset_settings_btn.setEnabled(True)
             self._load_camera_to_form(cam)
+            self._start_probe_for_camera(cam, apply_to_requested=False)
 
     # -------------------------------
     # UI helpers/actions
@@ -1031,13 +1063,23 @@ class CameraConfigDialog(QDialog):
         self._preview_timer.start(interval_ms)
 
     def _reconcile_fps_from_backend(self, cam: CameraSettings) -> None:
-        """Clamp UI/settings to measured device FPS when we can actually measure it."""
+        """Reconcile preview cadence to actual FPS without overriding Auto request."""
         if not self._is_backend_opencv(cam.backend):
             return
 
+        # If user requested Auto (0), do not overwrite the request.
+        if float(getattr(cam, "fps", 0.0) or 0.0) <= 0.0:
+            actual = self._backend_actual_fps()
+            if actual:
+                self._append_status(f"[Info] Auto FPS; device reports ~{actual:.2f}. Preview timer adjusted.")
+                self._adjust_preview_timer_for_fps(actual)
+            else:
+                self._append_status("[Info] Auto FPS; OpenCV can't reliably report actual FPS.")
+            return
+
+        # If user requested a specific FPS, optionally clamp UI to actual if measurable.
         actual = self._backend_actual_fps()
         if actual is None:
-            # OpenCV can't reliably report FPS; do not overwrite user's requested value.
             self._append_status("[Info] OpenCV can't reliably report actual FPS; keeping requested value.")
             return
 
@@ -1045,6 +1087,8 @@ class CameraConfigDialog(QDialog):
             cam.fps = actual
             self.cam_fps.setValue(actual)
             self._append_status(f"[Info] FPS adjusted to device-supported ~{actual:.2f}.")
+            self._adjust_preview_timer_for_fps(actual)
+        else:
             self._adjust_preview_timer_for_fps(actual)
 
     def _update_active_list_item(self, row: int, cam: CameraSettings) -> None:
@@ -1064,7 +1108,7 @@ class CameraConfigDialog(QDialog):
         ns = props.get(backend, {}) if isinstance(props, dict) else {}
         self.cam_enabled_checkbox.setChecked(cam.enabled)
         self.cam_name_label.setText(cam.name)
-        self.cam_device_id_label.setText(str(ns.get("device_id", "")))
+        self.cam_device_name_label.setText(str(ns.get("device_id", "")))
         self.cam_index_label.setText(str(cam.index))
         self.cam_backend_label.setText(cam.backend)
         self._update_controls_for_backend(cam.backend)
@@ -1099,12 +1143,12 @@ class CameraConfigDialog(QDialog):
     def _clear_settings_form(self) -> None:
         self.cam_enabled_checkbox.setChecked(True)
         self.cam_name_label.setText("")
-        self.cam_device_id_label.setText("")
+        self.cam_device_name_label.setText("")
         self.cam_index_label.setText("")
         self.cam_backend_label.setText("")
         self.cam_width.setValue(0)
         self.cam_height.setValue(0)
-        self.cam_fps.setValue(30.0)
+        self.cam_fps.setValue(0.0)
         self.cam_exposure.setValue(0)
         self.cam_gain.setValue(0.0)
         self.cam_rotation.setCurrentIndex(0)
@@ -1113,20 +1157,37 @@ class CameraConfigDialog(QDialog):
         self.cam_crop_x1.setValue(0)
         self.cam_crop_y1.setValue(0)
         self.apply_settings_btn.setEnabled(False)
+        self.reset_settings_btn.setEnabled(False)
 
-    def _start_probe_for_camera(self, cam: CameraSettings) -> None:
-        """Start a quick probe to fill detected labels without changing requested fields."""
+    def _start_probe_for_camera(self, cam: CameraSettings, *, apply_to_requested: bool = False) -> None:
+        """Start a quick probe to fill detected labels.
+
+        If apply_to_requested=True, the probe result will also overwrite the selected camera's
+        requested width/height/fps with detected device values.
+        """
         # Don’t probe if preview is active/loading
         if self._loading_active:
             return
 
-        # If we already have detected values, just show them
+        # Track probe intent
+        self._probe_apply_to_requested = bool(apply_to_requested)
+        self._probe_target_row = int(self._current_edit_index) if self._current_edit_index is not None else None
+
+        # Show current detected values if present
         self._set_detected_labels(cam)
+
+        # If we already have detected values and we are NOT applying them, skip probing
         backend = (cam.backend or "").lower()
         props = cam.properties if isinstance(cam.properties, dict) else {}
         ns = props.get(backend, {}) if isinstance(props.get(backend, None), dict) else {}
-        if "detected_resolution" in ns and "detected_fps" in ns:
-            return
+        if not apply_to_requested:
+            det_res = ns.get("detected_resolution")
+            if isinstance(det_res, (list, tuple)) and len(det_res) == 2:
+                try:
+                    if int(det_res[0]) > 0 and int(det_res[1]) > 0:
+                        return
+                except Exception:
+                    pass
 
         # Start probe worker (settings will be opened in GUI thread for safety)
         self._probe_worker = CameraProbeWorker(cam, self)
@@ -1136,8 +1197,56 @@ class CameraConfigDialog(QDialog):
         self._probe_worker.finished.connect(self._on_probe_finished)
         self._probe_worker.start()
 
+    def _reset_selected_camera(self, *, clear_backend_cache: bool = False) -> None:
+        """Reset the selected camera by probing device defaults and applying them to requested values."""
+        if self._current_edit_index is None:
+            return
+        row = self._current_edit_index
+        if row < 0 or row >= len(self._working_settings.cameras):
+            return
+
+        # Stop preview to avoid fighting an open capture
+        if self._preview_active:
+            self._stop_preview()
+
+        cam = self._working_settings.cameras[row]
+
+        # Set requested fields to Auto first (so backend won't force a mode)
+        cam.width = 0
+        cam.height = 0
+        cam.fps = 0.0
+        cam.exposure = 0
+        cam.gain = 0.0
+        cam.rotation = 0
+        cam.crop_x0 = cam.crop_y0 = cam.crop_x1 = cam.crop_y1 = 0
+
+        # Clear cached detected extras so the probe definitely runs
+        if isinstance(cam.properties, dict):
+            bkey = (cam.backend or "").lower()
+            ns = cam.properties.get(bkey)
+            if isinstance(ns, dict):
+                if clear_backend_cache:
+                    ns.clear()
+                else:
+                    ns.pop("detected_resolution", None)
+                    ns.pop("detected_fps", None)
+                    ns.pop("last_applied_resolution", None)
+
+        # Update UI immediately to show "Auto" while probing
+        self._load_camera_to_form(cam)
+        self._append_status("[Reset] Probing device defaults…")
+
+        # Start probe and apply detected values back to requested settings
+        self._start_probe_for_camera(cam, apply_to_requested=True)
+
+        self.apply_settings_btn.setEnabled(True)
+
     def _on_probe_success(self, payload) -> None:
-        """Open/close quickly to read actual_resolution/actual_fps and store as detected_*."""
+        """Open/close quickly to read actual_resolution/actual_fps and store as detected_*.
+
+        If self._probe_apply_to_requested is True, also overwrite requested width/height/fps
+        for the targeted camera row (Reset behavior).
+        """
         if not isinstance(payload, CameraSettings):
             return
         cam_settings = payload
@@ -1149,17 +1258,16 @@ class CameraConfigDialog(QDialog):
             actual_res = getattr(be, "actual_resolution", None)
             actual_fps = getattr(be, "actual_fps", None)
 
-            # Close immediately (this is a probe only)
             try:
                 be.close()
             except Exception:
                 pass
 
-            # Write detected values back into the *working* model (not requested fields)
-            # Find the matching camera in working settings by index+backend (or device_id if present)
             backend = (cam_settings.backend or "").lower()
+
             for i, c in enumerate(self._working_settings.cameras):
                 if (c.backend or "").lower() == backend and int(c.index) == int(cam_settings.index):
+                    # Ensure backend namespace exists
                     if not isinstance(c.properties, dict):
                         c.properties = {}
                     ns = c.properties.setdefault(backend, {})
@@ -1167,6 +1275,8 @@ class CameraConfigDialog(QDialog):
                         ns = {}
                         c.properties[backend] = ns
 
+                    # ---- Store DETECTED values (read-only telemetry) ----
+                    # Store regardless of "set_*" support. This is just "what device reports".
                     if actual_res and isinstance(actual_res, (list, tuple)) and len(actual_res) == 2:
                         ns["detected_resolution"] = [int(actual_res[0]), int(actual_res[1])]
                     elif actual_res and isinstance(actual_res, tuple) and len(actual_res) == 2:
@@ -1174,14 +1284,43 @@ class CameraConfigDialog(QDialog):
 
                     if isinstance(actual_fps, (int, float)) and float(actual_fps) > 0:
                         ns["detected_fps"] = float(actual_fps)
+                        self._append_status(f"[Probe] actual_res={actual_res}, actual_fps={actual_fps}")
 
-                    # If this camera is currently selected, refresh labels
+                    # ---- Apply detected -> requested (Reset behavior) ----
+                    if self._probe_apply_to_requested and self._probe_target_row == i:
+                        # Only apply resolution if we actually got it
+                        if "detected_resolution" in ns:
+                            c.width = int(ns["detected_resolution"][0])
+                            c.height = int(ns["detected_resolution"][1])
+
+                        # FPS: if device reports 0 (OpenCV often does), keep Auto (0.0)
+                        if "detected_fps" in ns and float(ns["detected_fps"]) > 0:
+                            c.fps = float(ns["detected_fps"])
+                        else:
+                            c.fps = 0.0
+
+                        self._append_status("[Reset] Applied detected values to requested settings.")
+                        if c.width > 0 and c.height > 0:
+                            self._append_status(f"[Reset] Requested resolution set to {c.width}x{c.height}.")
+                        if c.fps > 0:
+                            self._append_status(f"[Reset] Requested FPS set to {c.fps:.2f}.")
+                        else:
+                            self._append_status("[Reset] Requested FPS set to Auto (device did not report FPS).")
+
+                        # Refresh UI for current selection
+                        self._load_camera_to_form(c)
+                        self._update_active_list_item(i, c)
+
+                    # Always refresh detected labels if currently selected
                     if self._current_edit_index == i:
                         self._set_detected_labels(c)
                     break
 
         except Exception as exc:
             self._append_status(f"[Probe] Error: {exc}")
+        finally:
+            self._probe_apply_to_requested = False
+            self._probe_target_row = None
 
     def _on_probe_error(self, msg: str) -> None:
         self._append_status(f"[Probe] {msg}")
@@ -1226,7 +1365,7 @@ class CameraConfigDialog(QDialog):
             index=detected.index,
             width=0,
             height=0,
-            fps=30.0,
+            fps=0.0,
             backend=backend,
             exposure=0,
             gain=0.0,
@@ -1466,6 +1605,7 @@ class CameraConfigDialog(QDialog):
         self._loading_overlay.setVisible(False)
 
     def _append_status(self, text: str) -> None:
+        LOGGER.debug(f"Preview status: {text}")
         self.preview_status.append(text)
         self.preview_status.moveCursor(QTextCursor.End)
         self.preview_status.ensureCursorVisible()
@@ -1509,8 +1649,11 @@ class CameraConfigDialog(QDialog):
                 if isinstance(opened_sttngs, CameraSettings):
                     backend = opened_sttngs.backend
                     index = opened_sttngs.index
-                    device_id = (opened_sttngs.properties or {}).get(backend.lower(), {}).get("device_id", "")
-                    self._append_status(f"Opened {backend}:{index} device_id={device_id}")
+                    device_name = (opened_sttngs.properties or {}).get(backend.lower(), {}).get("device_name", "")
+                    msg = f"Opened {backend}:{index}"
+                    if device_name:
+                        msg += f" ({device_name})"
+                    self._append_status(msg)
                     self._merge_backend_settings_back(opened_sttngs)
                     if self._current_edit_index is not None and 0 <= self._current_edit_index < len(
                         self._working_settings.cameras
