@@ -192,6 +192,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._display_timer.start()
 
         # Show status message if myconfig.json was loaded
+        # FIXME @C-Achard deprecated behavior, remove later
         if self._config_path and self._config_path.name == "myconfig.json":
             self.statusBar().showMessage(f"Auto-loaded configuration from {self._config_path}", 5000)
 
