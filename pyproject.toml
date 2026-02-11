@@ -1,140 +1,131 @@
 [build-system]
-requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
+requires = [ "setuptools>=68" ]
 
 [project]
 name = "deeplabcut-live-gui"
-dynamic = ["version"]
 description = "PySide6-based GUI to run real time DeepLabCut experiments"
 readme = "README.md"
-requires-python = ">=3.10"
-license-files = ["LICENSE"]
-authors = [
-    {name = "A. & M. Mathis Labs", email = "adim@deeplabcut.org"}
-]
-keywords = ["deeplabcut", "pose estimation", "real-time", "gui", "deep learning"]
+keywords = [ "deep learning", "deeplabcut", "gui", "pose estimation", "real-time" ]
+license-files = [ "LICENSE" ]
+authors = [ { name = "A. & M. Mathis Labs", email = "adim@deeplabcut.org" } ]
+requires-python = ">=3.10,<3.13"
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
-    "Operating System :: OS Independent",
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Science/Research",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Framework :: Qt",
-    "Environment :: X11 Applications :: Qt",
+  "Development Status :: 4 - Beta",
+  "Environment :: X11 Applications :: Qt",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-
+dynamic = [ "version" ]
 dependencies = [
-    "deeplabcut-live>=2.0.0", # might be missing timm and scipy
-    "PySide6",
-    "qdarkstyle",
-    "numpy",
-    "opencv-python",
-    "cv2-enumerate-cameras",
-    "pydantic>=2.0",
-    "vidgear[core]",
-    "matplotlib",
+  "cv2-enumerate-cameras",
+  "deeplabcut-live>=2",    # might be missing timm and scipy
+  "matplotlib",
+  "numpy",
+  "opencv-python",
+  "pydantic>=2",
+  "pyside6",
+  "qdarkstyle",
+  "vidgear[core]",
 ]
+optional-dependencies.all = [ "harvesters", "pypylon" ]
+optional-dependencies.basler = [ "pypylon" ]
+optional-dependencies.dev = [
+  "hypothesis>=6",
+  "pre-commit",
+  "pytest>=7",
+  "pytest-cov>=4",
+  "pytest-mock>=3.10",
+  "pytest-qt>=4.2",
+]
+optional-dependencies.gentl = [ "harvesters" ]
+optional-dependencies.pytorch = [
+  "deeplabcut-live[pytorch]>=2", # this includes timm and scipy
+]
+optional-dependencies.test = [
+  "hypothesis>=6",
+  "pytest>=7",
+  "pytest-cov>=4",
+  "pytest-mock>=3.10",
+  "pytest-qt>=4.2",
+]
+optional-dependencies.tf = [
+  "deeplabcut-live[tf]>=2",
+]
+urls."Bug Tracker" = "https://github.com/DeepLabCut/DeepLabCut-live-GUI/issues"
+urls.Documentation = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
+urls.Homepage = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
+urls.Repository = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
+scripts.dlclivegui = "dlclivegui:main"
 
-[project.optional-dependencies]
-basler = ["pypylon"]
-gentl = ["harvesters"]
-all = ["pypylon", "harvesters"]
-pytorch = [
-    "deeplabcut-live[pytorch]>=2.0.0", # this includes timm and scipy
-]
-tf = [
-    "deeplabcut-live[tf]>=2.0.0",
-]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "pytest-mock>=3.10",
-    "pytest-qt>=4.2",
-    "pre-commit",
-    "hypothesis>=6.0",
-]
-test = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "pytest-mock>=3.10",
-    "pytest-qt>=4.2",
-    "hypothesis>=6.0",
-]
-
-[project.urls]
-Homepage = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
-Repository = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
-Documentation = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
-"Bug Tracker" = "https://github.com/DeepLabCut/DeepLabCut-live-GUI/issues"
-
-[project.scripts]
-dlclivegui = "dlclivegui:main"
-
+[tool.setuptools]
 # [tool.setuptools]
+
 # include-package-data = true
 
 # This is more granular and explicit than include-package-data,
+
 # which can be too broad and include unwanted files.
-[tool.setuptools.package-data]
-"dlclivegui.assets" = ["*.png"]
 
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["dlclivegui*"]
-exclude = ["tests*", "docs*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = [
-    "--strict-markers",
-    "--strict-config",
-    "--disable-warnings",
-    # "--maxfail=1",
-    "-ra",
-    "-q",
-]
-markers = [
-    "unit: Unit tests for individual components",
-    "integration: Integration tests for component interaction",
-    "functional: Functional tests for end-to-end workflows",
-    "hardware: Tests that require specific hardware, notable camera backends",
-    # "slow: Tests that take a long time to run",
-    "gui: Tests that require GUI interaction",
-]
-
-[tool.coverage.run]
-source = ["dlclivegui"]
-omit = [
-    "*/tests/*",
-    "*/__pycache__/*",
-    "*/site-packages/*",
-]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "raise AssertionError",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:",
-    "if TYPE_CHECKING:",
-    "@abstract",
-]
+package-data."dlclivegui.assets" = [ "*.png" ]
+packages.find.where = [ "." ]
+packages.find.include = [ "dlclivegui*" ]
+packages.find.exclude = [ "tests*", "docs*" ]
 
 [tool.ruff]
-lint.select = ["E", "F", "B", "I", "UP"]
-lint.ignore = ["E741"]
 target-version = "py310"
-fix = true
 line-length = 120
+fix = true
+lint.select = [ "B", "E", "F", "I", "UP" ]
+lint.ignore = [ "E741" ]
 
-[tool.ruff.lint.pydocstyle]
-convention = "google"
+[tool.pyproject-fmt]
+generate-python-classifiers = false
+
+[tool.pytest]
+ini_options.testpaths = [ "tests" ]
+ini_options.python_files = [ "test_*.py" ]
+ini_options.python_classes = [ "Test*" ]
+ini_options.python_functions = [ "test_*" ]
+ini_options.addopts = [
+  "--strict-markers",
+  "--strict-config",
+  "--disable-warnings",
+  # "--maxfail=1",
+  "-ra",
+  "-q",
+]
+ini_options.markers = [
+  "unit: Unit tests for individual components",
+  "integration: Integration tests for component interaction",
+  "functional: Functional tests for end-to-end workflows",
+  "hardware: Tests that require specific hardware, notable camera backends",
+  # "slow: Tests that take a long time to run",
+  "gui: Tests that require GUI interaction",
+]
+
+[tool.coverage]
+run.branch = true
+run.omit = [
+  "*/__pycache__/*",
+  "*/site-packages/*",
+]
+run.source = [ "dlclivegui", "tests" ]
+report.exclude_lines = [
+  "@abstract",
+  "def __repr__",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+  "pragma: no cover",
+  "raise AssertionError",
+  "raise NotImplementedError",
+]
+report.omit = [
+  "tests/*",
+]
