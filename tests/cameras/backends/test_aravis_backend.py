@@ -242,14 +242,12 @@ def make_backend(settings, buffers):
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_device_name():
     be, cam, s = make_backend(Settings(), [])
     assert be.device_name() == "FakeVendor FakeModel (12345)"
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_read_mono8():
     w, h = 4, 3
     data = (np.arange(w * h) % 256).astype(np.uint8).tobytes()
@@ -268,7 +266,6 @@ def test_read_mono8():
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_read_rgb8_converts_to_bgr():
     w, h = 2, 1
     # RGB: red=[255,0,0], green=[0,255,0]
@@ -286,7 +283,6 @@ def test_read_rgb8_converts_to_bgr():
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_read_bgr8_passthrough():
     w, h = 2, 1
     data = np.array([10, 20, 30, 40, 50, 60], dtype=np.uint8).tobytes()
@@ -301,7 +297,6 @@ def test_read_bgr8_passthrough():
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_read_mono16_scaling():
     w, h = 3, 1
     raw = np.array([0, 32768, 65535], dtype=np.uint16)
@@ -320,7 +315,6 @@ def test_read_mono16_scaling():
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_read_unknown_format_fallback_to_mono8():
     w, h = 2, 2
     data = (np.arange(w * h) % 256).astype(np.uint8).tobytes()
@@ -336,7 +330,6 @@ def test_read_unknown_format_fallback_to_mono8():
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_read_timeout_raises():
     be, cam, s = make_backend(Settings(), [])
     with pytest.raises(TimeoutError):
@@ -344,7 +337,6 @@ def test_read_timeout_raises():
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_read_status_error_raises_and_pushes_back():
     w, h = 1, 1
     data = b"\x00"
@@ -357,7 +349,6 @@ def test_read_status_error_raises_and_pushes_back():
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_close_is_idempotent():
     be, cam, s = make_backend(Settings(), [])
     be.close()
@@ -370,7 +361,6 @@ def test_close_is_idempotent():
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_is_available_false_when_aravis_missing(monkeypatch):
     import dlclivegui.cameras.backends.aravis_backend as ar
 
@@ -380,7 +370,6 @@ def test_is_available_false_when_aravis_missing(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_get_device_count_when_unavailable(monkeypatch):
     import dlclivegui.cameras.backends.aravis_backend as ar
 
@@ -389,7 +378,6 @@ def test_get_device_count_when_unavailable(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_get_device_count_when_available(monkeypatch):
     import dlclivegui.cameras.backends.aravis_backend as ar
 
@@ -405,7 +393,6 @@ def test_get_device_count_when_available(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_open_index_out_of_range(monkeypatch):
     # Patch Aravis module inside backend
     fake = FakeAravis
@@ -418,7 +405,6 @@ def test_open_index_out_of_range(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_open_success_pushes_initial_buffers_and_configures(monkeypatch):
     import dlclivegui.cameras.backends.aravis_backend as ar
 
@@ -466,7 +452,6 @@ def test_open_success_pushes_initial_buffers_and_configures(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_open_device_default_resolution_sets_actual_resolution(monkeypatch):
     import dlclivegui.cameras.backends.aravis_backend as ar
 
@@ -495,7 +480,6 @@ def test_open_device_default_resolution_sets_actual_resolution(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_open_requested_resolution_applies_and_reports_actual(monkeypatch):
     import dlclivegui.cameras.backends.aravis_backend as ar
 
@@ -524,7 +508,6 @@ def test_open_requested_resolution_applies_and_reports_actual(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.integration
 def test_close_flushes_stream_and_clears_state(monkeypatch):
     import dlclivegui.cameras.backends.aravis_backend as ar
 
