@@ -785,6 +785,17 @@ class CameraConfigDialog(QDialog):
             return (backend, "device_id", device_id)
         return (backend, "index", int(cam.index))
 
+    def _set_apply_dirty(self, dirty: bool) -> None:
+        """Visually mark Apply Settings button as 'dirty' (pending edits)."""
+        if dirty:
+            self.apply_settings_btn.setText("Apply Settings *")
+            self.apply_settings_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning))
+            self.apply_settings_btn.setToolTip("You have unapplied changes. Click to apply them.")
+        else:
+            self.apply_settings_btn.setText("Apply Settings")
+            self.apply_settings_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+            self.apply_settings_btn.setToolTip("")
+
     # -------------------------------
     # Signals / population
     # -------------------------------
@@ -805,6 +816,11 @@ class CameraConfigDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.scan_started.connect(lambda _: setattr(self, "_dialog_active", True))
         self.scan_finished.connect(lambda: setattr(self, "_dialog_active", False))
+
+        def _mark_dirty(*_args):
+            self.apply_settings_btn.setEnabled(True)
+            self._set_apply_dirty(True)
+
         for sb in (
             self.cam_fps,
             self.cam_crop_x0,
@@ -815,7 +831,10 @@ class CameraConfigDialog(QDialog):
             self.cam_height,
         ):
             if hasattr(sb, "valueChanged"):
-                sb.valueChanged.connect(lambda _=None: self.apply_settings_btn.setEnabled(True))
+                sb.valueChanged.connect(_mark_dirty)
+
+        self.cam_rotation.currentIndexChanged.connect(lambda *_: _mark_dirty())
+        self.cam_enabled_checkbox.stateChanged.connect(lambda *_: _mark_dirty())
         self.cam_rotation.currentIndexChanged.connect(lambda _: self.apply_settings_btn.setEnabled(True))
 
     def _populate_from_settings(self) -> None:
@@ -1107,6 +1126,8 @@ class CameraConfigDialog(QDialog):
         self.cam_crop_y1.setValue(cam.crop_y1)
         self.apply_settings_btn.setEnabled(True)
         self._set_detected_labels(cam)
+        self.apply_settings_btn.setEnabled(False)
+        self._set_apply_dirty(False)
 
     def _write_form_to_cam(self, cam: CameraSettings) -> None:
         cam.enabled = bool(self.cam_enabled_checkbox.isChecked())
@@ -1535,6 +1556,8 @@ class CameraConfigDialog(QDialog):
                 else:
                     self._append_status("[Apply] Applied without restart (crop/rotation update is live).")
 
+            self.apply_settings_btn.setEnabled(False)
+            self._set_apply_dirty(False)
             return True
 
         except Exception as exc:
