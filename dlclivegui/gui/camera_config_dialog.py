@@ -225,6 +225,7 @@ class CameraConfigDialog(QDialog):
         self._probe_apply_to_requested: bool = False
         self._probe_target_row: int | None = None
         self._current_edit_index: int | None = None
+        self._suppress_selection_actions: bool = False
 
         # Preview state
         self._preview_backend: CameraBackend | None = None
@@ -729,6 +730,8 @@ class CameraConfigDialog(QDialog):
                     self.cam_fps,
                     self.cam_width,
                     self.cam_height,
+                    self.cam_exposure,
+                    self.cam_gain,
                     self.cam_crop_x0,
                     self.cam_crop_y0,
                     self.cam_crop_x1,
@@ -824,6 +827,8 @@ class CameraConfigDialog(QDialog):
             self.cam_crop_y0,
             self.cam_crop_x1,
             self.cam_crop_y1,
+            self.cam_exposure,
+            self.cam_gain,
             self.cam_width,
             self.cam_height,
         ):
@@ -993,14 +998,24 @@ class CameraConfigDialog(QDialog):
         self._add_selected_camera()
 
     def _on_active_camera_selected(self, row: int) -> None:
+        if getattr(self, "_suppress_selection_change", False):
+            LOGGER.debug("[Selection] Suppressed currentRowChanged event at index %d.", row)
+            return
+        prev_row = self._current_edit_index
         LOGGER.info(
             "[Select] row=%s prev=%s preview_active=%s loading_active=%s",
             row,
-            self._current_edit_index,
+            prev_row,
             self._preview_active,
             self._loading_active,
         )
-        prev_row = self._current_edit_index
+        if row is None or row < 0:
+            LOGGER.debug(
+                "[Selection] row<0 (selection cleared) ignored to avoid"
+                " stopping preview/loading when clicking away. row=%s",
+                row,
+            )
+            return
 
         # If row is the same, ignore
         if prev_row is not None and prev_row == row:
@@ -1111,36 +1126,62 @@ class CameraConfigDialog(QDialog):
         item = self.active_cameras_list.item(row)
         if not item:
             return
-        item.setText(self._format_camera_label(cam, row))
-        item.setData(Qt.ItemDataRole.UserRole, cam)
-        item.setForeground(Qt.GlobalColor.gray if not cam.enabled else Qt.GlobalColor.black)
-        self._refresh_camera_labels()
-        self._update_button_states()
+        self._suppress_selection_change = True  # prevent unwanted selection change events during update
+        try:
+            item.setText(self._format_camera_label(cam, row))
+            item.setData(Qt.ItemDataRole.UserRole, cam)
+            item.setForeground(Qt.GlobalColor.gray if not cam.enabled else Qt.GlobalColor.black)
+            self._refresh_camera_labels()
+            self._update_button_states()
+        finally:
+            self._suppress_selection_change = False
 
     def _load_camera_to_form(self, cam: CameraSettings) -> None:
-        backend = (cam.backend or "").lower()
-        props = cam.properties if isinstance(cam.properties, dict) else {}
-        ns = props.get(backend, {}) if isinstance(props, dict) else {}
-        self.cam_enabled_checkbox.setChecked(cam.enabled)
-        self.cam_name_label.setText(cam.name)
-        self.cam_device_name_label.setText(str(ns.get("device_id", "")))
-        self.cam_index_label.setText(str(cam.index))
-        self.cam_backend_label.setText(cam.backend)
-        self._update_controls_for_backend(cam.backend)
-        self.cam_width.setValue(cam.width)
-        self.cam_height.setValue(cam.height)
-        self.cam_fps.setValue(cam.fps)
-        self.cam_exposure.setValue(cam.exposure)
-        self.cam_gain.setValue(cam.gain)
-        rot_index = self.cam_rotation.findData(cam.rotation)
-        if rot_index >= 0:
-            self.cam_rotation.setCurrentIndex(rot_index)
-        self.cam_crop_x0.setValue(cam.crop_x0)
-        self.cam_crop_y0.setValue(cam.crop_y0)
-        self.cam_crop_x1.setValue(cam.crop_x1)
-        self.cam_crop_y1.setValue(cam.crop_y1)
-        self.apply_settings_btn.setEnabled(True)
-        self._set_detected_labels(cam)
+        block = [
+            self.cam_enabled_checkbox,
+            self.cam_width,
+            self.cam_height,
+            self.cam_fps,
+            self.cam_exposure,
+            self.cam_gain,
+            self.cam_rotation,
+            self.cam_crop_x0,
+            self.cam_crop_y0,
+            self.cam_crop_x1,
+            self.cam_crop_y1,
+        ]
+        for widget in block:
+            if hasattr(widget, "blockSignals"):
+                widget.blockSignals(True)
+        try:
+            backend = (cam.backend or "").lower()
+            props = cam.properties if isinstance(cam.properties, dict) else {}
+            ns = props.get(backend, {}) if isinstance(props, dict) else {}
+            self.cam_enabled_checkbox.setChecked(cam.enabled)
+            self.cam_name_label.setText(cam.name)
+            self.cam_device_name_label.setText(str(ns.get("device_id", "")))
+            self.cam_index_label.setText(str(cam.index))
+            self.cam_backend_label.setText(cam.backend)
+            self._update_controls_for_backend(cam.backend)
+            self.cam_width.setValue(cam.width)
+            self.cam_height.setValue(cam.height)
+            self.cam_fps.setValue(cam.fps)
+            self.cam_exposure.setValue(cam.exposure)
+            self.cam_gain.setValue(cam.gain)
+            rot_index = self.cam_rotation.findData(cam.rotation)
+            if rot_index >= 0:
+                self.cam_rotation.setCurrentIndex(rot_index)
+            self.cam_crop_x0.setValue(cam.crop_x0)
+            self.cam_crop_y0.setValue(cam.crop_y0)
+            self.cam_crop_x1.setValue(cam.crop_x1)
+            self.cam_crop_y1.setValue(cam.crop_y1)
+            self.apply_settings_btn.setEnabled(True)
+            self._set_detected_labels(cam)
+        finally:
+            for widget in block:
+                if hasattr(widget, "blockSignals"):
+                    widget.blockSignals(False)
+
         self.apply_settings_btn.setEnabled(False)
         self._set_apply_dirty(False)
 
@@ -1185,7 +1226,7 @@ class CameraConfigDialog(QDialog):
         requested width/height/fps with detected device values.
         """
         # Don’t probe if preview is active/loading
-        if self._loading_active:
+        if self._loading_active or self._preview_active:
             return
 
         # Track probe intent
@@ -1483,6 +1524,8 @@ class CameraConfigDialog(QDialog):
                 self.cam_crop_x0,
                 self.cam_width,
                 self.cam_height,
+                self.cam_exposure,
+                self.cam_gain,
                 self.cam_crop_y0,
                 self.cam_crop_x1,
                 self.cam_crop_y1,
@@ -1648,18 +1691,21 @@ class CameraConfigDialog(QDialog):
             cam.backend,
             cam.index,
         )
+        self._suppress_selection_actions = True
+        try:
+            # Stop any running preview cleanly
+            self._stop_preview()
 
-        # Stop any running preview cleanly
-        self._stop_preview()
+            # Force preview-safe backend flags
+            if isinstance(cam.properties, dict):
+                ns = cam.properties.setdefault((cam.backend or "").lower(), {})
+                if isinstance(ns, dict):
+                    ns["fast_start"] = False
 
-        # Force preview-safe backend flags
-        if isinstance(cam.properties, dict):
-            ns = cam.properties.setdefault((cam.backend or "").lower(), {})
-            if isinstance(ns, dict):
-                ns["fast_start"] = False
-
-        # Start preview without relying on selection state
-        self._start_preview_with_camera(cam)
+            # Start preview without relying on selection state
+            self._start_preview_with_camera(cam)
+        finally:
+            self._suppress_selection_actions = False
 
     def _start_preview_with_camera(self, cam: CameraSettings) -> None:
         """Start preview for a given CameraSettings object."""
@@ -1759,6 +1805,9 @@ class CameraConfigDialog(QDialog):
             self._preview_active,
             getattr(getattr(self._preview_backend, "settings", None), "backend", None),
         )
+        # Also show traceback to see who called stop_preview,
+        # since this should only be called from a few places.
+        # LOGGER.debug("[Preview] stop_preview called from: %s", "".join(traceback.format_stack(limit=6)))
         # Cancel loader if running
         if self._loader and self._loader.isRunning():
             self._loader.request_cancel()
