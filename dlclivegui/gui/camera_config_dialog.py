@@ -156,15 +156,20 @@ class CameraLoadWorker(QThread):
         super().__init__(parent)
         self._cam = copy.deepcopy(cam)
 
-        # Do not use fast_start here as we want to actually open the camera to probe capabilities
-        # If you want a quick probe without full open, use CameraProbeWorker instead which sets fast_start=True
-        # if isinstance(self._cam.properties, dict):
-        #     ns = self._cam.properties.setdefault(self._cam.backend.lower(), {})
-        #     if isinstance(ns, dict):
-        #         ns.setdefault("fast_start", True)
-
         self._cancel = False
         self._backend: CameraBackend | None = None
+
+        # Do not use fast_start here as we want to actually open the camera to probe capabilities
+        # If you want a quick probe without full open, use CameraProbeWorker instead which sets fast_start=True
+        # Ensure preview open never uses fast_start probe mode
+        if isinstance(self._cam.properties, dict):
+            ns = self._cam.properties.setdefault(self._cam.backend.lower(), {})
+            if isinstance(ns, dict):
+                ns["fast_start"] = False
+                # Basler implements transforms in the backend
+                # but preview already takes care of rotation/crop
+                # so we disable transform application in probe to avoid double transforms and speed up probe
+                ns["apply_transforms"] = False
 
     def request_cancel(self):
         self._cancel = True
@@ -990,35 +995,23 @@ class CameraConfigDialog(QDialog):
     # UI helpers/actions
     # -------------------------------
 
-    def _needs_preview_reopen(self, cam: CameraSettings) -> bool:
-        if not (self._preview_active and self._preview_backend):
-            return False
-
-        # FPS: for OpenCV, treat FPS changes as requiring reopen.
-        if self._is_backend_opencv(cam.backend):
-            prev_w = getattr(self._preview_backend.settings, "width", None)
-            prev_h = getattr(self._preview_backend.settings, "height", None)
-            if isinstance(prev_w, int) and isinstance(prev_h, int):
-                if (cam.width, cam.height) != (prev_w, prev_h):
+    def _should_restart_preview(self, old: CameraSettings, new: CameraSettings) -> bool:
+        """
+        Fast UX policy:
+        - Do NOT restart for rotation/crop (preview applies those live).
+        - Restart for camera-side capture params: resolution/fps/exposure/gain.
+        Backend-agnostic for now (no OpenCV special casing).
+        """
+        # Restart on these changes
+        for key in ("width", "height", "fps", "exposure", "gain"):
+            try:
+                if getattr(old, key, None) != getattr(new, key, None):
                     return True
-            prev_fps = getattr(self._preview_backend.settings, "fps", None)
-            if isinstance(prev_fps, (int, float)) and abs(cam.fps - float(prev_fps)) > 0.1:
-                return True
+            except Exception:
+                return True  # safest: restart
 
-        return any(
-            [
-                cam.exposure != getattr(self._preview_backend.settings, "exposure", cam.exposure),
-                cam.gain != getattr(self._preview_backend.settings, "gain", cam.gain),
-                cam.rotation != getattr(self._preview_backend.settings, "rotation", cam.rotation),
-                (cam.crop_x0, cam.crop_y0, cam.crop_x1, cam.crop_y1)
-                != (
-                    getattr(self._preview_backend.settings, "crop_x0", cam.crop_x0),
-                    getattr(self._preview_backend.settings, "crop_y0", cam.crop_y0),
-                    getattr(self._preview_backend.settings, "crop_x1", cam.crop_x1),
-                    getattr(self._preview_backend.settings, "crop_y1", cam.crop_y1),
-                ),
-            ]
-        )
+        # No restart needed if only rotation/crop/enabled changed
+        return False
 
     def _backend_actual_fps(self) -> float | None:
         """Return backend's actual FPS if known; for OpenCV do NOT fall back to settings.fps."""
@@ -1397,6 +1390,9 @@ class CameraConfigDialog(QDialog):
         self._refresh_camera_labels()
 
     def _apply_camera_settings(self) -> None:
+        if self._loading_active:
+            self._append_status("[Apply] Preview is loading; please wait or cancel loading first.")
+            return
         try:
             for sb in (
                 self.cam_fps,
@@ -1424,24 +1420,72 @@ class CameraConfigDialog(QDialog):
             cam = self._working_settings.cameras[row]
             self._write_form_to_cam(cam)
 
-            must_reopen = False
-            if self._preview_active and self._preview_backend:
-                prev_model = getattr(self._preview_backend, "settings", None)
-                if prev_model:
-                    must_reopen = self._needs_preview_reopen(new_model)
+            # --- Logging: compute diff before overwriting anything ---
+            def _cam_diff(old: CameraSettings, new: CameraSettings) -> dict:
+                keys = (
+                    "width",
+                    "height",
+                    "fps",
+                    "exposure",
+                    "gain",
+                    "rotation",
+                    "crop_x0",
+                    "crop_y0",
+                    "crop_x1",
+                    "crop_y1",
+                    "enabled",
+                )
+                out = {}
+                for k in keys:
+                    try:
+                        ov = getattr(old, k, None)
+                        nv = getattr(new, k, None)
+                        if ov != nv:
+                            out[k] = (ov, nv)
+                    except Exception:
+                        pass
+                return out
 
-            if self._preview_active:
-                if must_reopen:
-                    self._stop_preview()
-                    self._start_preview()
-                else:
-                    self._reconcile_fps_from_backend(new_model)
-                    if not self._backend_actual_fps():
-                        self._append_status("[Info] FPS will reconcile automatically during preview.")
+            # We compare against the current preview backend settings if available, else against current_model
+            old_for_diff = getattr(self._preview_backend, "settings", None) if self._preview_backend else current_model
+            diff = _cam_diff(old_for_diff if isinstance(old_for_diff, CameraSettings) else current_model, new_model)
+            LOGGER.info(
+                "[Apply] backend=%s idx=%s changes=%s",
+                getattr(new_model, "backend", None),
+                getattr(new_model, "index", None),
+                diff,
+            )
 
-            # Persist validated model back
+            # --- Persist validated model back BEFORE touching preview ---
             self._working_settings.cameras[row] = new_model
             self._update_active_list_item(row, new_model)
+
+            # Decide whether we need to restart preview (fast UX)
+            old_settings = None
+            if self._preview_backend and isinstance(getattr(self._preview_backend, "settings", None), CameraSettings):
+                old_settings = self._preview_backend.settings
+            else:
+                old_settings = current_model
+
+            restart = False
+            if self._preview_active and isinstance(old_settings, CameraSettings):
+                restart = self._should_restart_preview(old_settings, new_model)
+
+            LOGGER.info(
+                "[Apply] preview_active=%s restart=%s backend=%s idx=%s",
+                self._preview_active,
+                restart,
+                new_model.backend,
+                new_model.index,
+            )
+
+            if self._preview_active:
+                if restart:
+                    self._append_status("[Apply] Restarting preview to apply camera settings…")
+                    self._stop_preview()
+                    QTimer.singleShot(100, self._start_preview)  # small delay for drivers (Basler/Pylon)
+                else:
+                    self._append_status("[Apply] Applied without restart (crop/rotation update is live).")
 
         except Exception as exc:
             LOGGER.exception("Apply camera settings failed")
@@ -1510,6 +1554,15 @@ class CameraConfigDialog(QDialog):
         cam = item.data(Qt.ItemDataRole.UserRole)
         if not cam:
             return
+        LOGGER.info(
+            "[Preview] start requested row=%s backend=%s idx=%s name=%s loading=%s active=%s",
+            self._current_edit_index,
+            cam.backend,
+            cam.index,
+            cam.name,
+            self._loading_active,
+            self._preview_active,
+        )
 
         # Ensure any existing preview or loader is stopped/canceled
         self._stop_preview()
@@ -1536,6 +1589,12 @@ class CameraConfigDialog(QDialog):
 
     def _stop_preview(self) -> None:
         """Stop camera preview and cancel any ongoing loading."""
+        LOGGER.info(
+            "[Preview] stop requested loading=%s active=%s backend=%s",
+            self._loading_active,
+            self._preview_active,
+            getattr(getattr(self._preview_backend, "settings", None), "backend", None),
+        )
         # Cancel loader if running
         if self._loader and self._loader.isRunning():
             self._loader.request_cancel()
@@ -1548,6 +1607,7 @@ class CameraConfigDialog(QDialog):
         # Close backend
         if self._preview_backend:
             try:
+                LOGGER.debug("[Preview] closing backend object=%r", self._preview_backend)
                 self._preview_backend.close()
             except Exception:
                 pass
@@ -1610,6 +1670,12 @@ class CameraConfigDialog(QDialog):
             if isinstance(payload, CameraSettings):
                 cam_settings = payload
                 self._append_status("Opening camera…")
+                LOGGER.debug(
+                    "[Loader] success -> opening camera backend=%s idx=%s props_keys=%s",
+                    cam_settings.backend,
+                    cam_settings.index,
+                    list(cam_settings.properties.keys()) if isinstance(cam_settings.properties, dict) else None,
+                )
                 self._preview_backend = CameraFactory.create(cam_settings)
                 self._preview_backend.open()
 
@@ -1666,7 +1732,7 @@ class CameraConfigDialog(QDialog):
 
     def _on_loader_error(self, error: str) -> None:
         self._append_status(f"Error: {error}")
-        LOGGER.exception("Failed to start preview")
+        LOGGER.error("[Loader] error: %s", error, exc_info=True)
         self._preview_active = False
         self._loading_active = False
         self._hide_loading_overlay()
