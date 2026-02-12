@@ -298,11 +298,9 @@ class CameraConfigDialog(QDialog):
         except Exception:
             pass
 
-        # Merge properties (especially stable IDs) back
         if isinstance(opened_settings.properties, dict):
             if not isinstance(target.properties, dict):
                 target.properties = {}
-            # shallow merge is ok; backend namespaces are nested dicts
             for k, v in opened_settings.properties.items():
                 if isinstance(v, dict) and isinstance(target.properties.get(k), dict):
                     target.properties[k].update(v)
@@ -311,7 +309,6 @@ class CameraConfigDialog(QDialog):
 
         # Update UI list item text to reflect any changes
         self._update_active_list_item(row, target)
-        self._load_camera_to_form(target)
 
     # -------------------------------
     # UI setup
@@ -858,12 +855,18 @@ class CameraConfigDialog(QDialog):
 
     def _refresh_camera_labels(self) -> None:
         cam_list = getattr(self, "active_cameras_list", None)
-        if cam_list:
+        if not cam_list:
+            return
+
+        cam_list.blockSignals(True)  # prevent unwanted selection change events during update
+        try:
             for i in range(cam_list.count()):
                 item = cam_list.item(i)
                 cam = item.data(Qt.ItemDataRole.UserRole)
                 if cam:
                     item.setText(self._format_camera_label(cam, i))
+        finally:
+            cam_list.blockSignals(False)
 
     def _on_backend_changed(self, _index: int) -> None:
         self._refresh_available_cameras()
@@ -990,7 +993,19 @@ class CameraConfigDialog(QDialog):
         self._add_selected_camera()
 
     def _on_active_camera_selected(self, row: int) -> None:
+        LOGGER.info(
+            "[Select] row=%s prev=%s preview_active=%s loading_active=%s",
+            row,
+            self._current_edit_index,
+            self._preview_active,
+            self._loading_active,
+        )
         prev_row = self._current_edit_index
+
+        # If row is the same, ignore
+        if prev_row is not None and prev_row == row:
+            LOGGER.debug("[Selection] Redundant currentRowChanged to same index %d; ignoring.", row)
+            return
 
         # If switching away from a previous camera, commit pending edits first
         if prev_row is not None and prev_row != row:
@@ -1551,8 +1566,7 @@ class CameraConfigDialog(QDialog):
             if self._preview_active:
                 if restart:
                     self._append_status("[Apply] Restarting preview to apply camera settings…")
-                    self._stop_preview()
-                    QTimer.singleShot(100, self._start_preview)  # small delay for drivers (Basler/Pylon)
+                    QTimer.singleShot(0, lambda cam=new_model: self._restart_preview_for_camera(cam))
                 else:
                     self._append_status("[Apply] Applied without restart (crop/rotation update is live).")
 
@@ -1627,10 +1641,72 @@ class CameraConfigDialog(QDialog):
         else:
             self._start_preview()
 
+    def _restart_preview_for_camera(self, cam: CameraSettings) -> None:
+        """Restart preview for a specific camera, independent of UI selection."""
+        LOGGER.info(
+            "[Preview] restarting explicitly for backend=%s idx=%s",
+            cam.backend,
+            cam.index,
+        )
+
+        # Stop any running preview cleanly
+        self._stop_preview()
+
+        # Force preview-safe backend flags
+        if isinstance(cam.properties, dict):
+            ns = cam.properties.setdefault((cam.backend or "").lower(), {})
+            if isinstance(ns, dict):
+                ns["fast_start"] = False
+
+        # Start preview without relying on selection state
+        self._start_preview_with_camera(cam)
+
+    def _start_preview_with_camera(self, cam: CameraSettings) -> None:
+        """Start preview for a given CameraSettings object."""
+        LOGGER.info(
+            "[Preview] start (explicit) backend=%s idx=%s name=%s",
+            cam.backend,
+            cam.index,
+            cam.name,
+        )
+
+        # Create loader directly from camera
+        self._loader = CameraLoadWorker(cam, self)
+        self._loader.progress.connect(self._on_loader_progress)
+        self._loader.success.connect(self._on_loader_success)
+        self._loader.error.connect(self._on_loader_error)
+        self._loader.canceled.connect(self._on_loader_canceled)
+        self._loader.finished.connect(self._on_loader_finished)
+
+        self._loading_active = True
+        self._update_button_states()
+
+        # Prepare UI
+        self.preview_group.setVisible(True)
+        self.preview_label.setText("No preview")
+        self.preview_status.clear()
+        self._show_loading_overlay("Loading camera…")
+        self._set_preview_button_loading(True)
+
+        self._loader.start()
+
     def _start_preview(self) -> None:
         """Start camera preview asynchronously (no UI freeze)."""
-        if self._current_edit_index is None or self._current_edit_index < 0:
+        row = self._current_edit_index
+        if row is None or row < 0:
+            row = self.active_cameras_list.currentRow()
+
+        if row is None or row < 0:
+            LOGGER.warning("[Preview] No camera selected to start preview.")
             return
+
+        self._current_edit_index = row
+        LOGGER.info(
+            "[Preview] resolved start row=%s active_row=%s",
+            self._current_edit_index,
+            self.active_cameras_list.currentRow(),
+        )
+
         item = self.active_cameras_list.item(self._current_edit_index)
         if not item:
             return
@@ -1651,6 +1727,11 @@ class CameraConfigDialog(QDialog):
         self._stop_preview()
         # if self._loader and self._loader.isRunning():
         # self._loader.request_cancel()
+        # Never use probe or fast_start mode
+        if isinstance(cam.properties, dict):
+            ns = cam.properties.get((cam.backend or "").lower(), {})
+            if isinstance(ns, dict):
+                ns["fast_start"] = False
         # Create worker
         self._loader = CameraLoadWorker(cam, self)
         self._loader.progress.connect(self._on_loader_progress)

@@ -329,27 +329,25 @@ class BaslerCameraBackend(CameraBackend):
         self._camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateDevice(device))
         self._camera.Open()
 
-        # ----------------------------
-        # Exposure (0 = Auto → do not set)
-        # ----------------------------
-        exposure = self._positive_float(getattr(self.settings, "exposure", 0))
-
-        if exposure is not None:
+        # Exposure
+        if getattr(self.settings, "exposure", 0) > 0:
             try:
-                self._camera.ExposureTime.SetValue(exposure)
-            except Exception:
-                LOG.debug("ExposureTime not writable or not supported", exc_info=True)
+                if hasattr(self._camera, "ExposureAuto"):
+                    self._camera.ExposureAuto.SetValue("Off")
+                self._camera.ExposureTime.SetValue(float(self.settings.exposure))
+                LOG.info("[Basler] Exposure set to %s us (auto off)", self.settings.exposure)
+            except Exception as exc:
+                LOG.warning("[Basler] Failed to set exposure: %s", exc)
 
-        # ----------------------------
-        # Gain (0 = Auto → do not set)
-        # ----------------------------
-        gain = self._positive_float(getattr(self.settings, "gain", 0))
-
-        if gain is not None:
+        # Gain
+        if getattr(self.settings, "gain", 0.0) > 0.0:
             try:
-                self._camera.Gain.SetValue(gain)
-            except Exception:
-                LOG.debug("Gain not writable or not supported", exc_info=True)
+                if hasattr(self._camera, "GainAuto"):
+                    self._camera.GainAuto.SetValue("Off")
+                self._camera.Gain.SetValue(float(self.settings.gain))
+                LOG.info("[Basler] Gain set to %s dB (auto off)", self.settings.gain)
+            except Exception as exc:
+                LOG.warning("[Basler] Failed to set gain: %s", exc)
 
         # ----------------------------
         # Resolution (None → device default)
@@ -403,11 +401,33 @@ class BaslerCameraBackend(CameraBackend):
         # Start acquisition (skip for fast probe)
         # ----------------------------
         if not self._fast_start:
-            self._camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+            # --- HARD RESET of stream state (critical after fast-start probe) ---
+            try:
+                if hasattr(self._camera, "StopGrabbing") and self._camera.IsGrabbing():
+                    self._camera.StopGrabbing()
+            except Exception:
+                pass
 
+            # Converter BEFORE StartGrabbing
             self._converter = pylon.ImageFormatConverter()
             self._converter.OutputPixelFormat = pylon.PixelType_BGR8packed
             self._converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+
+            # Force stream configuration reset
+            try:
+                if hasattr(self._camera, "MaxNumBuffer"):
+                    self._camera.MaxNumBuffer.SetValue(10)
+            except Exception:
+                pass
+
+            self._camera.StartGrabbing(
+                pylon.GrabStrategy_LatestImageOnly,
+            )
+            LOG.info(
+                "[Basler] grabbing=%s max_buffers=%s",
+                self._camera.IsGrabbing(),
+                self._camera.MaxNumBuffer.GetValue() if hasattr(self._camera, "MaxNumBuffer") else "N/A",
+            )
         else:
             LOG.debug("Fast-start probe: skipping StartGrabbing and converter")
 
@@ -469,7 +489,10 @@ class BaslerCameraBackend(CameraBackend):
         )
         if self._camera is not None:
             if self._camera.IsGrabbing():
-                self._camera.StopGrabbing()
+                try:
+                    self._camera.StopGrabbing()
+                except Exception:
+                    pass
             if self._camera.IsOpen():
                 self._camera.Close()
             self._camera = None
