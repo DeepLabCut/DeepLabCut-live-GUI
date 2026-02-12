@@ -32,7 +32,6 @@ class BaslerCameraBackend(CameraBackend):
 
         # Optional fast-start hint for probe workers (best-effort; doesn't change behavior yet)
         self._fast_start: bool = bool(self.ns.get("fast_start", False))
-        self._apply_transforms: bool = bool(self.ns.get("apply_transforms", False))
 
         # Stable identity (serial-based). Prefer new namespace; fall back to legacy keys read-only.
         self._device_id: str | None = None
@@ -314,19 +313,6 @@ class BaslerCameraBackend(CameraBackend):
         except Exception:
             return None
 
-    @staticmethod
-    def _apply_crop(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int) -> np.ndarray:
-        h, w = frame.shape[:2]
-        if x1 <= 0:
-            x1 = w
-        if y1 <= 0:
-            y1 = h
-        x0 = max(0, min(int(x0), w))
-        y0 = max(0, min(int(y0), h))
-        x1 = max(x0, min(int(x1), w))
-        y1 = max(y0, min(int(y1), h))
-        return frame[y0:y1, x0:x1] if (x1 > x0 and y1 > y0) else frame
-
     def open(self) -> None:
         if pylon is None:
             raise RuntimeError("pypylon is required for the Basler backend but is not installed")
@@ -471,22 +457,6 @@ class BaslerCameraBackend(CameraBackend):
             h, w = frame.shape[:2]
             self._actual_width = int(w)
             self._actual_height = int(h)
-
-        # --- Optional transforms ---
-        if self._apply_transforms:
-            # Rotation from CameraSettings
-            rotation = int(getattr(self.settings, "rotation", 0) or 0)
-            if rotation:
-                frame = self._rotate(frame, rotation)
-
-            # Crop from CameraSettings
-            x0 = int(getattr(self.settings, "crop_x0", 0) or 0)
-            y0 = int(getattr(self.settings, "crop_y0", 0) or 0)
-            x1 = int(getattr(self.settings, "crop_x1", 0) or 0)
-            y1 = int(getattr(self.settings, "crop_y1", 0) or 0)
-
-            if x0 or y0 or x1 or y1:
-                frame = self._apply_crop(frame, x0, y0, x1, y1)
 
         return frame, time.time()
 
