@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +11,12 @@ import pytest
 from PySide6.QtCore import Qt
 
 from dlclivegui.cameras import CameraFactory
-from dlclivegui.cameras.base import CameraBackend
+from dlclivegui.cameras.base import (
+    CameraBackend,
+    SupportLevel,
+    register_backend_direct,
+    unregister_backend,
+)
 from dlclivegui.config import (
     DEFAULT_CONFIG,
     ApplicationSettings,
@@ -19,10 +26,135 @@ from dlclivegui.config import (
 )
 from dlclivegui.gui.main_window import DLCLiveMainWindow
 
+# ---------------------------------------------------------------------
+# Generic backend helpers (removes FakeBackend/temp_backend duplication)
+# ---------------------------------------------------------------------
+
+DEFAULT_TEST_CAPS: dict[str, SupportLevel] = {
+    "set_resolution": SupportLevel.SUPPORTED,
+    "set_fps": SupportLevel.SUPPORTED,
+    "set_exposure": SupportLevel.SUPPORTED,
+    "set_gain": SupportLevel.SUPPORTED,
+    "device_discovery": SupportLevel.SUPPORTED,
+    "stable_identity": SupportLevel.SUPPORTED,
+}
+
+
+def make_backend_class(
+    name: str,
+    *,
+    caps: dict[str, SupportLevel] | None = None,
+    frame_shape: tuple[int, int, int] = (48, 64, 3),
+    timestamp_fn: Callable[[], float] = time.time,
+) -> type[CameraBackend]:
+    """
+    Create a lightweight CameraBackend subclass for tests.
+
+    - caps: static_capabilities returned to the GUI
+    - frame_shape: deterministic black image returned on read()
+    """
+    caps = dict(caps) if caps is not None else dict(DEFAULT_TEST_CAPS)
+
+    class _TestBackend(CameraBackend):
+        OPTIONS_KEY = name
+
+        def __init__(self, settings: CameraSettings):
+            super().__init__(settings)
+            self._opened = False
+            self._counter = 0
+
+        @classmethod
+        def is_available(cls) -> bool:
+            return True
+
+        @classmethod
+        def static_capabilities(cls) -> dict[str, SupportLevel]:
+            return dict(caps)
+
+        def open(self) -> None:
+            self._opened = True
+
+        def close(self) -> None:
+            self._opened = False
+
+        def stop(self) -> None:
+            # Optional API; no-op for tests
+            return
+
+        def read(self):
+            if not self._opened:
+                raise RuntimeError("not opened")
+            self._counter += 1
+            frame = np.zeros(frame_shape, dtype=np.uint8)
+            return frame, float(timestamp_fn())
+
+    _TestBackend.__name__ = f"TestBackend_{name}"
+    return _TestBackend
+
+
+@contextmanager
+def _temp_backend(name: str, *, caps: dict[str, SupportLevel], frame_shape=(10, 10, 3)):
+    backend_cls = make_backend_class(name, caps=caps, frame_shape=frame_shape)
+    register_backend_direct(name, backend_cls)
+    try:
+        yield backend_cls
+    finally:
+        unregister_backend(name)
+
+
+@pytest.fixture
+def temp_backend():
+    return _temp_backend
+
+
+@pytest.fixture(scope="session", autouse=True)
+def register_fake_backend_session():
+    """
+    Register the "fake" backend once per test session.
+    Your app config uses backend="fake", so this makes CameraFactory.create work naturally
+    without monkeypatching CameraFactory.create everywhere.
+    """
+    fake_cls = make_backend_class("fake", caps=DEFAULT_TEST_CAPS, frame_shape=(48, 64, 3))
+    register_backend_direct("fake", fake_cls)
+    try:
+        tuple(CameraFactory.backend_names())
+    except Exception:
+        pass
+    try:
+        yield fake_cls
+    finally:
+        unregister_backend("fake")
+
+
+@pytest.fixture(scope="session")
+def fake_backend_cls(register_fake_backend_session):
+    """Return the registered fake backend class."""
+    return register_fake_backend_session
+
+
+@pytest.fixture
+def fake_backend_factory(fake_backend_cls):
+    """
+    Return a factory(settings) -> backend instance.
+    Always forces backend='fake' for deterministic identity/caps.
+    """
+
+    def _factory(settings: CameraSettings):
+        try:
+            s = settings.model_copy(deep=True)
+        except Exception:
+            s = settings
+        s.backend = "fake"
+        return fake_backend_cls(s)
+
+    return _factory
+
 
 # ---------------------------------------------------------------------
 # Test doubles
 # ---------------------------------------------------------------------
+
+
 class FakeDLCLive:
     """A minimal fake DLCLive object for testing."""
 
@@ -36,7 +168,6 @@ class FakeDLCLive:
 
     def get_pose(self, frame, frame_time=None):
         self.pose_calls += 1
-        # Deterministic small pose array
         return np.ones((2, 2), dtype=float)
 
 
@@ -50,63 +181,15 @@ def fake_dlclive_factory():
     return _factory
 
 
-class FakeBackend(CameraBackend):
-    def __init__(self, settings):
-        super().__init__(settings)
-        self._opened = False
-        self._counter = 0
-
-    @classmethod
-    def is_available(cls) -> bool:
-        return True
-
-    def open(self) -> None:
-        self._opened = True
-
-    def read(self):
-        # Produce a deterministic small frame
-        if not self._opened:
-            raise RuntimeError("not opened")
-        self._counter += 1
-        frame = np.zeros((48, 64, 3), dtype=np.uint8)
-        ts = time.time()
-        return frame, ts
-
-    def close(self) -> None:
-        self._opened = False
-
-    def stop(self) -> None:
-        pass
-
-
-@pytest.fixture
-def fake_backend_factory():
-    """A factory that creates FakeBackend instances."""
-
-    def _factory(settings):
-        return FakeBackend(settings)
-
-    return _factory
-
-
-# ---------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------
-@pytest.fixture
-def patch_factory(monkeypatch):
-    def _create(settings):
-        return FakeBackend(settings)
-
-    monkeypatch.setattr(CameraFactory, "create", staticmethod(_create))
-    return _create
+@pytest.fixture(scope="session")
+def FakeDLCLiveClass():
+    return FakeDLCLive
 
 
 @pytest.fixture
 def monkeypatch_dlclive(monkeypatch):
     """
-    Replace the dlclive.DLCLive import with FakeDLCLive *within* the dlc_processor module.
-
-    Scope is function-level by default, which keeps tests isolated.
+    Replace dlclive.DLCLive import with FakeDLCLive within dlc_processor module.
     """
     from dlclivegui.services import dlc_processor
 
@@ -116,49 +199,74 @@ def monkeypatch_dlclive(monkeypatch):
 
 @pytest.fixture
 def settings_model():
-    """A standard Pydantic DLCProcessorSettingsModel for tests."""
+    """A standard Pydantic DLCProcessorSettings for tests."""
     return DLCProcessorSettings(model_path="dummy.pt")
 
 
-# ---------- Test helpers: application configuration with two fake cameras ----------
-@pytest.fixture
-def app_config_two_cams(tmp_path) -> ApplicationSettings:
-    """An app config with two enabled cameras (fake backend) and writable recording dir."""
+# ---------------------------------------------------------------------
+# Reusable config builder (removes duplication in app_config_* fixtures)
+# ---------------------------------------------------------------------
+
+
+def make_app_config(
+    *,
+    tmp_path: Path,
+    num_cams: int = 2,
+    backend: str = "fake",
+    enabled: bool = True,
+    fps: float = 30.0,
+    max_cameras: int = 4,
+    tile_layout: str = "auto",
+    recording_enabled: bool = True,
+) -> ApplicationSettings:
     cfg = ApplicationSettings.from_dict(DEFAULT_CONFIG.to_dict())
 
-    cam_a = CameraSettings(name="CamA", backend="fake", index=0, enabled=True, fps=30.0)
-    cam_b = CameraSettings(name="CamB", backend="fake", index=1, enabled=True, fps=30.0)
+    cams: list[CameraSettings] = []
+    for i in range(num_cams):
+        cams.append(CameraSettings(name=f"Cam{i}", backend=backend, index=i, enabled=enabled, fps=fps))
 
-    cfg.multi_camera = MultiCameraSettings(cameras=[cam_a, cam_b], max_cameras=4, tile_layout="auto")
-    cfg.camera = cam_a  # kept for backward-compat single-camera access in UI
+    cfg.multi_camera = MultiCameraSettings(cameras=cams, max_cameras=max_cameras, tile_layout=tile_layout)
+    cfg.camera = cams[0] if cams else CameraSettings()  # backward compat
 
     cfg.recording.directory = str(tmp_path / "videos")
-    cfg.recording.enabled = True
+    cfg.recording.enabled = bool(recording_enabled)
     return cfg
 
 
-# ---------- The main window fixture ----------
 @pytest.fixture
-def window(qtbot, app_config_two_cams) -> DLCLiveMainWindow:
+def app_config_two_cams(tmp_path) -> ApplicationSettings:
+    """An app config with two enabled cameras and writable recording dir."""
+    return make_app_config(tmp_path=tmp_path, num_cams=2, backend="fake", enabled=True, fps=30.0)
+
+
+# ---------------------------------------------------------------------
+# Main window fixture
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def window(qtbot, app_config_two_cams):
     """
-    Construct the real DLCLiveMainWindow with a valid two-camera config,
-    make it headless, show it, and yield it. Threads and timers are managed by close().
+    Construct the real DLCLiveMainWindow with a valid config,
+    make it headless, show it, and yield it.
     """
     w = DLCLiveMainWindow(config=app_config_two_cams)
     qtbot.addWidget(w)
-    # Don't pop windows in CI:
     w.setAttribute(Qt.WA_DontShowOnScreen, True)
     w.show()
 
     try:
         yield w
     finally:
-        # The window's closeEvent stops controllers, recorders, timers, etc.
-        # Use .close() to trigger the standard shutdown path.
         try:
             w.close()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------
+# Drawing / recording helpers (unchanged, but still isolated)
+# ---------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -166,23 +274,12 @@ def draw_pose_stub(monkeypatch):
     """Fake pose drawing that records offset/scale and draws a bright pixel."""
     calls = {}
 
-    def _stub_draw_pose(
-        frame,
-        pose,
-        p_cutoff=None,
-        colormap=None,
-        offset=(0, 0),
-        scale=(1.0, 1.0),
-        **_ignored,
-    ):
-        # record args passed to draw_pose
+    def _stub_draw_pose(frame, pose, p_cutoff=None, colormap=None, offset=(0, 0), scale=(1.0, 1.0), **_ignored):
         calls["offset"] = offset
         calls["scale"] = scale
 
-        # pose format: {"x": int, "y": int}
         x = pose["x"]
         y = pose["y"]
-
         ox, oy = offset
         sx, sy = scale
 
@@ -194,32 +291,22 @@ def draw_pose_stub(monkeypatch):
             out[yy, xx] = (0, 255, 0)  # bright green pixel (BGR)
         return out
 
-    # IMPORTANT: patch draw_pose where main_window imports it
     import dlclivegui.gui.main_window as mw_mod
 
     monkeypatch.setattr(mw_mod, "draw_pose", _stub_draw_pose)
-
     return calls
 
 
-# ---------- Convenience fixtures that expose controller/processor from the window ----------
 @pytest.fixture
 def multi_camera_controller(window):
-    """
-    Return the *controller used by the window* so tests can wait on all_started/all_stopped.
-    """
     return window.multi_camera_controller
 
 
 @pytest.fixture
 def dlc_processor(window):
-    """
-    Return the *processor used by the window* so tests can connect to pose/initialized.
-    """
     return window._dlc
 
 
-# ---------- Monkeypatch RecordingManager start_all to capture args and return fake path ----------
 @pytest.fixture
 def start_all_spy(monkeypatch, tmp_path):
     """
@@ -233,25 +320,21 @@ def start_all_spy(monkeypatch, tmp_path):
         calls["current_frames"] = current_frames
         calls["kwargs"] = kwargs
 
-        # deterministic fake path returned to GUI
         run_dir = tmp_path / "videos" / "Sess" / "run_TEST"
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
 
-    # IMPORTANT: patch the RecordingManager class that the GUI imports.
     from dlclivegui.gui import recording_manager as rm_mod
 
     monkeypatch.setattr(rm_mod.RecordingManager, "start_all", _fake_start_all)
-
     return calls
 
 
-# ---------- Fake processor ----------
 class _FakeProcessor:
     def __init__(self):
         self.conns = [object()]
-        self._recording = True  # just needs to exist
-        self._vid_recording = True  # attribute presence required by your code
+        self._recording = True
+        self._vid_recording = True
         self.video_recording = True
         self.session_name = "auto_ABC"
         self.recording = True
@@ -259,7 +342,6 @@ class _FakeProcessor:
 
 @pytest.fixture
 def fake_processor():
-    """Return a simple fake processor for testing."""
     return _FakeProcessor()
 
 
@@ -304,19 +386,11 @@ class FakeVideoRecorder:
 
 @pytest.fixture
 def recording_settings(app_config_two_cams):
-    """
-    RecordingSettingsModel clone derived from app_config_two_cams.
-    Keeps tests isolated from mutation across runs.
-    """
     return app_config_two_cams.recording.model_copy(deep=True)
 
 
 @pytest.fixture
 def patch_video_recorder(monkeypatch):
-    """
-    Patch the VideoRecorder symbol used inside dlclivegui.gui.recording_manager
-    so RecordingManager tests don't invoke vidgear/ffmpeg.
-    """
     import dlclivegui.gui.recording_manager as rm_mod
 
     monkeypatch.setattr(rm_mod, "VideoRecorder", FakeVideoRecorder)
@@ -325,7 +399,6 @@ def patch_video_recorder(monkeypatch):
 
 @pytest.fixture
 def recording_frame_spy(monkeypatch, window):
-    """Capture frames passed to RecordingManager.write_frame calls."""
     captured = {}
 
     def _fake_write_frame(cam_id, frame, timestamp=None):
@@ -337,10 +410,6 @@ def recording_frame_spy(monkeypatch, window):
 
 @pytest.fixture
 def patch_build_run_dir(monkeypatch, tmp_path):
-    """
-    Patch build_run_dir (resolved in dlclivegui.gui.recording_manager namespace)
-    to return a deterministic run directory and capture the call args.
-    """
     import dlclivegui.gui.recording_manager as rm_mod
 
     spy = {"session_dir": None, "use_timestamp": None}
@@ -355,3 +424,20 @@ def patch_build_run_dir(monkeypatch, tmp_path):
 
     monkeypatch.setattr(rm_mod, "build_run_dir", _fake_build_run_dir)
     return spy, run_dir
+
+
+# ---------------------------------------------------------------------
+# Optional legacy fixture: patch_factory (keep only if some tests still depend on it)
+# ---------------------------------------------------------------------
+@pytest.fixture
+def patch_factory(monkeypatch, fake_backend_factory):
+    """
+    Patch CameraFactory.create to always return the fake backend, regardless of backend name.
+    This supports tests that still create CameraSettings(backend="opencv", ...).
+    """
+
+    def _create(settings: CameraSettings):
+        return fake_backend_factory(settings)
+
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(_create))
+    return _create

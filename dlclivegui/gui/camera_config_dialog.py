@@ -231,6 +231,7 @@ class CameraConfigDialog(QDialog):
         self._preview_backend: CameraBackend | None = None
         self._preview_timer: QTimer | None = None
         self._preview_active: bool = False
+        self._preview_starting: bool = False
 
         # Camera detection worker
         self._scan_worker: DetectCamerasWorker | None = None
@@ -271,8 +272,8 @@ class CameraConfigDialog(QDialog):
                 "width": int(self.cam_width.value()),
                 "height": int(self.cam_height.value()),
                 "fps": float(self.cam_fps.value()),
-                "exposure": int(self.cam_exposure.value()),
-                "gain": float(self.cam_gain.value()),
+                "exposure": int(self.cam_exposure.value()) if self.cam_exposure.isEnabled() else 0,
+                "gain": float(self.cam_gain.value()) if self.cam_gain.isEnabled() else 0.0,
                 "rotation": int(self.cam_rotation.currentData() or 0),
                 "crop_x0": int(self.cam_crop_x0.value()),
                 "crop_y0": int(self.cam_crop_y0.value()),
@@ -1190,8 +1191,8 @@ class CameraConfigDialog(QDialog):
         cam.width = int(self.cam_width.value())
         cam.height = int(self.cam_height.value())
         cam.fps = float(self.cam_fps.value())
-        cam.exposure = int(self.cam_exposure.value())
-        cam.gain = float(self.cam_gain.value())
+        cam.exposure = int(self.cam_exposure.value() if self.cam_exposure.isEnabled() else 0)
+        cam.gain = float(self.cam_gain.value() if self.cam_gain.isEnabled() else 0.0)
         cam.rotation = int(self.cam_rotation.currentData() or 0)
         cam.crop_x0 = int(self.cam_crop_x0.value())
         cam.crop_y0 = int(self.cam_crop_y0.value())
@@ -1597,6 +1598,11 @@ class CameraConfigDialog(QDialog):
             restart = False
             if self._preview_active and isinstance(old_settings, CameraSettings):
                 restart = self._should_restart_preview(old_settings, new_model)
+                # If the preview is starting but not fully active yet,
+                # we can skip the restart since the new settings will be picked up on start anyway
+                if self._preview_active and not getattr(self, "._preview_starting", False):
+                    if restart:
+                        QTimer.singleShot(0, lambda cam=new_model: self._restart_preview_for_camera(cam))
 
             LOGGER.info(
                 "[Apply] preview_active=%s restart=%s backend=%s idx=%s",
@@ -1745,64 +1751,72 @@ class CameraConfigDialog(QDialog):
 
     def _start_preview(self) -> None:
         """Start camera preview asynchronously (no UI freeze)."""
-        row = self._current_edit_index
-        if row is None or row < 0:
-            row = self.active_cameras_list.currentRow()
-
-        if row is None or row < 0:
-            LOGGER.warning("[Preview] No camera selected to start preview.")
+        if not self._commit_pending_edits(reason="before starting preview"):
             return
-
-        self._current_edit_index = row
-        LOGGER.info(
-            "[Preview] resolved start row=%s active_row=%s",
-            self._current_edit_index,
-            self.active_cameras_list.currentRow(),
-        )
-
-        item = self.active_cameras_list.item(self._current_edit_index)
-        if not item:
+        if self._preview_active or self._loading_active:
             return
-        cam = item.data(Qt.ItemDataRole.UserRole)
-        if not cam:
-            return
-        LOGGER.info(
-            "[Preview] start requested row=%s backend=%s idx=%s name=%s loading=%s active=%s",
-            self._current_edit_index,
-            cam.backend,
-            cam.index,
-            cam.name,
-            self._loading_active,
-            self._preview_active,
-        )
+        self.starting_preview = True
+        try:
+            row = self._current_edit_index
+            if row is None or row < 0:
+                row = self.active_cameras_list.currentRow()
 
-        # Ensure any existing preview or loader is stopped/canceled
-        self._stop_preview()
-        # if self._loader and self._loader.isRunning():
-        # self._loader.request_cancel()
-        # Never use probe or fast_start mode
-        if isinstance(cam.properties, dict):
-            ns = cam.properties.get((cam.backend or "").lower(), {})
-            if isinstance(ns, dict):
-                ns["fast_start"] = False
-        # Create worker
-        self._loader = CameraLoadWorker(cam, self)
-        self._loader.progress.connect(self._on_loader_progress)
-        self._loader.success.connect(self._on_loader_success)
-        self._loader.error.connect(self._on_loader_error)
-        self._loader.canceled.connect(self._on_loader_canceled)
-        self._loader.finished.connect(self._on_loader_finished)
-        self._loading_active = True
-        self._update_button_states()
+            if row is None or row < 0:
+                LOGGER.warning("[Preview] No camera selected to start preview.")
+                return
 
-        # Prepare UI
-        self.preview_group.setVisible(True)
-        self.preview_label.setText("No preview")
-        self.preview_status.clear()
-        self._show_loading_overlay("Loading camera…")
-        self._set_preview_button_loading(True)
+            self._current_edit_index = row
+            LOGGER.info(
+                "[Preview] resolved start row=%s active_row=%s",
+                self._current_edit_index,
+                self.active_cameras_list.currentRow(),
+            )
 
-        self._loader.start()
+            item = self.active_cameras_list.item(self._current_edit_index)
+            if not item:
+                return
+            cam = item.data(Qt.ItemDataRole.UserRole)
+            if not cam:
+                return
+            LOGGER.info(
+                "[Preview] start requested row=%s backend=%s idx=%s name=%s loading=%s active=%s",
+                self._current_edit_index,
+                cam.backend,
+                cam.index,
+                cam.name,
+                self._loading_active,
+                self._preview_active,
+            )
+
+            # Ensure any existing preview or loader is stopped/canceled
+            self._stop_preview()
+            # if self._loader and self._loader.isRunning():
+            # self._loader.request_cancel()
+            # Never use probe or fast_start mode
+            if isinstance(cam.properties, dict):
+                ns = cam.properties.get((cam.backend or "").lower(), {})
+                if isinstance(ns, dict):
+                    ns["fast_start"] = False
+            # Create worker
+            self._loader = CameraLoadWorker(cam, self)
+            self._loader.progress.connect(self._on_loader_progress)
+            self._loader.success.connect(self._on_loader_success)
+            self._loader.error.connect(self._on_loader_error)
+            self._loader.canceled.connect(self._on_loader_canceled)
+            self._loader.finished.connect(self._on_loader_finished)
+            self._loading_active = True
+            self._update_button_states()
+
+            # Prepare UI
+            self.preview_group.setVisible(True)
+            self.preview_label.setText("No preview")
+            self.preview_status.clear()
+            self._show_loading_overlay("Loading camera…")
+            self._set_preview_button_loading(True)
+
+            self._loader.start()
+        finally:
+            self.starting_preview = False
 
     def _stop_preview(self) -> None:
         """Stop camera preview and cancel any ongoing loading."""
