@@ -44,20 +44,56 @@ class GenTLCameraBackend(CameraBackend):
     def __init__(self, settings):
         super().__init__(settings)
 
+        # --- Properties namespace handling (new UI stores backend options under properties["gentl"]) ---
         props = settings.properties if isinstance(settings.properties, dict) else {}
         ns = props.get(self.OPTIONS_KEY, {})
         if not isinstance(ns, dict):
             ns = {}
 
+        # --- CTI / transport configuration ---
         self._cti_file: str | None = ns.get("cti_file") or props.get("cti_file")
-        self._serial_number: str | None = (
-            ns.get("serial_number") or ns.get("serial") or props.get("serial_number") or props.get("serial")
+        self._cti_search_paths: tuple[str, ...] = self._parse_cti_paths(
+            ns.get("cti_search_paths", props.get("cti_search_paths"))
         )
+
+        # --- Fast probe mode (CameraProbeWorker sets this) ---
+        # When fast_start=True, open() should avoid starting acquisition if possible.
+        self._fast_start: bool = bool(ns.get("fast_start", False))
+
+        # --- Stable identity / serial selection ---
+        # New UI stores stable identity as ns["device_id"], with recommended formats:
+        #   - "serial:<SERIAL>" for true serials
+        #   - "fp:<fingerprint...>" when serial is missing/ambiguous
+        #
+        # We keep legacy "serial_number"/"serial" behavior as fallback.
+        raw_device_id = ns.get("device_id") or props.get("device_id")
+        legacy_serial = ns.get("serial_number") or ns.get("serial") or props.get("serial_number") or props.get("serial")
+
+        self._device_id: str | None = str(raw_device_id).strip() if raw_device_id else None
+
+        # Decide what to use for actual device selection in open():
+        # - If device_id is "serial:XXXX" -> use XXXX as serial_number
+        # - Otherwise, keep legacy serial if present; open() may still use index if serial is None
+        self._serial_number: str | None = None
+        if self._device_id:
+            did = self._device_id
+            if did.startswith("serial:"):
+                self._serial_number = did.split("serial:", 1)[1].strip() or None
+            elif did.startswith("fp:"):
+                # fingerprint: not directly usable as serial; rebind_settings should map fp -> index
+                self._serial_number = legacy_serial  # keep legacy if any, otherwise None
+            else:
+                # If device_id is provided without prefix, treat it as a "serial-like" value for backward compatibility
+                self._serial_number = did
+        else:
+            self._serial_number = str(legacy_serial).strip() if legacy_serial else None
+
+        # --- Pixel format / image transforms (legacy + backend options) ---
         self._pixel_format: str = ns.get("pixel_format") or props.get("pixel_format", "Mono8")
         self._rotate: int = int(ns.get("rotate", props.get("rotate", 0))) % 360
         self._crop: tuple[int, int, int, int] | None = self._parse_crop(ns.get("crop", props.get("crop")))
 
-        # Exposure / Gain: 0 means Auto (do not set)
+        # --- Exposure / Gain: 0 means Auto (do not set) ---
         exp_val = getattr(settings, "exposure", 0)
         gain_val = getattr(settings, "gain", 0.0)
 
@@ -81,21 +117,21 @@ class GenTLCameraBackend(CameraBackend):
             except Exception:
                 self._gain = None
 
+        # --- Acquisition timeout ---
         self._timeout: float = float(ns.get("timeout", props.get("timeout", 2.0)))
-        self._cti_search_paths: tuple[str, ...] = self._parse_cti_paths(
-            ns.get("cti_search_paths", props.get("cti_search_paths"))
-        )
 
-        # Resolution request (None = device default)
+        # --- Resolution request (None = device default / Auto) ---
+        # Uses settings.width/settings.height if set; falls back to legacy props["resolution"] if present.
         self._requested_resolution: tuple[int, int] | None = self._get_requested_resolution_or_none()
 
-        # Actuals for GUI
+        # --- Actuals for GUI ---
         self._actual_width: int | None = None
         self._actual_height: int | None = None
         self._actual_fps: float | None = None
         self._actual_gain: float | None = None
         self._actual_exposure: float | None = None
 
+        # --- Harvesters resources ---
         self._harvester = None
         self._acquirer = None
         self._device_label: str | None = None
@@ -169,74 +205,180 @@ class GenTLCameraBackend(CameraBackend):
                 "The 'harvesters' package is required for the GenTL backend. Install it via 'pip install harvesters'."
             )
 
+        # Ensure properties namespace exists for persistence back to UI
+        if not isinstance(self.settings.properties, dict):
+            self.settings.properties = {}
+        props = self.settings.properties
+        ns = props.get(self.OPTIONS_KEY, {})
+        if not isinstance(ns, dict):
+            ns = {}
+            props[self.OPTIONS_KEY] = ns
+
         self._harvester = Harvester()
-        cti_file = self._cti_file or self._find_cti_file()
+
+        # Resolve CTI file: explicit > configured > search
+        cti_file = self._cti_file or ns.get("cti_file") or props.get("cti_file") or self._find_cti_file()
         self._harvester.add_file(cti_file)
         self._harvester.update()
 
         if not self._harvester.device_info_list:
             raise RuntimeError("No GenTL cameras detected via Harvesters")
 
-        serial = self._serial_number
-        index = int(self.settings.index or 0)
-        if serial:
-            available = self._available_serials()
-            matches = [s for s in available if serial in s]
-            if not matches:
-                raise RuntimeError(f"Camera with serial '{serial}' not found. Available cameras: {available}")
-            serial = matches[0]
-        else:
-            device_count = len(self._harvester.device_info_list)
-            if index < 0 or index >= device_count:
-                raise RuntimeError(f"Camera index {index} out of range for {device_count} GenTL device(s)")
+        infos = list(self._harvester.device_info_list)
 
-        self._acquirer = self._create_acquirer(serial, index)
+        # Helper: robustly read device_info fields (supports dict-like or attribute-like entries)
+        def _info_get(info, key: str, default=None):
+            try:
+                if hasattr(info, "get"):
+                    v = info.get(key)  # type: ignore[attr-defined]
+                    if v is not None:
+                        return v
+            except Exception:
+                pass
+            try:
+                v = getattr(info, key, None)
+                if v is not None:
+                    return v
+            except Exception:
+                pass
+            return default
+
+        # ------------------------------------------------------------------
+        # Device selection (stable device_id > serial > index)
+        # ------------------------------------------------------------------
+        requested_index = int(self.settings.index or 0)
+        selected_index: int | None = None
+        selected_serial: str | None = None
+
+        # 1) Try stable device_id first (supports "serial:..." and "fp:...")
+        target_device_id = self._device_id or ns.get("device_id") or props.get("device_id")
+        if target_device_id:
+            target_device_id = str(target_device_id).strip()
+
+            # Match exact against computed device_id_from_info(info)
+            for idx, info in enumerate(infos):
+                try:
+                    did = self._device_id_from_info(info)
+                except Exception:
+                    did = None
+                if did and did == target_device_id:
+                    selected_index = idx
+                    selected_serial = _info_get(info, "serial_number", None)
+                    selected_serial = str(selected_serial).strip() if selected_serial else None
+                    break
+
+            # If device_id is "serial:XXXX", match serial directly
+            if selected_index is None and target_device_id.startswith("serial:"):
+                serial_target = target_device_id.split("serial:", 1)[1].strip()
+                if serial_target:
+                    exact = []
+                    for idx, info in enumerate(infos):
+                        sn = _info_get(info, "serial_number", "")
+                        sn = str(sn).strip() if sn is not None else ""
+                        if sn == serial_target:
+                            exact.append((idx, sn))
+                    if exact:
+                        selected_index = exact[0][0]
+                        selected_serial = exact[0][1]
+                    else:
+                        sub = []
+                        for idx, info in enumerate(infos):
+                            sn = _info_get(info, "serial_number", "")
+                            sn = str(sn).strip() if sn is not None else ""
+                            if serial_target and serial_target in sn:
+                                sub.append((idx, sn))
+                        if len(sub) == 1:
+                            selected_index = sub[0][0]
+                            selected_serial = sub[0][1] or None
+                        elif len(sub) > 1:
+                            candidates = [sn for _, sn in sub]
+                            raise RuntimeError(
+                                f"Ambiguous GenTL serial match for '{serial_target}'. Candidates: {candidates}"
+                            )
+
+        # 2) Try legacy serial selection if still not selected
+        if selected_index is None:
+            serial = self._serial_number
+            if serial:
+                serial = str(serial).strip()
+                exact = []
+                for idx, info in enumerate(infos):
+                    sn = _info_get(info, "serial_number", "")
+                    sn = str(sn).strip() if sn is not None else ""
+                    if sn == serial:
+                        exact.append((idx, sn))
+                if exact:
+                    selected_index = exact[0][0]
+                    selected_serial = exact[0][1]
+                else:
+                    sub = []
+                    for idx, info in enumerate(infos):
+                        sn = _info_get(info, "serial_number", "")
+                        sn = str(sn).strip() if sn is not None else ""
+                        if serial and serial in sn:
+                            sub.append((idx, sn))
+                    if len(sub) == 1:
+                        selected_index = sub[0][0]
+                        selected_serial = sub[0][1] or None
+                    elif len(sub) > 1:
+                        candidates = [sn for _, sn in sub]
+                        raise RuntimeError(f"Ambiguous GenTL serial match for '{serial}'. Candidates: {candidates}")
+                    else:
+                        available = [str(_info_get(i, "serial_number", "")).strip() for i in infos]
+                        raise RuntimeError(f"Camera with serial '{serial}' not found. Available cameras: {available}")
+
+        # 3) Fallback to index selection
+        if selected_index is None:
+            device_count = len(infos)
+            if requested_index < 0 or requested_index >= device_count:
+                raise RuntimeError(f"Camera index {requested_index} out of range for {device_count} GenTL device(s)")
+            selected_index = requested_index
+            sn = _info_get(infos[selected_index], "serial_number", "")
+            selected_serial = str(sn).strip() if sn else None
+
+        # Update settings.index to the actual selected index (important for UI merge-back + stability)
+        self.settings.index = int(selected_index)
+        selected_info = infos[int(selected_index)]
+
+        # ------------------------------------------------------------------
+        # Create ImageAcquirer using the latest Harvesters API: Harvester.create(...)
+        # ------------------------------------------------------------------
+        try:
+            if selected_serial:
+                self._acquirer = self._harvester.create({"serial_number": str(selected_serial)})
+            else:
+                self._acquirer = self._harvester.create(int(selected_index))
+        except TypeError:
+            # Some versions accept keyword argument; keep as a safety net without reintroducing legacy API.
+            if selected_serial:
+                self._acquirer = self._harvester.create({"serial_number": str(selected_serial)})
+            else:
+                self._acquirer = self._harvester.create(index=int(selected_index))
 
         remote = self._acquirer.remote_device
         node_map = remote.node_map
 
-        # print(dir(node_map))
-        """
-        ['AcquisitionBurstFrameCount', 'AcquisitionControl', 'AcquisitionFrameRate', 'AcquisitionMode',
-        'AcquisitionStart', 'AcquisitionStop', 'AnalogControl', 'AutoFunctionsROI', 'AutoFunctionsROIEnable',
-        'AutoFunctionsROIHeight', 'AutoFunctionsROILeft', 'AutoFunctionsROIPreset', 'AutoFunctionsROITop',
-        'AutoFunctionsROIWidth', 'BinningHorizontal', 'BinningVertical', 'BlackLevel', 'CameraRegisterAddress',
-        'CameraRegisterAddressSpace', 'CameraRegisterControl', 'CameraRegisterRead', 'CameraRegisterValue',
-        'CameraRegisterWrite', 'Contrast', 'DecimationHorizontal', 'DecimationVertical', 'Denoise',
-        'DeviceControl', 'DeviceFirmwareVersion', 'DeviceModelName', 'DeviceReset', 'DeviceSFNCVersionMajor',
-        'DeviceSFNCVersionMinor', 'DeviceSFNCVersionSubMinor', 'DeviceScanType', 'DeviceSerialNumber',
-        'DeviceTLType', 'DeviceTLVersionMajor', 'DeviceTLVersionMinor', 'DeviceTLVersionSubMinor',
-        'DeviceTemperature', 'DeviceTemperatureSelector', 'DeviceType', 'DeviceUserID', 'DeviceVendorName',
-        'DigitalIO', 'ExposureAuto', 'ExposureAutoHighlightReduction', 'ExposureAutoLowerLimit',
-        'ExposureAutoReference', 'ExposureAutoUpperLimit', 'ExposureAutoUpperLimitAuto', 'ExposureTime',
-        'GPIn', 'GPOut', 'Gain', 'GainAuto', 'GainAutoLowerLimit', 'GainAutoUpperLimit', 'Gamma', 'Height',
-        'HeightMax', 'IMXLowLatencyTriggerMode', 'ImageFormatControl', 'OffsetAutoCenter', 'OffsetX', 'OffsetY',
-        'PayloadSize', 'PixelFormat', 'ReverseX', 'ReverseY', 'Root', 'SensorHeight', 'SensorWidth', 'Sharpness',
-        'ShowOverlay', 'SoftwareAnalogControl', 'SoftwareTransformControl', 'SoftwareTransformEnable',
-        'StrobeDelay', 'StrobeDuration', 'StrobeEnable', 'StrobeOperation', 'StrobePolarity', 'TLParamsLocked',
-        'TestControl', 'TestPendingAck', 'TimestampLatch', 'TimestampLatchValue', 'TimestampReset', 'ToneMappingAuto',
-        'ToneMappingControl', 'ToneMappingEnable', 'ToneMappingGlobalBrightness', 'ToneMappingIntensity',
-        'TransportLayerControl', 'TriggerActivation', 'TriggerDebouncer', 'TriggerDelay', 'TriggerDenoise',
-        'TriggerMask', 'TriggerMode', 'TriggerOverlap', 'TriggerSelector', 'TriggerSoftware', 'TriggerSource',
-        'UserSetControl', 'UserSetDefault', 'UserSetLoad', 'UserSetSave', 'UserSetSelector', 'Width', 'WidthMax']
-        """
-
+        # Resolve human label for UI
         self._device_label = self._resolve_device_label(node_map)
 
+        # ------------------------------------------------------------------
+        # Apply configuration (existing behavior)
+        # ------------------------------------------------------------------
         self._configure_pixel_format(node_map)
         self._configure_resolution(node_map)
         self._configure_exposure(node_map)
         self._configure_gain(node_map)
         self._configure_frame_rate(node_map)
 
-        # Capture actual resolution even when using defaults
+        # ------------------------------------------------------------------
+        # Capture "actual" telemetry for GUI (existing behavior)
+        # ------------------------------------------------------------------
         try:
             self._actual_width = int(node_map.Width.value)
             self._actual_height = int(node_map.Height.value)
         except Exception:
             pass
 
-        # Capture actual FPS if available
         try:
             self._actual_fps = float(node_map.ResultingFrameRate.value)
         except Exception:
@@ -252,7 +394,330 @@ class GenTLCameraBackend(CameraBackend):
         except Exception:
             self._actual_gain = None
 
+        # ------------------------------------------------------------------
+        # Persist identity + richer device metadata back into settings for UI merge-back
+        # ------------------------------------------------------------------
+        computed_id = None
+        try:
+            computed_id = self._device_id_from_info(selected_info)
+        except Exception:
+            computed_id = None
+
+        if computed_id:
+            ns["device_id"] = computed_id
+        elif selected_serial:
+            ns["device_id"] = f"serial:{selected_serial}"
+
+        # Canonical serial storage
+        if selected_serial:
+            ns["serial_number"] = str(selected_serial)
+            ns["device_serial_number"] = str(selected_serial)
+
+        # UI-friendly name
+        if self._device_label:
+            ns["device_name"] = str(self._device_label)
+
+        # Extra metadata from discovery info (helps debugging and stable identity fallbacks)
+        ns["device_display_name"] = str(_info_get(selected_info, "display_name", "") or "")
+        ns["device_info_id"] = str(_info_get(selected_info, "id_", "") or "")
+        ns["device_vendor"] = str(_info_get(selected_info, "vendor", "") or "")
+        ns["device_model"] = str(_info_get(selected_info, "model", "") or "")
+        ns["device_tl_type"] = str(_info_get(selected_info, "tl_type", "") or "")
+        ns["device_user_defined_name"] = str(_info_get(selected_info, "user_defined_name", "") or "")
+        ns["device_version"] = str(_info_get(selected_info, "version", "") or "")
+        ns["device_access_status"] = _info_get(selected_info, "access_status", None)
+
+        # Preserve CTI used (useful for stable operation)
+        ns["cti_file"] = str(cti_file)
+
+        # ------------------------------------------------------------------
+        # Start streaming unless fast_start probe mode is requested
+        # ------------------------------------------------------------------
+        if getattr(self, "_fast_start", False):
+            LOG.info("GenTL open() in fast_start probe mode: acquisition not started.")
+            return
+
         self._acquirer.start()
+
+    @staticmethod
+    def _device_id_from_info(info) -> str | None:
+        """
+        Build a stable-ish device identifier from Harvester device_info_list entries.
+        This helper supports both dict-like and attribute-like representations.
+        """
+
+        def _read(name: str):
+            # dict-like
+            try:
+                if hasattr(info, "get"):
+                    v = info.get(name)  # type: ignore[attr-defined]
+                    if v is not None:
+                        return v
+            except Exception:
+                pass
+            # attribute-like
+            try:
+                return getattr(info, name, None)
+            except Exception:
+                return None
+
+        def _get(*names: str) -> str | None:
+            for n in names:
+                v = _read(n)
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if s:
+                    return s
+            return None
+
+        # Prefer serial if present (best stable key when available)
+        serial = _get("serial_number", "SerialNumber", "device_serial_number", "sn", "serial")
+        if serial:
+            return f"serial:{serial}"
+
+        # Fallback components (best-effort; names may vary per producer)
+        vendor = _get("vendor", "vendor_name", "manufacturer", "DeviceVendorName")
+        model = _get("model", "model_name", "DeviceModelName")
+        user_id = _get("user_defined_name", "user_id", "DeviceUserID", "DeviceUserId", "device_user_id")
+        tl_type = _get("tl_type", "transport_layer_type", "DeviceTLType")
+
+        unique = _get("id_", "id", "device_id", "uid", "guid", "mac_address", "interface_id", "display_name")
+
+        parts = []
+        for k, v in (("vendor", vendor), ("model", model), ("user", user_id), ("tl", tl_type), ("uid", unique)):
+            if v:
+                parts.append(f"{k}={v}")
+
+        if not parts:
+            return None
+
+        return "fp:" + "|".join(parts)
+
+    @classmethod
+    def discover_devices(
+        cls,
+        *,
+        max_devices: int = 10,
+        should_cancel: callable[[], bool] | None = None,
+        progress_cb: callable[[str], None] | None = None,
+    ):
+        """
+        Rich discovery path for CameraFactory.detect_cameras().
+        Returns a list of DetectedCamera with device_id filled when possible.
+        """
+        if Harvester is None:
+            return []
+
+        # Local import to avoid circulars at import time
+        from ..factory import DetectedCamera
+
+        def _canceled() -> bool:
+            return bool(should_cancel and should_cancel())
+
+        harvester = None
+        try:
+            if progress_cb:
+                progress_cb("Initializing GenTL discovery…")
+
+            harvester = Harvester()
+
+            # Use default CTI search; we don't have per-camera settings here.
+            cti_file = cls._search_cti_file(cls._DEFAULT_CTI_PATTERNS)
+            if not cti_file:
+                if progress_cb:
+                    progress_cb("No .cti found (GenTL producer missing).")
+                return []
+
+            harvester.add_file(cti_file)
+            harvester.update()
+
+            infos = list(harvester.device_info_list or [])
+            if not infos:
+                return []
+
+            out: list[DetectedCamera] = []
+            limit = min(len(infos), max_devices if max_devices > 0 else len(infos))
+
+            for idx in range(limit):
+                if _canceled():
+                    break
+
+                # Create a label for the UI, using display_name if available, otherwise vendor/model/serial.
+                info = infos[idx]
+                display_name = None
+                try:
+                    display_name = (
+                        info.get("display_name") if hasattr(info, "get") else getattr(info, "display_name", None)
+                    )
+                except Exception:
+                    display_name = None
+
+                if display_name:
+                    label = str(display_name).strip()
+                else:
+                    vendor = (
+                        getattr(info, "vendor", None) or (info.get("vendor") if hasattr(info, "get") else None) or ""
+                    )
+                    model = getattr(info, "model", None) or (info.get("model") if hasattr(info, "get") else None) or ""
+                    serial = (
+                        getattr(info, "serial_number", None)
+                        or (info.get("serial_number") if hasattr(info, "get") else None)
+                        or ""
+                    )
+                    vendor = str(vendor).strip()
+                    model = str(model).strip()
+                    serial = str(serial).strip()
+
+                    label = f"{vendor} {model}".strip() if (vendor or model) else f"GenTL device {idx}"
+                    if serial:
+                        label = f"{label} ({serial})"
+
+                device_id = cls._device_id_from_info(info)
+
+                out.append(
+                    DetectedCamera(
+                        index=idx,
+                        label=label,
+                        device_id=device_id,
+                        # GenTL usually doesn't expose vid/pid/path consistently; leave None unless you have it
+                        vid=None,
+                        pid=None,
+                        path=None,
+                        backend_hint=None,
+                    )
+                )
+
+                if progress_cb:
+                    progress_cb(f"Found: {label}")
+
+            out.sort(key=lambda c: c.index)
+            return out
+
+        except Exception:
+            # Returning None would trigger probing fallback; but since you declared discovery supported,
+            # returning [] is usually less surprising than a slow probe storm.
+            return []
+        finally:
+            if harvester is not None:
+                try:
+                    harvester.reset()
+                except Exception:
+                    pass
+
+    @classmethod
+    def rebind_settings(cls, settings):
+        """
+        If a stable identity exists in settings.properties['gentl'], map it to the
+        correct current index (and serial_number if available).
+        """
+        if Harvester is None:
+            return settings
+
+        props = settings.properties if isinstance(settings.properties, dict) else {}
+        ns = props.get(cls.OPTIONS_KEY, {})
+        if not isinstance(ns, dict):
+            ns = {}
+
+        target_id = ns.get("device_id") or ns.get("serial_number") or ns.get("serial")
+        if not target_id:
+            return settings
+
+        harvester = None
+        try:
+            harvester = Harvester()
+            cti_file = ns.get("cti_file") or props.get("cti_file") or cls._search_cti_file(cls._DEFAULT_CTI_PATTERNS)
+            if not cti_file:
+                return settings
+
+            harvester.add_file(cti_file)
+            harvester.update()
+
+            infos = list(harvester.device_info_list or [])
+            if not infos:
+                return settings
+
+            # Try exact match by computed device_id first
+            match_index = None
+            match_serial = None
+
+            # Normalize
+            target_id_str = str(target_id).strip()
+
+            for idx, info in enumerate(infos):
+                dev_id = cls._device_id_from_info(info)
+                if dev_id and dev_id == target_id_str:
+                    match_index = idx
+                    match_serial = getattr(info, "serial_number", None)
+                    break
+
+            # If not found, fallback: treat target as serial-ish substring (legacy behavior)
+            if match_index is None:
+                for idx, info in enumerate(infos):
+                    serial = getattr(info, "serial_number", None)
+                    if serial and target_id_str in str(serial):
+                        match_index = idx
+                        match_serial = serial
+                        break
+
+            if match_index is None:
+                return settings
+
+            # Apply rebinding
+            settings.index = int(match_index)
+
+            # Keep namespace consistent for open()
+            if not isinstance(settings.properties, dict):
+                settings.properties = {}
+            ns2 = settings.properties.setdefault(cls.OPTIONS_KEY, {})
+            if not isinstance(ns2, dict):
+                ns2 = {}
+                settings.properties[cls.OPTIONS_KEY] = ns2
+
+            # If we got a serial, save it for open() selection (backward compatible)
+            if match_serial:
+                ns2["serial_number"] = str(match_serial)
+            ns2["device_id"] = target_id_str
+
+            return settings
+
+        except Exception:
+            # Any failure should not prevent fallback to index-based open
+            return settings
+        finally:
+            if harvester is not None:
+                try:
+                    harvester.reset()
+                except Exception:
+                    pass
+
+    @classmethod
+    def quick_ping(cls, index: int, _unused=None) -> bool:
+        """
+        Fast check: is there a device at this index according to Harvester?
+        Does not open/start acquisition.
+        """
+        if Harvester is None:
+            return False
+
+        harvester = None
+        try:
+            harvester = Harvester()
+            cti_file = cls._search_cti_file(cls._DEFAULT_CTI_PATTERNS)
+            if not cti_file:
+                return False
+            harvester.add_file(cti_file)
+            harvester.update()
+            infos = harvester.device_info_list or []
+            return 0 <= int(index) < len(infos)
+        except Exception:
+            return False
+        finally:
+            if harvester is not None:
+                try:
+                    harvester.reset()
+                except Exception:
+                    pass
 
     def read(self) -> tuple[np.ndarray, float]:
         if self._acquirer is None:
@@ -509,90 +974,6 @@ class GenTLCameraBackend(CameraBackend):
                 )
         except Exception as e:
             LOG.warning(f"Failed to set pixel format '{self._pixel_format}': {e}")
-
-    def _configure_resolution(self, node_map) -> None:
-        """Configure camera resolution (width and height)."""
-        if self._resolution is None:
-            return
-
-        requested_width, requested_height = self._resolution
-        actual_width, actual_height = None, None
-
-        # Try to set width
-        for width_attr in ("Width", "WidthMax"):
-            try:
-                node = getattr(node_map, width_attr)
-                if width_attr == "Width":
-                    # Get constraints
-                    try:
-                        min_w = node.min
-                        max_w = node.max
-                        inc_w = getattr(node, "inc", 1)
-                        # Adjust to valid value
-                        width = self._adjust_to_increment(requested_width, min_w, max_w, inc_w)
-                        if width != requested_width:
-                            LOG.info(
-                                f"Width adjusted from {requested_width} to {width} "
-                                f"(min={min_w}, max={max_w}, inc={inc_w})"
-                            )
-                        node.value = int(width)
-                        actual_width = node.value
-                        break
-                    except Exception as e:
-                        # Try setting without adjustment
-                        try:
-                            node.value = int(requested_width)
-                            actual_width = node.value
-                            break
-                        except Exception:
-                            LOG.warning(f"Failed to set width via {width_attr}: {e}")
-                            continue
-            except AttributeError:
-                continue
-
-        # Try to set height
-        for height_attr in ("Height", "HeightMax"):
-            try:
-                node = getattr(node_map, height_attr)
-                if height_attr == "Height":
-                    # Get constraints
-                    try:
-                        min_h = node.min
-                        max_h = node.max
-                        inc_h = getattr(node, "inc", 1)
-                        # Adjust to valid value
-                        height = self._adjust_to_increment(requested_height, min_h, max_h, inc_h)
-                        if height != requested_height:
-                            LOG.info(
-                                f"Height adjusted from {requested_height} to {height} "
-                                f"(min={min_h}, max={max_h}, inc={inc_h})"
-                            )
-                        node.value = int(height)
-                        actual_height = node.value
-                        break
-                    except Exception as e:
-                        # Try setting without adjustment
-                        try:
-                            node.value = int(requested_height)
-                            actual_height = node.value
-                            break
-                        except Exception:
-                            LOG.warning(f"Failed to set height via {height_attr}: {e}")
-                            continue
-            except AttributeError:
-                continue
-
-        # Log final resolution
-        if actual_width is not None and actual_height is not None:
-            if actual_width != requested_width or actual_height != requested_height:
-                LOG.warning(
-                    f"Resolution mismatch: requested {requested_width}x{requested_height}, "
-                    f"got {actual_width}x{actual_height}"
-                )
-            else:
-                LOG.info(f"Resolution set to {actual_width}x{actual_height}")
-        else:
-            LOG.warning(f"Could not verify resolution setting (width={actual_width}, height={actual_height})")
 
     def _configure_exposure(self, node_map) -> None:
         if self._exposure is None:
