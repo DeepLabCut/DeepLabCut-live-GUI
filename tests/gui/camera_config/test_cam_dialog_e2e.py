@@ -14,76 +14,90 @@ from dlclivegui.cameras.factory import DetectedCamera
 from dlclivegui.config import CameraSettings, MultiCameraSettings
 from dlclivegui.gui.camera_config_dialog import CameraConfigDialog, CameraLoadWorker
 
-# ---------------- Fake backends ----------------
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
 
 
-class FakeBackend(CameraBackend):
-    """Simple preview backend that always returns an RGB frame."""
+def _select_backend_for_active_cam(dialog: CameraConfigDialog, cam_row: int = 0) -> str:
+    """
+    Ensure backend combo is set to the backend of the active camera at cam_row.
+    If that backend is not present in the combo, fall back to the current combo backend
+    and update the camera setting backend to match (so identity/dup logic stays coherent).
+    Returns the backend key actually selected (lowercase).
+    """
+    # backend requested by the camera settings
+    backend = (dialog._working_settings.cameras[cam_row].backend or "").lower()
 
-    def __init__(self, settings):
-        super().__init__(settings)
-        self._opened = False
+    idx = dialog.backend_combo.findData(backend)
+    if idx >= 0:
+        dialog.backend_combo.setCurrentIndex(idx)
+        return backend
 
-    def open(self):
-        self._opened = True
+    # Fallback: use current combo backend (or first item) and update the camera backend to match
+    fallback = dialog.backend_combo.currentData()
+    if not fallback and dialog.backend_combo.count() > 0:
+        fallback = dialog.backend_combo.itemData(0)
+        dialog.backend_combo.setCurrentIndex(0)
 
-    def close(self):
-        self._opened = False
+    fallback = (fallback or "").lower()
+    assert fallback, "No backend available in combo"
 
-    def read(self):
-        return np.zeros((30, 40, 3), dtype=np.uint8), 0.1
+    # Ensure camera backend matches combo so duplicate logic compares apples-to-apples
+    dialog._working_settings.cameras[cam_row].backend = fallback
+    # Also update the list item UserRole object (so UI selection holds the updated backend)
+    try:
+        item = dialog.active_cameras_list.item(cam_row)
+        if item is not None:
+            cam = item.data(Qt.ItemDataRole.UserRole)
+            if cam is not None:
+                cam.backend = fallback
+                item.setData(Qt.ItemDataRole.UserRole, cam)
+    except Exception:
+        pass
+
+    # Update labels/UI for consistency
+    try:
+        dialog._update_active_list_item(cam_row, dialog._working_settings.cameras[cam_row])
+        dialog._update_controls_for_backend(fallback)
+    except Exception:
+        pass
+
+    return fallback
 
 
-class CountingBackend(CameraBackend):
-    """Backend that counts opens (used to validate restart behavior)."""
-
-    opens = 0
-
-    def __init__(self, settings):
-        super().__init__(settings)
-        self._opened = False
-
-    def open(self):
-        type(self).opens += 1
-        self._opened = True
-
-    def close(self):
-        self._opened = False
-
-    def read(self):
-        return np.zeros((30, 40, 3), dtype=np.uint8), 0.1
-
-
-# ---------------- Fixtures ----------------
+# ---------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------
 
 
 @pytest.fixture
-def patch_factory(monkeypatch):
+def patch_detect_cameras(monkeypatch):
     """
-    Patch camera factory so no hardware access occurs, and scan is deterministic.
-    Default backend is FakeBackend unless overridden per-test.
+    Make discovery deterministic for these tests.
+    (GUI conftest patches create(), but not necessarily detect_cameras().)
     """
-    monkeypatch.setattr(CameraFactory, "create", lambda s: FakeBackend(s))
-
     monkeypatch.setattr(
         CameraFactory,
         "detect_cameras",
-        lambda backend, max_devices=10, **kw: [
-            DetectedCamera(index=0, label=f"{backend}-X"),
-            DetectedCamera(index=1, label=f"{backend}-Y"),
-        ],
+        staticmethod(
+            lambda backend, max_devices=10, **kw: [
+                DetectedCamera(index=0, label=f"{backend}-X"),
+                DetectedCamera(index=1, label=f"{backend}-Y"),
+            ]
+        ),
     )
 
 
 @pytest.fixture
-def dialog(qtbot, patch_factory):
+def dialog(qtbot, patch_detect_cameras):
     """
-    E2E fixture: allow scan thread + preview loader + timer to run.
-    Includes robust teardown to avoid leaked threads/timers.
+    E2E fixture: dialog with scan worker + loader + preview timer enabled.
+    Uses a backend that is guaranteed to exist in test registry: 'fake'.
     """
     s = MultiCameraSettings(
         cameras=[
-            CameraSettings(name="A", backend="opencv", index=0, enabled=True),
+            CameraSettings(name="A", backend="fake", index=0, enabled=True),
         ]
     )
     d = CameraConfigDialog(None, s)
@@ -109,7 +123,9 @@ def dialog(qtbot, patch_factory):
     qtbot.waitUntil(lambda: not getattr(d, "_preview_active", False), timeout=2000)
 
 
-# ---------------- E2E tests ----------------
+# ---------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------
 
 
 @pytest.mark.gui
@@ -141,10 +157,28 @@ def test_e2e_preview_start_stop(dialog, qtbot):
 def test_e2e_apply_settings_restarts_preview_on_restart_fields(dialog, qtbot, monkeypatch):
     """
     Change a restart-relevant field (fps) and verify preview actually restarts
-    (open() called again) while staying active.
+    by observing open() being called again.
     """
+
+    class CountingBackend(CameraBackend):
+        opens = 0
+
+        def __init__(self, settings):
+            super().__init__(settings)
+            self._opened = False
+
+        def open(self):
+            type(self).opens += 1
+            self._opened = True
+
+        def close(self):
+            self._opened = False
+
+        def read(self):
+            return np.zeros((30, 40, 3), dtype=np.uint8), 0.1
+
     CountingBackend.opens = 0
-    monkeypatch.setattr(CameraFactory, "create", lambda s: CountingBackend(s))
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(lambda s: CountingBackend(s)))
 
     dialog.active_cameras_list.setCurrentRow(0)
     qtbot.mouseClick(dialog.preview_btn, Qt.LeftButton)
@@ -165,10 +199,28 @@ def test_e2e_apply_settings_restarts_preview_on_restart_fields(dialog, qtbot, mo
 def test_e2e_apply_settings_does_not_restart_on_crop_or_rotation(dialog, qtbot, monkeypatch):
     """
     Crop/rotation are applied live in preview; Apply should not restart backend.
-    We validate by ensuring backend open count does not increase.
+    We validate by ensuring open() count does not increase.
     """
+
+    class CountingBackend(CameraBackend):
+        opens = 0
+
+        def __init__(self, settings):
+            super().__init__(settings)
+            self._opened = False
+
+        def open(self):
+            type(self).opens += 1
+            self._opened = True
+
+        def close(self):
+            self._opened = False
+
+        def read(self):
+            return np.zeros((30, 40, 3), dtype=np.uint8), 0.1
+
     CountingBackend.opens = 0
-    monkeypatch.setattr(CameraFactory, "create", lambda s: CountingBackend(s))
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(lambda s: CountingBackend(s)))
 
     dialog.active_cameras_list.setCurrentRow(0)
     qtbot.mouseClick(dialog.preview_btn, Qt.LeftButton)
@@ -189,9 +241,13 @@ def test_e2e_apply_settings_does_not_restart_on_crop_or_rotation(dialog, qtbot, 
 @pytest.mark.gui
 def test_e2e_selection_change_auto_commits(dialog, qtbot):
     """
-    Guard contract in E2E mode: switching selection commits pending edits.
-    We add a second camera deterministically via the available list.
+    Guard contract: switching selection commits pending edits.
+    Use FPS (supported) rather than gain (OpenCV gain is intentionally disabled).
     """
+    # Ensure backend combo matches active cam (important for add/dup logic)
+    _select_backend_for_active_cam(dialog, cam_row=0)
+
+    # Add second camera deterministically
     dialog._on_scan_result([DetectedCamera(index=1, label="ExtraCam")])
     dialog.available_cameras_list.setCurrentRow(0)
     qtbot.mouseClick(dialog.add_camera_btn, Qt.LeftButton)
@@ -213,17 +269,15 @@ def test_e2e_selection_change_auto_commits(dialog, qtbot):
 @pytest.mark.gui
 def test_cancel_scan(dialog, qtbot, monkeypatch):
     def slow_detect(backend, max_devices=10, should_cancel=None, progress_cb=None, **kwargs):
-        # simulate long scan that can be interrupted
         for i in range(50):
             if should_cancel and should_cancel():
                 break
             if progress_cb:
                 progress_cb(f"Scanning… {i}")
             time.sleep(0.02)
-        # Return something (could be empty if canceled early)
         return [DetectedCamera(index=0, label=f"{backend}-X")]
 
-    monkeypatch.setattr(CameraFactory, "detect_cameras", slow_detect)
+    monkeypatch.setattr(CameraFactory, "detect_cameras", staticmethod(slow_detect))
 
     qtbot.mouseClick(dialog.refresh_btn, Qt.LeftButton)
     qtbot.waitUntil(lambda: dialog.scan_cancel_btn.isVisible(), timeout=1000)
@@ -233,19 +287,16 @@ def test_cancel_scan(dialog, qtbot, monkeypatch):
     with qtbot.waitSignal(dialog.scan_finished, timeout=3000):
         pass
 
-    # UI should be re-enabled after finish
     assert dialog.refresh_btn.isEnabled()
     assert dialog.backend_combo.isEnabled()
 
 
-def _select_backend(dialog, backend_name: str):
-    idx = dialog.backend_combo.findData(backend_name)
-    assert idx >= 0, f"Backend {backend_name} not present"
-    dialog.backend_combo.setCurrentIndex(idx)
-
-
 @pytest.mark.gui
-def test_duplicate_camera_prevented(dialog, qtbot, monkeypatch, temp_backend):
+def test_duplicate_camera_prevented(dialog, qtbot, monkeypatch):
+    """
+    Duplicate detection compares identity keys including backend.
+    Ensure backend combo is set to match existing active camera backend.
+    """
     calls = {"n": 0}
 
     def _warn(parent, title, text, *args, **kwargs):
@@ -254,12 +305,12 @@ def test_duplicate_camera_prevented(dialog, qtbot, monkeypatch, temp_backend):
 
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(_warn))
 
-    # Ensure the available list is interpreted as "opencv" (identity key uses backend)
-    _select_backend(dialog, "opencv")
+    backend = _select_backend_for_active_cam(dialog, cam_row=0)
 
     initial_count = dialog.active_cameras_list.count()
 
-    dialog._on_scan_result([DetectedCamera(index=0, label="opencv-X")])
+    # Same backend + same index -> duplicate
+    dialog._on_scan_result([DetectedCamera(index=0, label=f"{backend}-X")])
     dialog.available_cameras_list.setCurrentRow(0)
 
     qtbot.mouseClick(dialog.add_camera_btn, Qt.LeftButton)
@@ -269,7 +320,10 @@ def test_duplicate_camera_prevented(dialog, qtbot, monkeypatch, temp_backend):
 
 
 @pytest.mark.gui
-def test_max_cameras_prevented(qtbot, monkeypatch, patch_factory):
+def test_max_cameras_prevented(qtbot, monkeypatch, patch_detect_cameras):
+    """
+    Dialog enforces MAX_CAMERAS enabled cameras. Use backend='fake' for stability.
+    """
     calls = {"n": 0}
 
     def _warn(parent, title, text, *args, **kwargs):
@@ -280,10 +334,10 @@ def test_max_cameras_prevented(qtbot, monkeypatch, patch_factory):
 
     s = MultiCameraSettings(
         cameras=[
-            CameraSettings(name="C0", backend="opencv", index=0, enabled=True),
-            CameraSettings(name="C1", backend="opencv", index=1, enabled=True),
-            CameraSettings(name="C2", backend="opencv", index=2, enabled=True),
-            CameraSettings(name="C3", backend="opencv", index=3, enabled=True),
+            CameraSettings(name="C0", backend="fake", index=0, enabled=True),
+            CameraSettings(name="C1", backend="fake", index=1, enabled=True),
+            CameraSettings(name="C2", backend="fake", index=2, enabled=True),
+            CameraSettings(name="C3", backend="fake", index=3, enabled=True),
         ]
     )
     d = CameraConfigDialog(None, s)
@@ -291,17 +345,20 @@ def test_max_cameras_prevented(qtbot, monkeypatch, patch_factory):
     d.show()
     qtbot.waitExposed(d)
 
-    initial_count = d.active_cameras_list.count()
+    try:
+        _select_backend_for_active_cam(d, cam_row=0)
 
-    d._on_scan_result([DetectedCamera(index=4, label="Extra")])
-    d.available_cameras_list.setCurrentRow(0)
+        initial_count = d.active_cameras_list.count()
 
-    qtbot.mouseClick(d.add_camera_btn, Qt.LeftButton)
+        d._on_scan_result([DetectedCamera(index=4, label="Extra")])
+        d.available_cameras_list.setCurrentRow(0)
 
-    assert d.active_cameras_list.count() == initial_count
-    assert calls["n"] >= 1
+        qtbot.mouseClick(d.add_camera_btn, Qt.LeftButton)
 
-    d.reject()
+        assert d.active_cameras_list.count() == initial_count
+        assert calls["n"] >= 1
+    finally:
+        d.reject()
 
 
 @pytest.mark.gui
@@ -321,11 +378,13 @@ def test_ok_auto_applies_pending_edits(dialog, qtbot):
 
 @pytest.mark.gui
 def test_cancel_loading_preview_button(dialog, qtbot, monkeypatch):
-    # Make loading slow so Cancel Loading has time to work deterministically
+    """
+    Deterministic cancel-loading test: slow down worker so Cancel Loading can interrupt.
+    """
 
     def slow_run(self):
         self.progress.emit("Creating backend…")
-        time.sleep(0.2)  # give test time to click cancel
+        time.sleep(0.2)
         if getattr(self, "_cancel", False):
             self.canceled.emit()
             return
@@ -343,10 +402,9 @@ def test_cancel_loading_preview_button(dialog, qtbot, monkeypatch):
 
     qtbot.waitUntil(lambda: dialog._loading_active, timeout=1000)
 
-    # Click again quickly => Cancel Loading
+    # Click again => Cancel Loading
     qtbot.mouseClick(dialog.preview_btn, Qt.LeftButton)
 
-    # Ensure loader goes away and preview doesn't become active
     qtbot.waitUntil(lambda: dialog._loader is None and not dialog._loading_active, timeout=2000)
     assert dialog._preview_active is False
     assert dialog._preview_backend is None

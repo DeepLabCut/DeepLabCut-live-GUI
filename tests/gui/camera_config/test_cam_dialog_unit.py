@@ -36,6 +36,34 @@ def dialog_unit(qtbot, monkeypatch):
     # Prevent probe worker from opening backends (selection triggers probe in current dialog)
     monkeypatch.setattr(CameraConfigDialog, "_start_probe_for_camera", lambda *a, **k: None)
 
+    # Ensure capability-driven enable/disable states are deterministic for these unit tests.
+    # We intentionally disable gain/exposure for OpenCV by choice, but keep FPS/resolution enabled for UX tests.
+    from dlclivegui.cameras import CameraFactory
+    from dlclivegui.cameras.base import SupportLevel
+
+    def _caps(backend_name: str):
+        key = (backend_name or "").lower()
+        if key == "opencv":
+            return {
+                "set_resolution": SupportLevel.SUPPORTED,
+                "set_fps": SupportLevel.SUPPORTED,
+                "set_exposure": SupportLevel.UNSUPPORTED,  # by choice
+                "set_gain": SupportLevel.UNSUPPORTED,  # by choice
+                "device_discovery": SupportLevel.SUPPORTED,
+                "stable_identity": SupportLevel.SUPPORTED,
+            }
+        # Default for tests: allow everything (useful if temp_backend enables gain, etc.)
+        return {
+            "set_resolution": SupportLevel.SUPPORTED,
+            "set_fps": SupportLevel.SUPPORTED,
+            "set_exposure": SupportLevel.SUPPORTED,
+            "set_gain": SupportLevel.SUPPORTED,
+            "device_discovery": SupportLevel.SUPPORTED,
+            "stable_identity": SupportLevel.SUPPORTED,
+        }
+
+    monkeypatch.setattr(CameraFactory, "backend_capabilities", staticmethod(_caps), raising=False)
+
     s = MultiCameraSettings(
         cameras=[
             CameraSettings(name="CamA", backend="opencv", index=0, enabled=True),
@@ -174,14 +202,15 @@ def test_ok_auto_applies_pending_edits_before_emitting(dialog_unit, qtbot):
     dialog_unit.active_cameras_list.setCurrentRow(0)
     qtbot.waitUntil(lambda: dialog_unit._current_edit_index == 0, timeout=1000)
 
-    dialog_unit.cam_gain.setValue(7.5)
+    # Use FPS here (supported) to ensure the test validates meaningful auto-apply.
+    dialog_unit.cam_fps.setValue(77.0)
     assert dialog_unit.apply_settings_btn.isEnabled()
 
     with qtbot.waitSignal(dialog_unit.settings_changed, timeout=1000) as sig:
         qtbot.mouseClick(dialog_unit.ok_btn, Qt.LeftButton)
 
     emitted = sig.args[0]
-    assert emitted.cameras[0].gain == 0.0  # gain should not update for OpenCV backend (disabled in UI)
+    assert emitted.cameras[0].fps == 77.0
 
 
 @pytest.mark.gui
