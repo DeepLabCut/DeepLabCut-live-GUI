@@ -166,10 +166,6 @@ class CameraLoadWorker(QThread):
             ns = self._cam.properties.setdefault(self._cam.backend.lower(), {})
             if isinstance(ns, dict):
                 ns["fast_start"] = False
-                # Basler implements transforms in the backend
-                # but preview already takes care of rotation/crop
-                # so we disable transform application in probe to avoid double transforms and speed up probe
-                ns["apply_transforms"] = False
 
     def request_cancel(self):
         self._cancel = True
@@ -975,10 +971,25 @@ class CameraConfigDialog(QDialog):
         self._add_selected_camera()
 
     def _on_active_camera_selected(self, row: int) -> None:
+        prev_row = self._current_edit_index
+
+        # If switching away from a previous camera, commit pending edits first
+        if prev_row is not None and prev_row != row:
+            if not self._commit_pending_edits(reason="before switching camera selection"):
+                # Revert selection back to previous row so the user stays on the invalid camera
+                try:
+                    self.active_cameras_list.blockSignals(True)
+                    self.active_cameras_list.setCurrentRow(prev_row)
+                finally:
+                    self.active_cameras_list.blockSignals(False)
+                return
+
         # Stop any running preview when selection changes
         if self._preview_active:
             self._stop_preview()
+
         self._current_edit_index = row
+
         self._update_button_states()
         if row < 0 or row >= self.active_cameras_list.count():
             self._clear_settings_form()
@@ -1301,6 +1312,8 @@ class CameraConfigDialog(QDialog):
         self._probe_worker = None
 
     def _add_selected_camera(self) -> None:
+        if not self._commit_pending_edits(reason="before adding a new camera"):
+            return
         row = self.available_cameras_list.currentRow()
         if row < 0:
             return
@@ -1356,6 +1369,8 @@ class CameraConfigDialog(QDialog):
         self._start_probe_for_camera(new_cam)
 
     def _remove_selected_camera(self) -> None:
+        if not self._commit_pending_edits(reason="before removing a camera"):
+            return
         row = self.active_cameras_list.currentRow()
         if row < 0:
             return
@@ -1368,6 +1383,8 @@ class CameraConfigDialog(QDialog):
         self._update_button_states()
 
     def _move_camera_up(self) -> None:
+        if not self._commit_pending_edits(reason="before reordering cameras"):
+            return
         row = self.active_cameras_list.currentRow()
         if row <= 0:
             return
@@ -1379,6 +1396,8 @@ class CameraConfigDialog(QDialog):
         self._refresh_camera_labels()
 
     def _move_camera_down(self) -> None:
+        if not self._commit_pending_edits(reason="before reordering cameras"):
+            return
         row = self.active_cameras_list.currentRow()
         if row < 0 or row >= self.active_cameras_list.count() - 1:
             return
@@ -1389,10 +1408,39 @@ class CameraConfigDialog(QDialog):
         cams[row], cams[row + 1] = cams[row + 1], cams[row]
         self._refresh_camera_labels()
 
-    def _apply_camera_settings(self) -> None:
+    def _commit_pending_edits(self, *, reason: str = "") -> bool:
+        """
+        Auto-apply pending edits (if any) before context-changing actions.
+        Returns True if it's safe to proceed, False if validation failed.
+        """
+        # No selection → nothing to commit
+        if self._current_edit_index is None or self._current_edit_index < 0:
+            return True
+
+        # If Apply button isn't enabled, assume no pending edits
+        if not self.apply_settings_btn.isEnabled():
+            return True
+
+        try:
+            self._append_status(f"[Auto-Apply] Committing pending edits ({reason})…")
+            ok = self._apply_camera_settings()
+            return bool(ok)
+        except Exception as exc:
+            # _apply_camera_settings already shows a QMessageBox in many cases,
+            # but we add a clear guardrail here in case it doesn't.
+            QMessageBox.warning(
+                self,
+                "Unsaved / Invalid Settings",
+                "Your current camera settings are not valid and cannot be applied yet.\n\n"
+                "Please fix the highlighted fields (e.g. crop rectangle) or press Reset.\n\n"
+                f"Details: {exc}",
+            )
+            return False
+
+    def _apply_camera_settings(self) -> bool:
         if self._loading_active:
             self._append_status("[Apply] Preview is loading; please wait or cancel loading first.")
-            return
+            return False
         try:
             for sb in (
                 self.cam_fps,
@@ -1487,9 +1535,12 @@ class CameraConfigDialog(QDialog):
                 else:
                     self._append_status("[Apply] Applied without restart (crop/rotation update is live).")
 
+            return True
+
         except Exception as exc:
             LOGGER.exception("Apply camera settings failed")
             QMessageBox.warning(self, "Apply Settings Error", str(exc))
+            return False
 
     def _update_button_states(self) -> None:
         active_row = self.active_cameras_list.currentRow()
@@ -1503,6 +1554,15 @@ class CameraConfigDialog(QDialog):
         self.add_camera_btn.setEnabled(available_row >= 0)
 
     def _on_ok_clicked(self) -> None:
+        # Auto-apply pending edits before saving
+        if not self._commit_pending_edits(reason="before going back to the main window"):
+            return
+        try:
+            if self.apply_settings_btn.isEnabled():
+                self._append_status("[OK button] Auto-applying pending settings before closing dialog.")
+                self._apply_camera_settings()
+        except Exception:
+            LOGGER.exception("[OK button] Auto-apply failed")
         self._stop_preview()
         active = self._working_settings.get_active_cameras()
         if self._working_settings.cameras and not active:

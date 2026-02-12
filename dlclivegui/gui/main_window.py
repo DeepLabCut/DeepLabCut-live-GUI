@@ -1454,7 +1454,11 @@ class DLCLiveMainWindow(QMainWindow):
         # Store active settings for single camera mode (for DLC, recording frame rate, etc.)
         self._active_camera_settings = active_cams[0] if active_cams else None
         for cam in active_cams:
-            cam.properties.setdefault("fast_start", True)
+            if not isinstance(cam.properties, dict):
+                cam.properties = {}
+            ns = cam.properties.setdefault((cam.backend or "").lower(), {})
+            if isinstance(ns, dict):
+                ns["fast_start"] = False
 
         self.multi_camera_controller.start(active_cams)
         self._update_inference_buttons()
