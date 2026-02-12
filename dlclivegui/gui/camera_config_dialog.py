@@ -1662,6 +1662,13 @@ class CameraConfigDialog(QDialog):
                 pass
             self._scan_worker.wait(1500)
             self._scan_worker = None
+        if getattr(self, "_probe_worker", None) and self._probe_worker.isRunning():
+            try:
+                self._probe_worker.request_cancel()
+            except Exception:
+                pass
+            self._probe_worker.wait(1500)
+            self._probe_worker = None
 
         self._hide_scan_overlay()
         self.scan_progress.setVisible(False)
@@ -2027,7 +2034,7 @@ class CameraConfigDialog(QDialog):
 
             h, w, ch = frame.shape
             bytes_per_line = ch * w
-            q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
             self.preview_label.setPixmap(QPixmap.fromImage(q_img))
 
         except Exception as exc:
