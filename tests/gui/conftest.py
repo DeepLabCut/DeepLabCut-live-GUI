@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from PySide6.QtWidgets import QMessageBox
 
 from dlclivegui.cameras.factory import CameraFactory
 from dlclivegui.config import CameraSettings
@@ -73,3 +74,22 @@ def _isolate_qsettings(tmp_path):
     s.sync()
 
     yield
+
+
+@pytest.fixture(autouse=True)
+def no_modal_messageboxes(monkeypatch):
+    """
+    Fail fast if a QMessageBox is shown unexpectedly.
+    This prevents teardown hangs caused by modal dialogs.
+    """
+
+    def _report(*args, **kwargs):
+        # args often: (parent, title, text, ...)
+        title = args[1] if len(args) > 1 else "<no-title>"
+        text = args[2] if len(args) > 2 else "<no-text>"
+        raise AssertionError(f"Unexpected QMessageBox: {title}\n{text}")
+
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(_report))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(_report))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(_report))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(_report))

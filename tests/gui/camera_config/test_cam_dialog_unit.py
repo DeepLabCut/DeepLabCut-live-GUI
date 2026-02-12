@@ -1,17 +1,30 @@
 # tests/gui/camera_config/test_cam_dialog_unit.py
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from PySide6.QtCore import Qt
 
+from dlclivegui.cameras import CameraFactory
+from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import DetectedCamera
 from dlclivegui.config import CameraSettings, MultiCameraSettings
 from dlclivegui.gui.camera_config_dialog import CameraConfigDialog
 
 
+class FakeBackend(CameraBackend):
+    def open(self):
+        pass
+
+    def close(self):
+        pass
+
+    def read(self):
+        return np.zeros((10, 10, 3), dtype=np.uint8), 0.0
+
+
 @pytest.fixture
 def dialog(qtbot, monkeypatch):
-    # Patch detect_cameras to avoid hardware access
     monkeypatch.setattr(
         "dlclivegui.cameras.CameraFactory.detect_cameras",
         lambda backend, max_devices=10, **kw: [
@@ -19,6 +32,10 @@ def dialog(qtbot, monkeypatch):
             DetectedCamera(index=1, label=f"{backend}-Y"),
         ],
     )
+    monkeypatch.setattr(CameraFactory, "create", lambda s: FakeBackend(s))
+
+    # Optional: prevent probe from running at all in pure unit tests
+    monkeypatch.setattr(CameraConfigDialog, "_start_probe_for_camera", lambda *a, **k: None)
 
     s = MultiCameraSettings(
         cameras=[
@@ -28,7 +45,15 @@ def dialog(qtbot, monkeypatch):
     )
     d = CameraConfigDialog(None, s)
     qtbot.addWidget(d)
-    return d
+    d.show()
+    qtbot.waitExposed(d)
+
+    yield d
+
+    try:
+        d.reject()
+    except Exception:
+        d.close()
 
 
 # ---------------------- UNIT TESTS ----------------------

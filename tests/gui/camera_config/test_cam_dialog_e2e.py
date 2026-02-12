@@ -47,19 +47,32 @@ def patch_factory(monkeypatch):
 
 @pytest.fixture
 def dialog(qtbot, patch_factory):
-    s = MultiCameraSettings(
-        cameras=[
-            CameraSettings(name="A", backend="opencv", index=0, enabled=True),
-        ]
-    )
+    s = MultiCameraSettings(cameras=[CameraSettings(name="A", backend="opencv", index=0, enabled=True)])
     d = CameraConfigDialog(None, s)
     qtbot.addWidget(d)
-    return d
+    d.show()
+    qtbot.waitExposed(d)
+
+    yield d
+
+    # --- robust teardown ---
+    try:
+        d._stop_preview()
+    except Exception:
+        pass
+
+    try:
+        d.reject()  # calls _stop_preview + cancels scan worker
+    except Exception:
+        d.close()
+
+    # wait for threads to stop
+    qtbot.waitUntil(lambda: getattr(d, "_loader", None) is None, timeout=2000)
+    qtbot.waitUntil(lambda: getattr(d, "_scan_worker", None) is None, timeout=2000)
+    qtbot.waitUntil(lambda: not getattr(d, "_preview_active", False), timeout=2000)
 
 
 # ---------------- End‑to‑End tests ----------------
-
-
 def test_e2e_async_camera_scan(dialog, qtbot):
     qtbot.mouseClick(dialog.refresh_btn, Qt.LeftButton)
 
