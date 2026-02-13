@@ -30,7 +30,8 @@ class BaslerCameraBackend(CameraBackend):
 
         self._props: dict = settings.properties if isinstance(settings.properties, dict) else {}
 
-        # Optional fast-start hint for probe workers (best-effort; doesn't change behavior yet)
+        # Optional fast-start hint for probe workers
+        # (may skip StartGrabbing and converter setup for faster capability probing; not suitable for normal capture)
         self._fast_start: bool = bool(self.ns.get("fast_start", False))
 
         # Stable identity (serial-based). Prefer new namespace; fall back to legacy keys read-only.
