@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
 
 from ...cameras.factory import CameraFactory, DetectedCamera, apply_detected_identity, camera_identity_key
 from ...config import CameraSettings, MultiCameraSettings
-from .loaders import CameraLoadWorker, CameraProbeWorker, DetectCamerasWorker, PreviewSession, PreviewState
-from .preview import apply_crop, apply_rotation, resize_to_fit, to_display_pixmap
+from .loaders import CameraLoadWorker, CameraProbeWorker, DetectCamerasWorker
+from .preview import PreviewSession, PreviewState, apply_crop, apply_rotation, resize_to_fit, to_display_pixmap
 from .ui_blocks import setup_camera_config_dialog_ui
 
 LOGGER = logging.getLogger(__name__)
@@ -1475,7 +1475,7 @@ class CameraConfigDialog(QDialog):
             self._preview.timer.start(40)
 
             # FPS reconciliation + cadence (single source of truth)
-            actual_fps = self._preview.backend.actual_fps if self._preview.backend else None
+            actual_fps = getattr(self._preview.backend, "actual_fps", None)
             if actual_fps:
                 self._adjust_preview_timer_for_fps(actual_fps)
 

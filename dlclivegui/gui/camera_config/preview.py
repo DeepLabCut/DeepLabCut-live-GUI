@@ -1,72 +1,62 @@
 # dlclivegui/gui/camera_config/preview.py
-import cv2
-from PySide6.QtGui import QImage, QPixmap
+from __future__ import annotations
 
-# def _update_preview(self) -> None:
-#     """Update preview frame."""
-#     if self._preview.state != PreviewState.ACTIVE or not self._preview.backend:
-#         return
+from dataclasses import dataclass
+from enum import Enum, auto
+from typing import TYPE_CHECKING
 
-#     try:
-#         frame, _ = self._preview.backend.read()
-#         if frame is None or frame.size == 0:
-#             return
+from PySide6.QtCore import QTimer
 
-#         # Apply rotation if set in the form (real-time from UI)
-#         rotation = self.cam_rotation.currentData()
-#         if rotation == 90:
-#             frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-#         elif rotation == 180:
-#             frame = cv2.rotate(frame, cv2.ROTATE_180)
-#         elif rotation == 270:
-#             frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+from ...services.multi_camera_controller import MultiCameraController
 
-#         # Apply crop if set in the form (real-time from UI)
-#         h, w = frame.shape[:2]
-#         x0 = self.cam_crop_x0.value()
-#         y0 = self.cam_crop_y0.value()
-#         x1 = self.cam_crop_x1.value() or w
-#         y1 = self.cam_crop_y1.value() or h
-#         # Clamp to frame bounds
-#         x0 = max(0, min(x0, w))
-#         y0 = max(0, min(y0, h))
-#         x1 = max(x0, min(x1, w))
-#         y1 = max(y0, min(y1, h))
-#         if x1 > x0 and y1 > y0:
-#             frame = frame[y0:y1, x0:x1]
+if TYPE_CHECKING:
+    from ...cameras.base import CameraBackend
+    from ...config import CameraSettings
+    from .loaders import CameraLoadWorker
 
-#         # Resize to fit preview label
-#         h, w = frame.shape[:2]
-#         max_w, max_h = 400, 300
-#         scale = min(max_w / w, max_h / h)
-#         new_w, new_h = int(w * scale), int(h * scale)
-#         frame = cv2.resize(frame, (new_w, new_h))
 
-#         # Convert to QImage and display
-#         if frame.ndim == 2:
-#             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-#         elif frame.shape[2] == 4:
-#             frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
-#         else:
-#             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+class PreviewState(Enum):
+    """Preview lifecycle state.."""
 
-#         h, w, ch = frame.shape
-#         bytes_per_line = ch * w
-#         q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
-#         self.preview_label.setPixmap(QPixmap.fromImage(q_img))
+    IDLE = auto()  # No loader, no backend, no timer.
+    LOADING = auto()  # Loader started; waiting for success/error/canceled.
+    ACTIVE = auto()  # Backend open + preview timer running.
+    STOPPING = auto()  # Tearing down loader/backend/timer.
+    ERROR = auto()  # Terminal error state (optional; can just go back to IDLE)
 
-#     except Exception as exc:
-#         LOGGER.debug(f"Preview frame skipped: {exc}")
+
+@dataclass
+class PreviewSession:
+    """
+    Owns all runtime objects for preview and defines intent.
+
+    epoch:
+      Monotonically increasing integer used to invalidate stale signals from previous loaders.
+      Any signal handler must check that the epoch matches the current session epoch.
+
+    state:
+      PreviewState that replaces multiple booleans.
+
+    requested_cam:
+      The CameraSettings snapshot used to start the current LOADING request.
+
+    backend / timer / loader:
+      Runtime handles. Only valid in states where they should exist.
+    """
+
+    epoch: int = 0
+    state: PreviewState = PreviewState.IDLE
+    requested_cam: CameraSettings | None = None
+    loader: CameraLoadWorker | None = None
+    backend: CameraBackend | None = None
+    timer: QTimer | None = None
+
+    pending_restart: CameraSettings | None = None
+    restart_scheduled: bool = False  # Coalesces restarts to “at most once in the queue”.
 
 
 def apply_rotation(frame, rotation):
-    if rotation == 90:
-        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-    elif rotation == 180:
-        return cv2.rotate(frame, cv2.ROTATE_180)
-    elif rotation == 270:
-        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    return frame
+    return MultiCameraController.apply_rotation(frame, rotation)
 
 
 def apply_crop(frame, x0, y0, x1, y1):
@@ -76,27 +66,12 @@ def apply_crop(frame, x0, y0, x1, y1):
     x1 = max(x0, min(x1, w))
     y1 = max(y0, min(y1, h))
 
-    if x1 > x0 and y1 > y0:
-        return frame[y0:y1, x0:x1]
-    return frame
+    return MultiCameraController.apply_crop(frame, (x0, y0, x1, y1))
 
 
 def resize_to_fit(frame, max_w=400, max_h=300):
-    h, w = frame.shape[:2]
-    scale = min(max_w / w, max_h / h)
-    new_w, new_h = int(w * scale), int(h * scale)
-    return cv2.resize(frame, (new_w, new_h))
+    return MultiCameraController.apply_resize(frame, max_w, max_h)
 
 
 def to_display_pixmap(frame):
-    if frame.ndim == 2:
-        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-    elif frame.shape[2] == 4:
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
-    else:
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    h, w, ch = frame.shape
-    bytes_per_line = ch * w
-    q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
-    return QPixmap.fromImage(q_img)
+    return MultiCameraController.to_display_pixmap(frame)

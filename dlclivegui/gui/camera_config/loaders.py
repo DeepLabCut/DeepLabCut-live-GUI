@@ -1,12 +1,10 @@
 """Workers and state logic for loading cameras in the GUI."""
-# dlclivegui/gui/camera_loaders.py
 
+# dlclivegui/gui/camera_loaders.py
 import copy
 import logging
-from dataclasses import dataclass
-from enum import Enum, auto
 
-from PySide6.QtCore import QThread, QTimer, Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QWidget
 
 from ...cameras.base import CameraSettings
@@ -14,16 +12,6 @@ from ...cameras.factory import CameraBackend, CameraFactory
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.DEBUG)
-
-
-class PreviewState(Enum):
-    """Preview lifecycle state.."""
-
-    IDLE = auto()  # No loader, no backend, no timer.
-    LOADING = auto()  # Loader started; waiting for success/error/canceled.
-    ACTIVE = auto()  # Backend open + preview timer running.
-    STOPPING = auto()  # Tearing down loader/backend/timer.
-    ERROR = auto()  # Terminal error state (optional; can just go back to IDLE)
 
 
 # -------------------------------
@@ -149,33 +137,3 @@ class CameraLoadWorker(QThread):
             except Exception:
                 pass
             self.error.emit(msg)
-
-
-@dataclass
-class PreviewSession:
-    """
-    Owns all runtime objects for preview and defines intent.
-
-    epoch:
-      Monotonically increasing integer used to invalidate stale signals from previous loaders.
-      Any signal handler must check that the epoch matches the current session epoch.
-
-    state:
-      PreviewState that replaces multiple booleans.
-
-    requested_cam:
-      The CameraSettings snapshot used to start the current LOADING request.
-
-    backend / timer / loader:
-      Runtime handles. Only valid in states where they should exist.
-    """
-
-    epoch: int = 0
-    state: PreviewState = PreviewState.IDLE
-    requested_cam: CameraSettings | None = None
-    loader: CameraLoadWorker | None = None
-    backend: CameraBackend | None = None
-    timer: QTimer | None = None
-
-    pending_restart: CameraSettings | None = None
-    restart_scheduled: bool = False  # Coalesces restarts to “at most once in the queue”.
