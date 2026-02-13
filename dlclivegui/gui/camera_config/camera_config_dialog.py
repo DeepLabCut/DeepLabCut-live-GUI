@@ -49,10 +49,10 @@ class CameraConfigDialog(QDialog):
         self.setWindowTitle("Configure Cameras")
         self.setMinimumSize(960, 720)
 
-        self._dlc_camera_id = None
-        self.dlc_camera_id: str | None = None
+        self._dlc_camera_id: str | None = None
+        # self.dlc_camera_id: str | None = None
         # Actual/working camera settings
-        self._multi_camera_settings = multi_camera_settings
+        self._multi_camera_settings = multi_camera_settings or MultiCameraSettings(cameras=[])
         self._working_settings = self._multi_camera_settings.model_copy(deep=True)
         self._detected_cameras: list[DetectedCamera] = []
         self._probe_apply_to_requested: bool = False
@@ -66,7 +66,7 @@ class CameraConfigDialog(QDialog):
         # Camera detection worker
         self._scan_worker: DetectCamerasWorker | None = None
 
-        # UI elements for eventFilter
+        # UI elements for eventFilter (assigned in _setup_ui)
         self._settings_scroll: QScrollArea | None = None
         self._settings_scroll_contents: QWidget | None = None
 
@@ -140,34 +140,75 @@ class CameraConfigDialog(QDialog):
 
         return super().eventFilter(obj, event)
 
+    def closeEvent(self, event):
+        """Handle dialog close event to ensure cleanup."""
+        self._on_close_cleanup()
+        super().closeEvent(event)
+
     def reject(self) -> None:
         """Handle dialog rejection (Cancel or close)."""
-        self._stop_preview()
-
-        if getattr(self, "_scan_worker", None) and self._scan_worker.isRunning():
-            try:
-                self._scan_worker.requestInterruption()
-            except Exception:
-                pass
-            self._scan_worker.wait(1500)
-            self._scan_worker = None
-        if getattr(self, "_probe_worker", None) and self._probe_worker.isRunning():
-            try:
-                self._probe_worker.request_cancel()
-            except Exception:
-                pass
-            self._probe_worker.wait(1500)
-            self._probe_worker = None
-
-        self._hide_scan_overlay()
-        self.scan_progress.setVisible(False)
-        self.scan_cancel_btn.setVisible(False)
-        self.scan_cancel_btn.setEnabled(True)
-        self.refresh_btn.setEnabled(True)
-        self.backend_combo.setEnabled(True)
-        self._sync_scan_ui()
-
+        self._on_close_cleanup()
         super().reject()
+
+    def _on_close_cleanup(self) -> None:
+        """Stop preview, cancel workers, and reset scan UI. Safe to call multiple times."""
+        # Guard to avoid running twice if closeEvent + reject/accept both run
+        if getattr(self, "_cleanup_done", False):
+            return
+        self._cleanup_done = True
+
+        # Stop preview (loader + backend + timer)
+        try:
+            self._stop_preview()
+        except Exception:
+            LOGGER.exception("Cleanup: failed stopping preview")
+
+        # Cancel scan worker
+        sw = getattr(self, "_scan_worker", None)
+        if sw and sw.isRunning():
+            try:
+                sw.requestInterruption()
+            except Exception:
+                pass
+            # Keep this short to reduce UI freeze
+            sw.wait(300)
+        self._scan_worker = None
+
+        # Cancel probe worker
+        pw = getattr(self, "_probe_worker", None)
+        if pw and pw.isRunning():
+            try:
+                pw.request_cancel()
+            except Exception:
+                pass
+            pw.wait(300)
+        self._probe_worker = None
+
+        # Hide overlays / reset UI bits
+        try:
+            self._hide_scan_overlay()
+        except Exception:
+            pass
+
+        # Defensive: some widgets may not exist depending on UI setup timing
+        for w, visible, enabled in (
+            ("scan_progress", False, None),
+            ("scan_cancel_btn", False, True),
+            ("refresh_btn", None, True),
+            ("backend_combo", None, True),
+        ):
+            widget = getattr(self, w, None)
+            if widget is None:
+                continue
+            if visible is not None:
+                widget.setVisible(visible)
+            if enabled is not None:
+                widget.setEnabled(enabled)
+
+        try:
+            self._sync_scan_ui()
+        except Exception:
+            pass
 
     # -------------------------------
     # UI setup
@@ -220,6 +261,7 @@ class CameraConfigDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.scan_started.connect(lambda _: setattr(self, "_dialog_active", True))
         self.scan_finished.connect(lambda: setattr(self, "_dialog_active", False))
+        self.scan_cancel_btn.clicked.connect(self._on_scan_cancel)
 
         def _mark_dirty(*_args):
             self.apply_settings_btn.setEnabled(True)
@@ -823,24 +865,19 @@ class CameraConfigDialog(QDialog):
                 except Exception:
                     pass
             if self._current_edit_index is None:
-                return
+                return True
             row = self._current_edit_index
             if row < 0 or row >= len(self._working_settings.cameras):
-                return
+                return True
 
             current_model = self._working_settings.cameras[row]
             new_model = self._build_model_from_form(current_model)
 
-            cam = self._working_settings.cameras[row]
-            self._write_form_to_cam(cam)
+            diff = CameraSettings.check_diff(current_model, new_model)
 
-            # --- Logging: compute diff before overwriting anything ---
+            self._working_settings.cameras[row] = new_model
+            self._update_active_list_item(row, new_model)
 
-            # We compare against the current preview backend settings if available, else against current_model
-            old_for_diff = getattr(self._preview.backend, "settings", None) if self._preview.backend else current_model
-            diff = CameraSettings.check_diff(
-                old_for_diff if isinstance(old_for_diff, CameraSettings) else current_model, new_model
-            )
             LOGGER.info(
                 "[Apply] backend=%s idx=%s changes=%s",
                 getattr(new_model, "backend", None),
@@ -981,6 +1018,8 @@ class CameraConfigDialog(QDialog):
             QMessageBox.warning(self, "No Active Cameras", "Please enable at least one camera or remove all cameras.")
             return
         self.settings_changed.emit(copy.deepcopy(self._working_settings))
+
+        self._on_close_cleanup()
         self.accept()
 
     # -------------------------------
@@ -1424,6 +1463,7 @@ class CameraConfigDialog(QDialog):
                     self._working_settings.cameras
                 ):
                     self._load_camera_to_form(self._working_settings.cameras[self._current_edit_index])
+                self._reconcile_fps_from_backend(opened_sttngs)
 
             # Start preview UX
             self._hide_loading_overlay()
@@ -1447,7 +1487,7 @@ class CameraConfigDialog(QDialog):
         if not self._is_current_epoch(e):
             return
         self._append_status(f"Error: {error}")
-        LOGGER.error("[Loader] error: %s", error, exc_info=True)
+        LOGGER.error("[Loader] error: %s", error)
         self._stop_preview_internal(reason="loader-error")
         QMessageBox.warning(self, "Preview Error", f"Failed to start camera preview:\n{error}")
         self._sync_preview_ui()
