@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from dlclivegui.cameras.factory import DetectedCamera
 from dlclivegui.config import CameraSettings, MultiCameraSettings
-from dlclivegui.gui.camera_config_dialog import CameraConfigDialog
+from dlclivegui.gui.camera_config.camera_config_dialog import CameraConfigDialog
 
 # ----------------------------
 # Unit dialog fixture (deterministic, no threads)

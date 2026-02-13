@@ -9,8 +9,8 @@ from enum import Enum, auto
 from PySide6.QtCore import QThread, QTimer, Signal
 from PySide6.QtWidgets import QWidget
 
-from ..cameras.base import CameraSettings
-from ..cameras.factory import CameraBackend, CameraFactory
+from ...cameras.base import CameraSettings
+from ...cameras.factory import CameraBackend, CameraFactory
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.DEBUG)
