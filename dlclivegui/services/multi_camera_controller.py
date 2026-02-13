@@ -10,6 +10,7 @@ from threading import Event, Lock
 import cv2
 import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtGui import QImage, QPixmap
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
@@ -218,13 +219,13 @@ class MultiCameraController(QObject):
         # Apply rotation if configured
         settings = self._settings.get(camera_id)
         if settings and settings.rotation:
-            frame = self._apply_rotation(frame, settings.rotation)
+            frame = MultiCameraController.apply_rotation(frame, settings.rotation)
 
         # Apply cropping if configured
         if settings:
             crop_region = settings.get_crop_region()
             if crop_region:
-                frame = self._apply_crop(frame, crop_region)
+                frame = MultiCameraController.apply_crop(frame, crop_region)
 
         with self._frame_lock:
             self._frames[camera_id] = frame
@@ -240,7 +241,8 @@ class MultiCameraController(QObject):
                 )
                 self.frame_ready.emit(frame_data)
 
-    def _apply_rotation(self, frame: np.ndarray, degrees: int) -> np.ndarray:
+    @staticmethod
+    def apply_rotation(frame: np.ndarray, degrees: int) -> np.ndarray:
         """Apply rotation to frame."""
         if degrees == 90:
             return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
@@ -250,7 +252,8 @@ class MultiCameraController(QObject):
             return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
         return frame
 
-    def _apply_crop(self, frame: np.ndarray, crop_region: tuple[int, int, int, int]) -> np.ndarray:
+    @staticmethod
+    def apply_crop(frame: np.ndarray, crop_region: tuple[int, int, int, int]) -> np.ndarray:
         """Apply crop to frame."""
         x0, y0, x1, y1 = crop_region
         height, width = frame.shape[:2]
@@ -263,6 +266,52 @@ class MultiCameraController(QObject):
         if x0 < x1 and y0 < y1:
             return frame[y0:y1, x0:x1]
         return frame
+
+    @staticmethod
+    def apply_resize(frame: np.ndarray, max_w: int, max_h: int, allow_upscale: bool = False) -> np.ndarray:
+        """Resize frame to fit within max dimensions while maintaining aspect ratio."""
+        h, w = frame.shape[:2]
+        if w == 0 or h == 0:
+            LOGGER.warning("Cannot resize frame with zero width or height")
+            return frame
+
+        scale = min(max_w / w, max_h / h)
+        if not allow_upscale:
+            scale = min(scale, 1.0)
+
+        if scale == 1.0:
+            return frame
+
+        new_w, new_h = int(w * scale), int(h * scale)
+        return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    @staticmethod
+    def ensure_color_bgr(frame: np.ndarray) -> np.ndarray:
+        """Ensure frame is 3-channel color."""
+        if frame.ndim == 2:
+            return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif frame.shape[2] == 4:
+            return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        return frame
+
+    @staticmethod
+    def ensure_color_rgb(frame: np.ndarray) -> np.ndarray:
+        if frame.ndim == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        elif frame.shape[2] == 4:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
+        else:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return frame
+
+    @staticmethod
+    def to_display_pixmap(frame: np.ndarray) -> QPixmap:
+        """Convert a frame to QPixmap for display."""
+        frame = MultiCameraController.ensure_color_rgb(frame)
+        h, w, ch = frame.shape
+        bytes_per_line = ch * w
+        q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
+        return QPixmap.fromImage(q_img)
 
     def _create_tiled_frame(self) -> np.ndarray:
         """Create a tiled frame from all camera frames.
@@ -329,13 +378,10 @@ class MultiCameraController(QObject):
             col = idx % cols
 
             # Ensure frame is 3-channel
-            if frame.ndim == 2:
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-            elif frame.shape[2] == 4:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            frame = MultiCameraController.ensure_color_bgr(frame)
 
             # Resize to tile size
-            resized = cv2.resize(frame, (tile_w, tile_h))
+            resized = MultiCameraController.apply_resize(frame, tile_w, tile_h, allow_upscale=True)
 
             # Add camera ID label
             if idx < len(cam_ids):

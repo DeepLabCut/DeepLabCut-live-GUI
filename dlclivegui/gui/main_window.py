@@ -71,7 +71,7 @@ from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, d
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import format_dlc_stats
 from ..utils.utils import FPSTracker
-from .camera_config_dialog import CameraConfigDialog
+from .camera_config.camera_config_dialog import CameraConfigDialog
 from .misc.drag_spinbox import ScrubSpinBox
 from .misc.eliding_label import ElidingPathLabel
 from .recording_manager import RecordingManager
