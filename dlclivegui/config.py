@@ -140,6 +140,32 @@ class CameraSettings(BaseModel):
 
         return self
 
+    @staticmethod
+    def check_diff(old: CameraSettings, new: CameraSettings) -> dict:
+        keys = (
+            "width",
+            "height",
+            "fps",
+            "exposure",
+            "gain",
+            "rotation",
+            "crop_x0",
+            "crop_y0",
+            "crop_x1",
+            "crop_y1",
+            "enabled",
+        )
+        out = {}
+        for k in keys:
+            try:
+                ov = getattr(old, k, None)
+                nv = getattr(new, k, None)
+                if ov != nv:
+                    out[k] = (ov, nv)
+            except Exception:
+                pass
+        return out
+
 
 class MultiCameraSettings(BaseModel):
     cameras: list[CameraSettings] = Field(default_factory=list)

@@ -415,3 +415,49 @@ class CameraFactory:
                 "Tip: enable strict import failures with DLC_CAMERA_BACKENDS_STRICT_IMPORT=1"
             )
             raise RuntimeError(msg) from exc
+
+
+# -------------------------------
+# Camera identity utilities
+# -------------------------------
+
+
+def apply_detected_identity(cam: CameraSettings, detected: DetectedCamera, backend: str) -> None:
+    """Persist stable identity from a detected camera into cam.properties under backend namespace."""
+    if not isinstance(cam.properties, dict):
+        cam.properties = {}
+
+    ns = cam.properties.get(backend.lower())
+    if not isinstance(ns, dict):
+        ns = {}
+        cam.properties[backend.lower()] = ns
+
+    # Store whatever we have (backend-specific but written generically)
+    if getattr(detected, "device_id", None):
+        ns["device_id"] = detected.device_id
+    if getattr(detected, "vid", None) is not None:
+        ns["device_vid"] = int(detected.vid)
+    if getattr(detected, "pid", None) is not None:
+        ns["device_pid"] = int(detected.pid)
+    if getattr(detected, "path", None):
+        ns["device_path"] = detected.path
+
+    # Optional: store human name for matching fallback
+    if getattr(detected, "label", None):
+        ns["device_name"] = detected.label
+
+    # Optional: store backend_hint if you expose it (e.g., CAP_DSHOW)
+    if getattr(detected, "backend_hint", None) is not None:
+        ns["backend_hint"] = int(detected.backend_hint)
+
+
+def camera_identity_key(cam: CameraSettings) -> tuple:
+    backend = (cam.backend or "").lower()
+    props = cam.properties if isinstance(cam.properties, dict) else {}
+    ns = props.get(backend, {}) if isinstance(props, dict) else {}
+    device_id = ns.get("device_id")
+
+    # Prefer stable identity if present, otherwise fallback
+    if device_id:
+        return (backend, "device_id", device_id)
+    return (backend, "index", int(cam.index))
