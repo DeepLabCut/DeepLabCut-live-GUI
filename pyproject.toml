@@ -54,6 +54,7 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-mock>=3.10",
     "pytest-qt>=4.2",
+    "pytest-timeout>=2.0",
     "pre-commit",
     "hypothesis>=6.0",
 ]
@@ -62,6 +63,7 @@ test = [
     "pytest-cov>=4.0",
     "pytest-mock>=3.10",
     "pytest-qt>=4.2",
+    "pytest-timeout>=2.0",
     "hypothesis>=6.0",
 ]
 
@@ -108,6 +110,7 @@ markers = [
     "hardware: Tests that require specific hardware, notable camera backends",
     # "slow: Tests that take a long time to run",
     "gui: Tests that require GUI interaction",
+    "timeout: Test timeout in seconds (pytest-timeout)",
 ]
 
 [tool.coverage.run]
