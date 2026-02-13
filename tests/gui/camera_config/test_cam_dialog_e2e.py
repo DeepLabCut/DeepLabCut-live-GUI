@@ -13,6 +13,7 @@ from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import DetectedCamera
 from dlclivegui.config import CameraSettings, MultiCameraSettings
 from dlclivegui.gui.camera_config.camera_config_dialog import CameraConfigDialog, CameraLoadWorker
+from dlclivegui.gui.camera_config.preview import PreviewState
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -141,16 +142,18 @@ def test_e2e_preview_start_stop(dialog, qtbot):
     dialog.active_cameras_list.setCurrentRow(0)
     qtbot.mouseClick(dialog.preview_btn, Qt.LeftButton)
 
-    qtbot.waitUntil(lambda: dialog._loader is None and dialog._preview_active, timeout=2000)
-    assert dialog._preview_active
+    qtbot.waitUntil(
+        lambda: dialog._preview.loader is None and dialog._preview.state == PreviewState.ACTIVE, timeout=2000
+    )
+    assert dialog._preview.backend is not None
 
     qtbot.waitUntil(lambda: dialog.preview_label.pixmap() is not None, timeout=2000)
 
     qtbot.mouseClick(dialog.preview_btn, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not dialog._preview_active, timeout=2000)
+    qtbot.waitUntil(lambda: dialog._preview.state == PreviewState.IDLE, timeout=2000)
 
-    assert dialog._preview_backend is None
-    assert dialog._preview_timer is None
+    assert dialog._preview.backend is None
+    assert dialog._preview.timer is None
 
 
 @pytest.mark.gui
@@ -182,7 +185,9 @@ def test_e2e_apply_settings_restarts_preview_on_restart_fields(dialog, qtbot, mo
 
     dialog.active_cameras_list.setCurrentRow(0)
     qtbot.mouseClick(dialog.preview_btn, Qt.LeftButton)
-    qtbot.waitUntil(lambda: dialog._loader is None and dialog._preview_active, timeout=2000)
+    qtbot.waitUntil(
+        lambda: dialog._preview.loader is None and dialog._preview.state == PreviewState.ACTIVE, timeout=2000
+    )
 
     before = CountingBackend.opens
     assert before >= 1
@@ -191,8 +196,8 @@ def test_e2e_apply_settings_restarts_preview_on_restart_fields(dialog, qtbot, mo
     qtbot.mouseClick(dialog.apply_settings_btn, Qt.LeftButton)
 
     qtbot.waitUntil(lambda: CountingBackend.opens >= before + 1, timeout=2000)
-    assert dialog._preview_active
-    assert dialog._preview_backend is not None
+    assert dialog._preview.state == PreviewState.ACTIVE
+    assert dialog._preview.backend is not None
 
 
 @pytest.mark.gui
@@ -224,7 +229,9 @@ def test_e2e_apply_settings_does_not_restart_on_crop_or_rotation(dialog, qtbot, 
 
     dialog.active_cameras_list.setCurrentRow(0)
     qtbot.mouseClick(dialog.preview_btn, Qt.LeftButton)
-    qtbot.waitUntil(lambda: dialog._loader is None and dialog._preview_active, timeout=2000)
+    qtbot.waitUntil(
+        lambda: dialog._preview.loader is None and dialog._preview.state == PreviewState.ACTIVE, timeout=2000
+    )
 
     before = CountingBackend.opens
     assert before >= 1
@@ -235,7 +242,7 @@ def test_e2e_apply_settings_does_not_restart_on_crop_or_rotation(dialog, qtbot, 
 
     qtbot.wait(200)
     assert CountingBackend.opens == before
-    assert dialog._preview_active
+    assert dialog._preview.state == PreviewState.ACTIVE
 
 
 @pytest.mark.gui
@@ -400,11 +407,10 @@ def test_cancel_loading_preview_button(dialog, qtbot, monkeypatch):
     dialog.active_cameras_list.setCurrentRow(0)
     qtbot.mouseClick(dialog.preview_btn, Qt.LeftButton)  # Start Preview => loading active
 
-    qtbot.waitUntil(lambda: dialog._loading_active, timeout=1000)
+    qtbot.waitUntil(lambda: dialog._preview.state == PreviewState.LOADING, timeout=1000)
 
     # Click again => Cancel Loading
     qtbot.mouseClick(dialog.preview_btn, Qt.LeftButton)
 
-    qtbot.waitUntil(lambda: dialog._loader is None and not dialog._loading_active, timeout=2000)
-    assert dialog._preview_active is False
-    assert dialog._preview_backend is None
+    qtbot.waitUntil(lambda: dialog._preview.loader is None and dialog._preview.state == PreviewState.IDLE, timeout=2000)
+    assert dialog._preview.backend is None
