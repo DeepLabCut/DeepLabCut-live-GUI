@@ -28,18 +28,34 @@ class BaslerCameraBackend(CameraBackend):
     def __init__(self, settings):
         super().__init__(settings)
 
-        props = settings.properties if isinstance(settings.properties, dict) else {}
-        ns = props.get(self.OPTIONS_KEY, {})
-        if not isinstance(ns, dict):
-            ns = {}
+        self._props: dict = settings.properties if isinstance(settings.properties, dict) else {}
 
+        # Optional fast-start hint for probe workers
+        # (may skip StartGrabbing and converter setup for faster capability probing; not suitable for normal capture)
+        self._fast_start: bool = bool(self.ns.get("fast_start", False))
+
+        # Stable identity (serial-based). Prefer new namespace; fall back to legacy keys read-only.
+        self._device_id: str | None = None
+        dev_id = self.ns.get("device_id")
+        if dev_id:
+            self._device_id = str(dev_id)
+        else:
+            # legacy fallback (read-only)
+            legacy_serial = None
+            try:
+                legacy_serial = self._props.get("serial") or self._props.get("serial_number")
+            except Exception:
+                legacy_serial = None
+            if legacy_serial:
+                self._device_id = str(legacy_serial)
+
+        self._requested_resolution: tuple[int, int] | None = self._get_requested_resolution_or_none()
+
+        # ---- Runtime handles (set during open) ----
         self._camera: pylon.InstantCamera | None = None
         self._converter: pylon.ImageFormatConverter | None = None
 
-        # Resolution request (None = device default)
-        self._requested_resolution: tuple[int, int] | None = self._get_requested_resolution_or_none()
-
-        # Actuals for GUI
+        # ---- Actuals for GUI telemetry ----
         self._actual_width: int | None = None
         self._actual_height: int | None = None
         self._actual_fps: float | None = None
@@ -83,59 +99,289 @@ class BaslerCameraBackend(CameraBackend):
         )
         return caps
 
+    @property
+    def ns(self) -> dict:
+        """Basler namespace view (read-only). Always derived from current settings.properties."""
+        return self.__class__._ns_from_settings(self.settings)
+
+    @classmethod
+    def _ns_from_settings(cls, settings) -> dict:
+        """Return basler namespace dict from a settings object (read-only, safe)."""
+        props = settings.properties if isinstance(settings.properties, dict) else {}
+        ns = props.get(cls.OPTIONS_KEY, {})
+        return ns if isinstance(ns, dict) else {}
+
+    def _ensure_mutable_ns(self) -> dict:
+        """Ensure settings.properties and its basler namespace dict exist; return the namespace."""
+        if not isinstance(self.settings.properties, dict):
+            self.settings.properties = {}
+        ns = self.settings.properties.get(self.OPTIONS_KEY)
+        if not isinstance(ns, dict):
+            ns = {}
+            self.settings.properties[self.OPTIONS_KEY] = ns
+        return ns
+
+    @classmethod
+    def _enumerate_devices_cls(cls):
+        """Enumerate DeviceInfo entries (unit-testable via monkeypatch)."""
+        if pylon is None:
+            return []
+        factory = pylon.TlFactory.GetInstance()
+        return factory.EnumerateDevices()
+
+    @classmethod
+    def get_device_count(cls) -> int:
+        """Return the number of Basler devices visible to Pylon."""
+        try:
+            return len(cls._enumerate_devices_cls())
+        except Exception:
+            return 0
+
+    @classmethod
+    def quick_ping(cls, index: int, *args, **kwargs) -> bool:
+        """Best-effort presence check; avoids opening the device."""
+        try:
+            devices = cls._enumerate_devices_cls()
+            idx = int(index)
+            return 0 <= idx < len(devices)
+        except Exception:
+            return False
+
+    @classmethod
+    def discover_devices(
+        cls,
+        *,
+        max_devices: int = 10,
+        should_cancel=None,
+        progress_cb=None,
+    ):
+        """
+        Return a rich list of DetectedCamera with stable identity (serial).
+        Best-effort: works for USB3/GigE; fields depend on SDK/device.
+        """
+        if pylon is None:
+            return []
+
+        from ..factory import DetectedCamera  # local import to keep module load light
+
+        devices = cls._enumerate_devices_cls()
+        out = []
+
+        # Bound by max_devices to match factory expectations
+        n = min(len(devices), int(max_devices) if max_devices is not None else len(devices))
+
+        for i in range(n):
+            if should_cancel and should_cancel():
+                break
+            if progress_cb:
+                progress_cb(f"Reading Basler device info ({i + 1}/{n})…")
+
+            di = devices[i]
+
+            # Best-effort getters; not all are present on all transports
+            serial = None
+            try:
+                serial = di.GetSerialNumber()
+            except Exception:
+                serial = None
+
+            # Friendly label: Vendor Model (Serial)
+            vendor = model = friendly = full_name = None
+            try:
+                vendor = di.GetVendorName()
+            except Exception:
+                pass
+            try:
+                model = di.GetModelName()
+            except Exception:
+                pass
+            try:
+                friendly = di.GetFriendlyName()
+            except Exception:
+                pass
+            try:
+                full_name = di.GetFullName()
+            except Exception:
+                pass
+
+            label_parts = []
+            if vendor:
+                label_parts.append(str(vendor))
+            if model:
+                label_parts.append(str(model))
+            if not label_parts and friendly:
+                label_parts.append(str(friendly))
+            label = " ".join(label_parts) if label_parts else f"Basler #{i}"
+            if serial:
+                label = f"{label} ({serial})"
+
+            out.append(
+                DetectedCamera(
+                    index=i,
+                    label=label,
+                    device_id=str(serial) if serial else None,  # <-- stable identity
+                    path=str(full_name) if full_name else None,
+                )
+            )
+
+        return out
+
+    @classmethod
+    def rebind_settings(cls, settings):
+        """
+        If settings.properties['basler']['device_id'] (serial) exists,
+        update settings.index to match the current device list order.
+        """
+        if pylon is None:
+            return settings
+
+        dc = settings.model_copy(deep=True)
+
+        ns = cls._ns_from_settings(dc)
+        serial = ns.get("device_id") or ns.get("serial")  # allow legacy-in-namespace
+
+        # Legacy top-level fallback (read-only compatibility)
+        if not serial:
+            props = dc.properties if isinstance(dc.properties, dict) else {}
+            serial = props.get("serial") or props.get("serial_number")
+
+        if not serial:
+            return dc
+
+        try:
+            devices = cls._enumerate_devices_cls()
+            for i, di in enumerate(devices):
+                try:
+                    if di.GetSerialNumber() == serial:
+                        dc.index = int(i)
+
+                        # Ensure we persist stable ID in the basler namespace
+                        if not isinstance(dc.properties, dict):
+                            dc.properties = {}
+                        bns = dc.properties.get(cls.OPTIONS_KEY)
+                        if not isinstance(bns, dict):
+                            bns = {}
+                            dc.properties[cls.OPTIONS_KEY] = bns
+
+                        bns["device_id"] = str(serial)  # canonical
+                        # optional friendly name cache (nice for UI)
+                        try:
+                            bns["device_name"] = str(di.GetFriendlyName())
+                        except Exception:
+                            pass
+                        try:
+                            bns["device_path"] = str(di.GetFullName())
+                        except Exception:
+                            pass
+
+                        return dc
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return dc
+
+    @classmethod
+    def sanitize_for_probe(cls, settings):
+        """
+        Keep only basler namespace + set all requested controls to Auto
+        so probing is fast and doesn't force modes.
+        """
+        dc = settings.model_copy(deep=True)
+
+        # Keep only backend namespace dict
+        ns = cls._ns_from_settings(dc)
+        dc.properties = {cls.OPTIONS_KEY: dict(ns)}  # shallow copy ok
+
+        # Force Auto for probe; do NOT set heavy parameters
+        dc.width = 0
+        dc.height = 0
+        dc.fps = 0.0
+        dc.exposure = 0
+        dc.gain = 0.0
+        dc.rotation = 0
+        dc.crop_x0 = dc.crop_y0 = dc.crop_x1 = dc.crop_y1 = 0
+
+        return dc
+
+    @staticmethod
+    def _positive_float(value) -> float | None:
+        """Return float(value) if > 0 else None."""
+        try:
+            v = float(value)
+            return v if v > 0 else None
+        except Exception:
+            return None
+
     def open(self) -> None:
         if pylon is None:
             raise RuntimeError("pypylon is required for the Basler backend but is not installed")
 
+        # ----------------------------
+        # Device enumeration & selection
+        # ----------------------------
         devices = self._enumerate_devices()
         if not devices:
             raise RuntimeError("No Basler cameras detected")
 
         device = self._select_device(devices)
+
         self._camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateDevice(device))
         self._camera.Open()
 
-        # Exposure (0 = Auto -> do not set)
-        exposure = self._settings_value(
-            "exposure", self.settings.properties, fallback=self.settings.exposure, treat_nonpositive_as_none=True
-        )
-        if exposure is not None:
+        # Exposure
+        if getattr(self.settings, "exposure", 0) > 0:
             try:
-                self._camera.ExposureTime.SetValue(float(exposure))
-            except Exception:
-                pass
+                if hasattr(self._camera, "ExposureAuto"):
+                    self._camera.ExposureAuto.SetValue("Off")
+                self._camera.ExposureTime.SetValue(float(self.settings.exposure))
+                LOG.info("[Basler] Exposure set to %s us (auto off)", self.settings.exposure)
+            except Exception as exc:
+                LOG.warning("[Basler] Failed to set exposure: %s", exc)
 
-        # Gain (0 = Auto -> do not set)
-        gain = self._settings_value(
-            "gain", self.settings.properties, fallback=self.settings.gain, treat_nonpositive_as_none=True
-        )
-        if gain is not None:
+        # Gain
+        if getattr(self.settings, "gain", 0.0) > 0.0:
             try:
-                self._camera.Gain.SetValue(float(gain))
-            except Exception:
-                pass
+                if hasattr(self._camera, "GainAuto"):
+                    self._camera.GainAuto.SetValue("Off")
+                self._camera.Gain.SetValue(float(self.settings.gain))
+                LOG.info("[Basler] Gain set to %s dB (auto off)", self.settings.gain)
+            except Exception as exc:
+                LOG.warning("[Basler] Failed to set gain: %s", exc)
 
-        # Resolution (device default if None)
+        # ----------------------------
+        # Resolution (None → device default)
+        # ----------------------------
+        # Re-evaluate in case settings were rebound before open()
+        self._requested_resolution = self._get_requested_resolution_or_none()
         self._configure_resolution()
 
-        # Frame rate (0.0 = Auto -> do not set)
-        fps = self._settings_value(
-            "fps", self.settings.properties, fallback=self.settings.fps, treat_nonpositive_as_none=True
-        )
+        # ----------------------------
+        # Frame rate (0.0 = Auto → do not set)
+        # ----------------------------
+        fps = self._positive_float(getattr(self.settings, "fps", 0.0))
+
         if fps is not None:
             try:
-                self._camera.AcquisitionFrameRateEnable.SetValue(True)
-                self._camera.AcquisitionFrameRate.SetValue(float(fps))
+                # Some models require enable flag to be writable
+                if hasattr(self._camera, "AcquisitionFrameRateEnable"):
+                    try:
+                        self._camera.AcquisitionFrameRateEnable.SetValue(True)
+                    except Exception:
+                        pass
+                self._camera.AcquisitionFrameRate.SetValue(fps)
             except Exception:
-                pass
+                LOG.debug("Frame rate not writable or not supported", exc_info=True)
 
-        # Always try to read actual FPS for probing / GUI
+        # ----------------------------
+        # Read back actual values (telemetry for GUI / probe)
+        # ----------------------------
         try:
             self._actual_fps = float(self._camera.AcquisitionFrameRate.GetValue())
         except Exception:
             self._actual_fps = None
 
-        # Capture actual resolution even when using defaults
         try:
             self._actual_width = int(self._camera.Width.GetValue())
             self._actual_height = int(self._camera.Height.GetValue())
@@ -152,15 +398,71 @@ class BaslerCameraBackend(CameraBackend):
         except Exception:
             self._actual_gain = None
 
-        self._camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+        # ----------------------------
+        # Start acquisition (skip for fast probe)
+        # ----------------------------
+        if not self._fast_start:
+            # --- HARD RESET of stream state (critical after fast-start probe) ---
+            try:
+                if hasattr(self._camera, "StopGrabbing") and self._camera.IsGrabbing():
+                    self._camera.StopGrabbing()
+            except Exception:
+                pass
 
-        self._converter = pylon.ImageFormatConverter()
-        self._converter.OutputPixelFormat = pylon.PixelType_BGR8packed
-        self._converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+            # Converter BEFORE StartGrabbing
+            self._converter = pylon.ImageFormatConverter()
+            self._converter.OutputPixelFormat = pylon.PixelType_BGR8packed
+            self._converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+
+            # Force stream configuration reset
+            try:
+                if hasattr(self._camera, "MaxNumBuffer"):
+                    self._camera.MaxNumBuffer.SetValue(10)
+            except Exception:
+                pass
+
+            self._camera.StartGrabbing(
+                pylon.GrabStrategy_LatestImageOnly,
+            )
+            LOG.info(
+                "[Basler] grabbing=%s max_buffers=%s",
+                self._camera.IsGrabbing(),
+                self._camera.MaxNumBuffer.GetValue() if hasattr(self._camera, "MaxNumBuffer") else "N/A",
+            )
+        else:
+            LOG.debug("Fast-start probe: skipping StartGrabbing and converter")
+
+        LOG.info(
+            "[Basler] open device_id=%s index=%s fast_start=%s requested=(%sx%s @ %s fps exp=%s gain=%s)",
+            getattr(self, "_device_id", None),
+            getattr(self.settings, "index", None),
+            getattr(self, "_fast_start", None),
+            getattr(self.settings, "width", None),
+            getattr(self.settings, "height", None),
+            getattr(self.settings, "fps", None),
+            getattr(self.settings, "exposure", None),
+            getattr(self.settings, "gain", None),
+        )
+        # ----------------------------
+        # Persist stable identity into namespace (migration-safe)
+        # ----------------------------
+        try:
+            serial = device.GetSerialNumber()
+            if serial:
+                ns = self._ensure_mutable_ns()
+                ns["device_id"] = str(serial)
+                try:
+                    ns["device_name"] = str(device.GetFriendlyName())
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def read(self) -> tuple[np.ndarray, float]:
-        if self._camera is None or self._converter is None:
+        if self._camera is None:
             raise RuntimeError("Basler camera not opened")
+        if self._converter is None:
+            raise RuntimeError("Basler camera opened in fast-start probe mode; cannot read frames")
         try:
             grab_result = self._camera.RetrieveResult(100, pylon.TimeoutHandling_ThrowException)
         except Exception as exc:
@@ -177,19 +479,21 @@ class BaslerCameraBackend(CameraBackend):
             self._actual_width = int(w)
             self._actual_height = int(h)
 
-        rotate = self._settings_value("rotate", self.settings.properties)
-        if rotate:
-            frame = self._rotate(frame, float(rotate))
-        crop = self.settings.properties.get("crop")
-        if isinstance(crop, (list, tuple)) and len(crop) == 4:
-            left, right, top, bottom = map(int, crop)
-            frame = frame[top:bottom, left:right]
         return frame, time.time()
 
     def close(self) -> None:
+        LOG.info(
+            "[Basler] close called camera_exists=%s grabbing=%s open=%s",
+            self._camera is not None,
+            bool(self._camera and self._camera.IsGrabbing()),
+            bool(self._camera and self._camera.IsOpen()),
+        )
         if self._camera is not None:
             if self._camera.IsGrabbing():
-                self._camera.StopGrabbing()
+                try:
+                    self._camera.StopGrabbing()
+                except Exception:
+                    pass
             if self._camera.IsOpen():
                 self._camera.Close()
             self._camera = None
@@ -203,57 +507,76 @@ class BaslerCameraBackend(CameraBackend):
                 pass
 
     def _enumerate_devices(self):
-        factory = pylon.TlFactory.GetInstance()
-        return factory.EnumerateDevices()
+        return self.__class__._enumerate_devices_cls()
 
     def _select_device(self, devices):
-        serial = self.settings.properties.get("serial") or self.settings.properties.get("serial_number")
+        # 1) Namespaced / cached stable identity (preferred)
+        serial = self._device_id
+
         if serial:
             for device in devices:
-                if getattr(device, "GetSerialNumber", None) and device.GetSerialNumber() == serial:
-                    return device
+                try:
+                    if device.GetSerialNumber() == serial:
+                        return device
+                except Exception:
+                    continue
+
+        # 2) Legacy top-level fallback (read-only compatibility)
+        legacy = None
+        try:
+            legacy = self._props.get("serial") or self._props.get("serial_number")
+        except Exception:
+            legacy = None
+
+        if legacy:
+            for device in devices:
+                try:
+                    if device.GetSerialNumber() == legacy:
+                        return device
+                except Exception:
+                    continue
+
+        # 3) Index fallback
         index = int(self.settings.index)
         if index < 0 or index >= len(devices):
             raise RuntimeError(f"Camera index {index} out of range for {len(devices)} Basler device(s)")
+
         return devices[index]
 
-    def _rotate(self, frame: np.ndarray, angle: float) -> np.ndarray:
-        try:
-            from imutils import rotate_bound  # pragma: no cover - optional
-        except Exception as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError("Rotation requested for Basler camera but imutils is not installed") from exc
-        return rotate_bound(frame, angle)
-
-    def _get_requested_resolution_or_none(self) -> tuple[int, int] | None:
+    @staticmethod
+    def _snap_to_node(value: int, node) -> int:
         """
-        Return (w, h) if user explicitly requested a resolution.
-        Return None to keep device defaults.
-        """
-        props = self.settings.properties if isinstance(self.settings.properties, dict) else {}
+        Best-effort clamp/snap for Basler integer nodes (Width/Height).
+        Works with real Pylon nodes and is unit-testable with fakes.
 
-        legacy = props.get("resolution")
-        if isinstance(legacy, (list, tuple)) and len(legacy) == 2:
-            try:
-                w, h = int(legacy[0]), int(legacy[1])
-                if w > 0 and h > 0:
-                    return (w, h)
-            except Exception:
-                pass
+        If node lacks GetMin/GetMax/GetInc, returns value unchanged.
+        """
+        v = int(value)
 
         try:
-            w = int(getattr(self.settings, "width", 0) or 0)
-            h = int(getattr(self.settings, "height", 0) or 0)
-            if w > 0 and h > 0:
-                return (w, h)
+            vmin = int(node.GetMin())
+            vmax = int(node.GetMax())
+            v = max(vmin, min(v, vmax))
+        except Exception:
+            # Node doesn't support min/max querying; keep as-is
+            return v
+
+        try:
+            inc = int(node.GetInc())
+            if inc > 1:
+                # snap down to nearest valid increment
+                v = vmin + ((v - vmin) // inc) * inc
         except Exception:
             pass
 
-        return None
+        return int(v)
 
     def _configure_resolution(self) -> None:
         """
-        Apply width/height only if explicitly requested.
+        Apply width/height only if explicitly requested (GUI or override).
         If None, keep device defaults.
+
+        Best-effort: if camera enforces increments/ranges, snap to valid values.
         """
         if self._camera is None:
             return
@@ -263,11 +586,21 @@ class BaslerCameraBackend(CameraBackend):
             LOG.info("Resolution: using device default.")
             return
 
-        req_w, req_h = req
+        req_w, req_h = int(req[0]), int(req[1])
+
         try:
+            # Best-effort clamp/snap (helps with Basler increment constraints)
+            try:
+                req_w = self._snap_to_node(req_w, self._camera.Width)
+                req_h = self._snap_to_node(req_h, self._camera.Height)
+            except Exception:
+                pass
+
+            # Apply requested values
             self._camera.Width.SetValue(int(req_w))
             self._camera.Height.SetValue(int(req_h))
 
+            # Read back actual applied values
             aw = int(self._camera.Width.GetValue())
             ah = int(self._camera.Height.GetValue())
             self._actual_width = aw
@@ -277,32 +610,54 @@ class BaslerCameraBackend(CameraBackend):
                 LOG.warning(f"Resolution mismatch: requested {req_w}x{req_h}, got {aw}x{ah}")
             else:
                 LOG.info(f"Resolution set to {aw}x{ah}")
+
         except Exception as exc:
             LOG.warning(f"Failed to set resolution to {req_w}x{req_h}: {exc}")
 
-    @staticmethod
-    def _settings_value(
-        key: str, source: dict, fallback: float | None = None, *, treat_nonpositive_as_none: bool = True
-    ):
+    def _get_requested_resolution_or_none(self) -> tuple[int, int] | None:
         """
-        Fetch setting from a dict with an optional fallback.
+        Return (w, h) if a resolution was explicitly requested.
 
-        If treat_nonpositive_as_none is True:
-        - numeric values <= 0 are treated as "Auto" and returned as None
+        Priority:
+        1) CameraSettings.width/height (GUI fields)
+        2) properties['basler']['resolution'] (namespaced optional override)
+        3) properties['resolution'] (legacy fallback)
+        Return None to keep device defaults.
+
+        Note: 'Auto' in GUI is represented by 0 for width/height.
         """
-        value = source.get(key, fallback)
 
-        if value is None:
+        def _coerce_pair(val) -> tuple[int, int] | None:
+            if isinstance(val, (list, tuple)) and len(val) == 2:
+                try:
+                    w = int(val[0])
+                    h = int(val[1])
+                    if w > 0 and h > 0:
+                        return (w, h)
+                except Exception:
+                    return None
             return None
 
-        # Treat 0 / <=0 as Auto by default
-        if treat_nonpositive_as_none and isinstance(value, (int, float)):
-            try:
-                fv = float(value)
-                if fv <= 0.0:
-                    return None
-                return fv
-            except Exception:
-                return None
+        # 1) GUI fields first
+        try:
+            w = int(getattr(self.settings, "width", 0) or 0)
+            h = int(getattr(self.settings, "height", 0) or 0)
+            if w > 0 and h > 0:
+                return (w, h)
+        except Exception:
+            pass
 
-        return value
+        # 2) Namespaced optional override
+        props = self.settings.properties if isinstance(self.settings.properties, dict) else {}
+        ns = props.get(self.OPTIONS_KEY, {})
+        if isinstance(ns, dict):
+            pair = _coerce_pair(ns.get("resolution"))
+            if pair:
+                return pair
+
+        # 3) Legacy fallback (read-only compatibility)
+        pair = _coerce_pair(props.get("resolution"))
+        if pair:
+            return pair
+
+        return None

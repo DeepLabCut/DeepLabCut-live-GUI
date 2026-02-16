@@ -25,9 +25,9 @@ from dlclivegui.config import CameraSettings
 
 def _try_import_gui_apply_identity():
     try:
-        from dlclivegui.gui.camera_config_dialog import _apply_detected_identity  # type: ignore
+        from dlclivegui.gui.camera_config.camera_config_dialog import apply_detected_identity  # type: ignore
 
-        return _apply_detected_identity
+        return apply_detected_identity
     except Exception:
         return None
 

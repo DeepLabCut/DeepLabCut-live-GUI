@@ -1,6 +1,10 @@
 # tests/cameras/backends/conftest.py
+from __future__ import annotations
+
 import importlib
 import os
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pytest
@@ -510,56 +514,36 @@ def patch_basler_sdk(monkeypatch, fake_pylon_module):
 
 
 # -----------------------------------------------------------------------------
-# Fake GenTL / harvesters SDK (open/read/close capable) + fixtures
+# Fake GenTL / harvesters SDK (SDK-free) + fixtures for strict lifecycle tests
 # -----------------------------------------------------------------------------
 
 
 class FakeGenTLTimeoutException(TimeoutError):
-    """
-    Representative timeout: Harvesters often surfaces GenTL TimeoutException semantics.
-    """
+    """Fake timeout/error type used as HarvesterTimeoutError in backend tests."""
 
     pass
 
 
-class _DeviceInfoAdapter:
-    """
-    Make device_info_list entries behave whether they're dict-like or object-like.
-    """
-
-    def __init__(self, payload):
-        self._payload = payload
-
-    def get(self, key, default=None):
-        if isinstance(self._payload, dict):
-            return self._payload.get(key, default)
-        return getattr(self._payload, key, default)
-
-    @property
-    def serial_number(self):
-        return self.get("serial_number", "")
-
-    @property
-    def vendor(self):
-        return self.get("vendor", "")
-
-    @property
-    def model(self):
-        return self.get("model", "")
-
-    @property
-    def display_name(self):
-        return self.get("display_name", "")
+def _info_get(info: Any, key: str, default=None):
+    """Read a device-info field from dict-like or attribute-like entries."""
+    try:
+        if hasattr(info, "get"):
+            v = info.get(key)
+            if v is not None:
+                return v
+    except Exception:
+        pass
+    try:
+        v = getattr(info, key, None)
+        if v is not None:
+            return v
+    except Exception:
+        pass
+    return default
 
 
 class _FakeNode:
-    """
-    Minimal GenICam-style node with .value and optional constraints.
-    Harvesters exposes nodes as objects; your backend uses:
-      - node.value
-      - node.min / node.max / node.inc (for Width/Height)
-      - PixelFormat.symbolics (for allowed formats)
-    """
+    """Minimal GenICam node: .value plus optional constraints and symbolics."""
 
     def __init__(self, value=None, *, min=None, max=None, inc=1, symbolics=None):
         self.value = value
@@ -570,31 +554,42 @@ class _FakeNode:
 
 
 class _FakeNodeMap:
-    """Provides attribute access for nodes used by GenTLCameraBackend."""
+    """Node map with the attributes your GenTLCameraBackend touches."""
 
-    def __init__(self, *, width=1920, height=1080, fps=30.0, exposure=10000.0, gain=0.0, pixel_format="Mono8"):
-        # Identification / label fields your _resolve_device_label() tries
-        self.DeviceModelName = _FakeNode("FakeGenTLModel")
-        self.DeviceSerialNumber = _FakeNode("FAKE-GENTL-0")
-        self.DeviceDisplayName = _FakeNode("FakeGenTLDisplay")
+    def __init__(
+        self,
+        *,
+        width=1920,
+        height=1080,
+        fps=30.0,
+        exposure=10000.0,
+        gain=0.0,
+        pixel_format="Mono8",
+        model="FakeGenTLModel",
+        serial="FAKE-GENTL-0",
+        display="FakeGenTLDisplay",
+    ):
+        # Label fields used by _resolve_device_label()
+        self.DeviceModelName = _FakeNode(model)
+        self.DeviceSerialNumber = _FakeNode(serial)
+        self.DeviceDisplayName = _FakeNode(display)
 
-        # Format + acquisition nodes
+        # Pixel format node
         self.PixelFormat = _FakeNode(
             pixel_format,
             symbolics=["Mono8", "Mono16", "RGB8", "BGR8"],
         )
 
-        # Width/Height with constraints for increment alignment logic
+        # Width/Height constraints for increment alignment logic
         self.Width = _FakeNode(int(width), min=64, max=4096, inc=2)
         self.Height = _FakeNode(int(height), min=64, max=4096, inc=2)
 
-        # FPS related nodes (backend may set AcquisitionFrameRate)
+        # FPS / actual fps
         self.AcquisitionFrameRateEnable = _FakeNode(True)
         self.AcquisitionFrameRate = _FakeNode(float(fps))
-        # backend tries ResultingFrameRate for actual FPS; provide it
         self.ResultingFrameRate = _FakeNode(float(fps))
 
-        # Exposure/Gain
+        # Exposure / gain
         self.ExposureAuto = _FakeNode("Off")
         self.ExposureTime = _FakeNode(float(exposure))
         self.GainAuto = _FakeNode("Off")
@@ -607,23 +602,21 @@ class _FakeRemoteDevice:
 
 
 class _FakeComponent:
+    """
+    Component with .data, .width, .height like Harvesters component2D image.
+    Your backend does np.asarray(component.data) and reshape using height/width.
+    """
+
     def __init__(self, width: int, height: int, channels: int, dtype=np.uint8):
         self.width = int(width)
         self.height = int(height)
         self._channels = int(channels)
-        self._dtype = dtype
 
-        # Create a deterministic image payload
         n = self.width * self.height * self._channels
         if dtype == np.uint8:
             arr = (np.arange(n) % 255).astype(np.uint8)
         else:
-            # e.g., uint16
             arr = (np.arange(n) % 65535).astype(np.uint16)
-
-        # Harvesters often exposes component.data as a buffer-like object;
-        # your backend does np.asarray(component.data) and may fall back to frombuffer(bytes(...)).
-        # A numpy array works fine for both.
         self.data = arr
 
 
@@ -633,10 +626,7 @@ class _FakePayload:
 
 
 class _FakeFetchedBufferCtx:
-    """
-    Context manager returned by FakeImageAcquirer.fetch().
-    Must provide .payload with components.
-    """
+    """Context manager returned by fetch(). Must have .payload."""
 
     def __init__(self, payload: _FakePayload):
         self.payload = payload
@@ -648,59 +638,74 @@ class _FakeFetchedBufferCtx:
         return False
 
 
+@dataclass
 class FakeImageAcquirer:
     """
-    Minimal Harvesters image acquirer:
+    Minimal ImageAcquirer:
       - remote_device.node_map
-      - start()/stop()/destroy()
-      - fetch(timeout=...) -> context manager
-      - node_map shortcut (your backend uses self._acquirer.node_map in read())
+      - node_map shortcut (backend uses self._acquirer.node_map in read())
+      - start/stop/destroy
+      - fetch(timeout=...) -> ctx manager yielding buffer-like object
+    Strict rule: fetch fails unless started=True.
     """
 
-    def __init__(self, *, serial="FAKE-GENTL-0", width=1920, height=1080, pixel_format="Mono8"):
-        self.serial = serial
-        self._started = False
-        self._destroyed = False
+    serial: str = "FAKE-GENTL-0"
+    width: int = 1920
+    height: int = 1080
+    pixel_format: str = "Mono8"
 
-        # Node map used by open() and read()
-        self.remote_device = _FakeRemoteDevice(_FakeNodeMap(width=width, height=height, pixel_format=pixel_format))
+    def __post_init__(self):
+        self.remote_device = _FakeRemoteDevice(
+            _FakeNodeMap(width=self.width, height=self.height, pixel_format=self.pixel_format, serial=self.serial)
+        )
         self.node_map = self.remote_device.node_map
 
-        # Simple FIFO of frames (buffers)
+        self._started = False
+        self._destroyed = False
         self._queue: list[_FakePayload] = []
-        self._populate_default_frames()
 
-    def _populate_default_frames(self):
-        # Make one frame available by default
+        # Call tracing
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.destroy_calls = 0
+        self.fetch_calls: list[float] = []
+
+        # Prepare one default frame
+        self._enqueue_default_frame()
+
+    def _enqueue_default_frame(self):
         pf = str(self.node_map.PixelFormat.value or "Mono8")
         if pf in ("RGB8", "BGR8"):
-            channels = 3
-            dtype = np.uint8
+            channels, dtype = 3, np.uint8
         elif pf == "Mono16":
-            channels = 1
-            dtype = np.uint16
+            channels, dtype = 1, np.uint16
         else:
-            channels = 1
-            dtype = np.uint8
+            channels, dtype = 1, np.uint8
 
         comp = _FakeComponent(self.node_map.Width.value, self.node_map.Height.value, channels, dtype=dtype)
         self._queue.append(_FakePayload(comp))
 
     def start(self):
+        self.start_calls += 1
         self._started = True
 
     def stop(self):
+        self.stop_calls += 1
         self._started = False
 
     def destroy(self):
+        self.destroy_calls += 1
         self._destroyed = True
 
     def fetch(self, timeout: float = 2.0):
+        self.fetch_calls.append(float(timeout))
+
+        # Strict rule: cannot fetch unless started
         if not self._started:
-            raise FakeGenTLTimeoutException("Acquirer not started")
+            raise FakeGenTLTimeoutException("fetch called while not started")
 
         if not self._queue:
-            raise FakeGenTLTimeoutException(f"Timeout after {timeout}s")
+            raise FakeGenTLTimeoutException(f"timeout after {timeout}s")
 
         payload = self._queue.pop(0)
         return _FakeFetchedBufferCtx(payload)
@@ -708,93 +713,180 @@ class FakeImageAcquirer:
 
 class FakeHarvester:
     """
-    Minimal fake for 'from harvesters.core import Harvester' supporting:
+    Minimal Harvester:
       - add_file/update/reset
-      - device_info_list for enumeration
-      - create()/create_image_acquirer() returning FakeImageAcquirer
-
-    This enables GenTLCameraBackend.open/read/close paths.
+      - device_info_list
+      - create(index) or create({"serial_number": ...})
+    Inventory-driven so tests can control enumeration.
     """
 
-    def __init__(self):
-        self.device_info_list = []
-        self._files = []
-        self._acquirers: list[FakeImageAcquirer] = []
+    def __init__(self, inventory: list[dict[str, Any]] | None = None):
+        self._files: list[str] = []
+        self._inventory: list[dict[str, Any]] = list(inventory or [])
+        self.device_info_list: list[Any] = []
+
+        # Call tracing
+        self.add_file_calls: list[str] = []
+        self.update_calls = 0
+        self.reset_calls = 0
+        self.create_calls: list[Any] = []
 
     def add_file(self, file_path: str):
         self._files.append(str(file_path))
+        self.add_file_calls.append(str(file_path))
 
     def update(self):
-        # Harvesters tutorial output shows dict-like device entries.
-        self.device_info_list = [
-            {
-                "display_name": "TLSimuMono (FAKE-GENTL-0)",
-                "model": "FakeGenTLModel",
-                "vendor": "FakeVendor",
-                "serial_number": "FAKE-GENTL-0",
-                "id_": "FakeDeviceId",
-                "tl_type": "Custom",
-                "user_defined_name": "Center",
-                "version": "1.0.0",
-            }
-        ]
+        self.update_calls += 1
+        # If not provided, default to a single fake device
+        if not self._inventory:
+            self._inventory = [
+                {
+                    "display_name": "TLSimuMono (FAKE-GENTL-0)",
+                    "model": "FakeGenTLModel",
+                    "vendor": "FakeVendor",
+                    "serial_number": "FAKE-GENTL-0",
+                    "id_": "FakeDeviceId",
+                    "tl_type": "Custom",
+                    "user_defined_name": "Center",
+                    "version": "1.0.0",
+                    "access_status": 1000,
+                }
+            ]
+        self.device_info_list = list(self._inventory)
 
     def reset(self):
-        # "release" resources
+        self.reset_calls += 1
         self.device_info_list = []
         self._files = []
-        self._acquirers = []
 
     def create(self, selector=None, index: int | None = None, *args, **kwargs):
-        serial = None
-
-        # Selector dict commonly used: {"serial_number": "..."} [1](https://github.com/genicam/harvesters/issues/454)
-        if isinstance(selector, dict):
-            serial = selector.get("serial_number")
-
-        if serial is None and index is None:
-            index = 0
+        # Record call for verification
+        self.create_calls.append({"selector": selector, "index": index, "args": args, "kwargs": kwargs})
 
         if not self.device_info_list:
             self.update()
 
+        serial = None
+        if isinstance(selector, dict):
+            serial = selector.get("serial_number")
+
         if serial is None:
             if index is None:
-                index = 0
+                # allow create(0) style
+                if isinstance(selector, int):
+                    index = selector
+                else:
+                    index = 0
             if index < 0 or index >= len(self.device_info_list):
                 raise RuntimeError("Index out of range")
-            info = _DeviceInfoAdapter(self.device_info_list[index])
-            serial = info.serial_number or "FAKE-GENTL-0"
+            info = self.device_info_list[index]
+            serial = str(_info_get(info, "serial_number", "FAKE-GENTL-0"))
 
-        acq = FakeImageAcquirer(serial=serial)
-        self._acquirers.append(acq)
-        return acq
+        return FakeImageAcquirer(serial=str(serial))
 
+    # Keep compatibility if anything uses the older name
     def create_image_acquirer(self, *args, **kwargs):
-        # Alias used by some Harvesters versions; just delegate to create()
         return self.create(*args, **kwargs)
 
 
-@pytest.fixture()
-def fake_harvester_class():
-    """Provides FakeHarvester class for patching GenTL backend."""
-    return FakeHarvester
+# -----------------------------------------------------------------------------
+# GentL fixtures: inventory, patching, settings factory
+# -----------------------------------------------------------------------------
 
 
 @pytest.fixture()
-def patch_gentl_sdk(monkeypatch, fake_harvester_class):
+def gentl_inventory():
+    """
+    Mutable inventory list used by FakeHarvester.update().
+    Tests can replace contents to simulate multiple devices, ambiguity, missing fields, etc.
+    """
+    inv: list[dict[str, Any]] = [
+        {
+            "display_name": "TLSimuMono (FAKE-GENTL-0)",
+            "model": "FakeGenTLModel",
+            "vendor": "FakeVendor",
+            "serial_number": "FAKE-GENTL-0",
+            "id_": "FakeDeviceId",
+            "tl_type": "Custom",
+            "user_defined_name": "Center",
+            "version": "1.0.0",
+            "access_status": 1000,
+        }
+    ]
+    return inv
+
+
+@pytest.fixture()
+def fake_harvester_factory(gentl_inventory):
+    """
+    Factory that returns a FakeHarvester bound to the current gentl_inventory.
+    Allows tests to mutate gentl_inventory before calling backend.open().
+    """
+
+    def _make():
+        return FakeHarvester(inventory=gentl_inventory)
+
+    return _make
+
+
+@pytest.fixture()
+def patch_gentl_sdk(monkeypatch, fake_harvester_factory):
+    """
+    Patch dlclivegui.cameras.backends.gentl_backend to use FakeHarvester + Fake timeout.
+    Also bypass CTI search logic so tests never hit filesystem/SDK paths.
+    """
     import dlclivegui.cameras.backends.gentl_backend as gb
 
-    monkeypatch.setattr(gb, "Harvester", fake_harvester_class, raising=False)
+    # Patch Harvester symbol (the backend calls Harvester() directly)
+    monkeypatch.setattr(gb, "Harvester", lambda: fake_harvester_factory(), raising=False)
+
+    # Keep your backend timeout contract as-is: it catches HarvesterTimeoutError
     monkeypatch.setattr(gb, "HarvesterTimeoutError", FakeGenTLTimeoutException, raising=False)
 
-    # Prevent CTI searching from blocking open/get_device_count
+    # Avoid filesystem CTI searching
     monkeypatch.setattr(gb.GenTLCameraBackend, "_find_cti_file", lambda self: "dummy.cti", raising=False)
     monkeypatch.setattr(
         gb.GenTLCameraBackend, "_search_cti_file", staticmethod(lambda patterns: "dummy.cti"), raising=False
     )
 
-    return fake_harvester_class
+    return gb
+
+
+@pytest.fixture()
+def gentl_settings_factory():
+    """
+    Convenience factory for CameraSettings for gentl backend tests.
+    """
+    from dlclivegui.config import CameraSettings
+
+    def _make(
+        *,
+        index=0,
+        name="TestCam",
+        width=0,
+        height=0,
+        fps=0.0,
+        exposure=0,
+        gain=0.0,
+        enabled=True,
+        properties=None,
+    ):
+        props = properties if isinstance(properties, dict) else {}
+        props.setdefault("gentl", {})
+        return CameraSettings(
+            name=name,
+            index=index,
+            backend="gentl",
+            width=width,
+            height=height,
+            fps=fps,
+            exposure=exposure,
+            gain=gain,
+            enabled=enabled,
+            properties=props,
+        )
+
+    return _make
 
 
 # -----------------------------------------------------------------------------

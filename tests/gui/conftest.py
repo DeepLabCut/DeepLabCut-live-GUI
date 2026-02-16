@@ -2,28 +2,20 @@
 from __future__ import annotations
 
 import pytest
+from PySide6.QtWidgets import QMessageBox
 
 from dlclivegui.cameras.factory import CameraFactory
-from dlclivegui.config import CameraSettings
 from dlclivegui.gui.main_window import DLCLiveMainWindow
 
 
 # ---------- Autouse patches to keep GUI tests fast and side-effect-free ----------
 @pytest.fixture(autouse=True)
 def _patch_camera_factory(monkeypatch, request, fake_backend_factory):
-    """
-    Replace hardware backends with FakeBackend globally for GUI tests.
-    We patch at the central creation point used by the controller.
-    """
     if request.node.get_closest_marker("gui") is None:
         yield
         return
 
-    def _create_stub(settings: CameraSettings):
-        # FakeBackend ignores 'backend' and produces deterministic frames
-        return fake_backend_factory(settings)
-
-    monkeypatch.setattr(CameraFactory, "create", staticmethod(_create_stub))
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(fake_backend_factory))
     yield
 
 
@@ -45,14 +37,10 @@ def _patch_camera_validation(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _patch_dlclive_to_fake(monkeypatch, fake_dlclive_factory):
-    """
-    Ensure dlclive is replaced by the test double in the DLCLiveProcessor module.
-    (The window will instantiate DLCLiveProcessor internally, which imports DLCLive.)
-    """
+def _patch_dlclive_to_fake(monkeypatch, FakeDLCLiveClass):
     from dlclivegui.services import dlc_processor as dlcp_mod
 
-    monkeypatch.setattr(dlcp_mod, "DLCLive", fake_dlclive_factory)
+    monkeypatch.setattr(dlcp_mod, "DLCLive", FakeDLCLiveClass)
 
 
 @pytest.fixture(autouse=True)
@@ -73,3 +61,22 @@ def _isolate_qsettings(tmp_path):
     s.sync()
 
     yield
+
+
+@pytest.fixture(autouse=True)
+def no_modal_messageboxes(monkeypatch):
+    """
+    Fail fast if a QMessageBox is shown unexpectedly.
+    This prevents teardown hangs caused by modal dialogs.
+    """
+
+    def _report(*args, **kwargs):
+        # args often: (parent, title, text, ...)
+        title = args[1] if len(args) > 1 else "<no-title>"
+        text = args[2] if len(args) > 2 else "<no-text>"
+        raise AssertionError(f"Unexpected QMessageBox: {title}\n{text}")
+
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(_report))
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(_report))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(_report))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(_report))

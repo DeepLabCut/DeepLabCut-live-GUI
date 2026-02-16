@@ -170,7 +170,7 @@ def test_queue_full_drops_frames(patch_writegear, output_path, rgb_frame):
     assert any(v is False for v in (ok1, ok2, ok3))
 
     # stats should show dropped frames eventually
-    wait_until(lambda: (rec.get_stats() is not None))
+    wait_until(lambda: rec.get_stats() is not None)
     stats = rec.get_stats()
     assert stats is not None
     assert stats.dropped_frames >= 1
@@ -214,7 +214,7 @@ def test_encoder_write_error_sets_encode_error_and_future_writes_raise(patch_wri
 
     # wait until encode error becomes visible
     wait_until(lambda: rec.get_stats() is not None)  # ensures internals initialized
-    wait_until(lambda: (rec._current_error() is not None), timeout=2.0)
+    wait_until(lambda: rec._current_error() is not None, timeout=2.0)
 
     # further writes should raise
     with pytest.raises(RuntimeError):
