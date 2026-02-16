@@ -632,24 +632,22 @@ class DLCLiveMainWindow(QMainWindow):
         self.show_predictions_checkbox = QCheckBox("Display pose predictions")
         self.show_predictions_checkbox.setChecked(True)
 
-        self.cmap_combo = QComboBox()
-        self.cmap_combo.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
-        self.cmap_combo.setToolTip("Select colormap to use when displaying keypoints (bodypart-based coloring)")
-        color_ui.populate_colormap_combo(
-            self.cmap_combo,
+        self.cmap_combo = color_ui.make_colormap_combo(
             current=self._colormap,
+            tooltip="Select colormap to use when displaying keypoints (bodypart-based coloring)",
             favorites_first=["turbo", "jet", "hsv"],
             exclude_reversed=True,
             filters={"cet_": 5},  # include only first 5 colormaps from the 'cet_' family to avoid redundant options
+            include_icons=True,
+            sizing=color_ui.ComboSizing(min_width=80, max_width=200, popup_extra_padding=40),
         )
-        lyts.enable_combo_shrink_to_current(self.cmap_combo, min_width=80, max_width=200)
 
         keypoints_settings = lyts.make_two_field_row(
             "Keypoint colormap: ",
             self.cmap_combo,
             None,
             self.show_predictions_checkbox,
-            key_width=None,
+            key_width=120,
             left_stretch=0,
             right_stretch=0,
         )
@@ -658,19 +656,23 @@ class DLCLiveMainWindow(QMainWindow):
         self.bbox_enabled_checkbox = QCheckBox("Show bounding box")
         self.bbox_enabled_checkbox.setChecked(False)
 
-        self.bbox_color_combo = QComboBox()
-        self.bbox_color_combo.setToolTip("Select color for bounding box")
-        self.bbox_color_combo.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
-        color_ui.populate_bbox_color_combo(self.bbox_color_combo, BBoxColors, current_bgr=self._bbox_color)
-        self.bbox_color_combo.setCurrentIndex(0)
-        lyts.enable_combo_shrink_to_current(self.bbox_color_combo, min_width=80, max_width=200)
+        self.bbox_color_combo = color_ui.make_bbox_color_combo(
+            BBoxColors,
+            current_bgr=self._bbox_color,
+            include_icons=True,
+            tooltip="Select color for bounding box",
+            sizing=color_ui.ComboSizing(
+                min_width=80,
+                max_width=200,
+            ),
+        )
 
         bbox_settings = lyts.make_two_field_row(
             "Bounding box color: ",
             self.bbox_color_combo,
             None,
             self.bbox_enabled_checkbox,
-            key_width=None,
+            key_width=120,
             left_stretch=0,
             right_stretch=0,
         )
