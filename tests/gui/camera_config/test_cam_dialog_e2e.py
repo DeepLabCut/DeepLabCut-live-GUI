@@ -329,7 +329,7 @@ def test_duplicate_camera_prevented(dialog, qtbot, monkeypatch):
 @pytest.mark.gui
 def test_max_cameras_prevented(qtbot, monkeypatch, patch_detect_cameras):
     """
-    Dialog enforces MAX_CAMERAS enabled cameras. Use backend='fake' for stability.
+    Dialog enforces MAX_CAMERAS enabled cameras.
     """
     calls = {"n": 0}
 
@@ -357,7 +357,9 @@ def test_max_cameras_prevented(qtbot, monkeypatch, patch_detect_cameras):
 
         initial_count = d.active_cameras_list.count()
 
+        qtbot.waitUntil(lambda: not d._is_scan_running(), timeout=1000)
         d._on_scan_result([DetectedCamera(index=4, label="Extra")])
+        d._on_scan_finished()
         d.available_cameras_list.setCurrentRow(0)
 
         qtbot.mouseClick(d.add_camera_btn, Qt.LeftButton)
