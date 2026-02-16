@@ -514,27 +514,16 @@ def patch_basler_sdk(monkeypatch, fake_pylon_module):
 
 
 # -----------------------------------------------------------------------------
-<<<<<<< cy/upgrade-gentl-backend
 # Fake GenTL / harvesters SDK (SDK-free) + fixtures for strict lifecycle tests
-=======
-# Fake GenTL / harvesters SDK (open/read/close capable) + fixtures
->>>>>>> cy/pre-release-fixes-2.0
 # -----------------------------------------------------------------------------
 
 
 class FakeGenTLTimeoutException(TimeoutError):
-<<<<<<< cy/upgrade-gentl-backend
     """Fake timeout/error type used as HarvesterTimeoutError in backend tests."""
-=======
-    """
-    Representative timeout: Harvesters often surfaces GenTL TimeoutException semantics.
-    """
->>>>>>> cy/pre-release-fixes-2.0
 
     pass
 
 
-<<<<<<< cy/upgrade-gentl-backend
 def _info_get(info: Any, key: str, default=None):
     """Read a device-info field from dict-like or attribute-like entries."""
     try:
@@ -555,46 +544,6 @@ def _info_get(info: Any, key: str, default=None):
 
 class _FakeNode:
     """Minimal GenICam node: .value plus optional constraints and symbolics."""
-=======
-class _DeviceInfoAdapter:
-    """
-    Make device_info_list entries behave whether they're dict-like or object-like.
-    """
-
-    def __init__(self, payload):
-        self._payload = payload
-
-    def get(self, key, default=None):
-        if isinstance(self._payload, dict):
-            return self._payload.get(key, default)
-        return getattr(self._payload, key, default)
-
-    @property
-    def serial_number(self):
-        return self.get("serial_number", "")
-
-    @property
-    def vendor(self):
-        return self.get("vendor", "")
-
-    @property
-    def model(self):
-        return self.get("model", "")
-
-    @property
-    def display_name(self):
-        return self.get("display_name", "")
-
-
-class _FakeNode:
-    """
-    Minimal GenICam-style node with .value and optional constraints.
-    Harvesters exposes nodes as objects; your backend uses:
-      - node.value
-      - node.min / node.max / node.inc (for Width/Height)
-      - PixelFormat.symbolics (for allowed formats)
-    """
->>>>>>> cy/pre-release-fixes-2.0
 
     def __init__(self, value=None, *, min=None, max=None, inc=1, symbolics=None):
         self.value = value
@@ -605,7 +554,6 @@ class _FakeNode:
 
 
 class _FakeNodeMap:
-<<<<<<< cy/upgrade-gentl-backend
     """Node map with the attributes your GenTLCameraBackend touches."""
 
     def __init__(
@@ -627,23 +575,11 @@ class _FakeNodeMap:
         self.DeviceDisplayName = _FakeNode(display)
 
         # Pixel format node
-=======
-    """Provides attribute access for nodes used by GenTLCameraBackend."""
-
-    def __init__(self, *, width=1920, height=1080, fps=30.0, exposure=10000.0, gain=0.0, pixel_format="Mono8"):
-        # Identification / label fields your _resolve_device_label() tries
-        self.DeviceModelName = _FakeNode("FakeGenTLModel")
-        self.DeviceSerialNumber = _FakeNode("FAKE-GENTL-0")
-        self.DeviceDisplayName = _FakeNode("FakeGenTLDisplay")
-
-        # Format + acquisition nodes
->>>>>>> cy/pre-release-fixes-2.0
         self.PixelFormat = _FakeNode(
             pixel_format,
             symbolics=["Mono8", "Mono16", "RGB8", "BGR8"],
         )
 
-<<<<<<< cy/upgrade-gentl-backend
         # Width/Height constraints for increment alignment logic
         self.Width = _FakeNode(int(width), min=64, max=4096, inc=2)
         self.Height = _FakeNode(int(height), min=64, max=4096, inc=2)
@@ -654,19 +590,6 @@ class _FakeNodeMap:
         self.ResultingFrameRate = _FakeNode(float(fps))
 
         # Exposure / gain
-=======
-        # Width/Height with constraints for increment alignment logic
-        self.Width = _FakeNode(int(width), min=64, max=4096, inc=2)
-        self.Height = _FakeNode(int(height), min=64, max=4096, inc=2)
-
-        # FPS related nodes (backend may set AcquisitionFrameRate)
-        self.AcquisitionFrameRateEnable = _FakeNode(True)
-        self.AcquisitionFrameRate = _FakeNode(float(fps))
-        # backend tries ResultingFrameRate for actual FPS; provide it
-        self.ResultingFrameRate = _FakeNode(float(fps))
-
-        # Exposure/Gain
->>>>>>> cy/pre-release-fixes-2.0
         self.ExposureAuto = _FakeNode("Off")
         self.ExposureTime = _FakeNode(float(exposure))
         self.GainAuto = _FakeNode("Off")
@@ -679,39 +602,21 @@ class _FakeRemoteDevice:
 
 
 class _FakeComponent:
-<<<<<<< cy/upgrade-gentl-backend
     """
     Component with .data, .width, .height like Harvesters component2D image.
     Your backend does np.asarray(component.data) and reshape using height/width.
     """
 
-=======
->>>>>>> cy/pre-release-fixes-2.0
     def __init__(self, width: int, height: int, channels: int, dtype=np.uint8):
         self.width = int(width)
         self.height = int(height)
         self._channels = int(channels)
-<<<<<<< cy/upgrade-gentl-backend
 
-=======
-        self._dtype = dtype
-
-        # Create a deterministic image payload
->>>>>>> cy/pre-release-fixes-2.0
         n = self.width * self.height * self._channels
         if dtype == np.uint8:
             arr = (np.arange(n) % 255).astype(np.uint8)
         else:
-<<<<<<< cy/upgrade-gentl-backend
             arr = (np.arange(n) % 65535).astype(np.uint16)
-=======
-            # e.g., uint16
-            arr = (np.arange(n) % 65535).astype(np.uint16)
-
-        # Harvesters often exposes component.data as a buffer-like object;
-        # your backend does np.asarray(component.data) and may fall back to frombuffer(bytes(...)).
-        # A numpy array works fine for both.
->>>>>>> cy/pre-release-fixes-2.0
         self.data = arr
 
 
@@ -721,14 +626,7 @@ class _FakePayload:
 
 
 class _FakeFetchedBufferCtx:
-<<<<<<< cy/upgrade-gentl-backend
     """Context manager returned by fetch(). Must have .payload."""
-=======
-    """
-    Context manager returned by FakeImageAcquirer.fetch().
-    Must provide .payload with components.
-    """
->>>>>>> cy/pre-release-fixes-2.0
 
     def __init__(self, payload: _FakePayload):
         self.payload = payload
@@ -740,7 +638,6 @@ class _FakeFetchedBufferCtx:
         return False
 
 
-<<<<<<< cy/upgrade-gentl-backend
 @dataclass
 class FakeImageAcquirer:
     """
@@ -784,48 +681,11 @@ class FakeImageAcquirer:
             channels, dtype = 1, np.uint16
         else:
             channels, dtype = 1, np.uint8
-=======
-class FakeImageAcquirer:
-    """
-    Minimal Harvesters image acquirer:
-      - remote_device.node_map
-      - start()/stop()/destroy()
-      - fetch(timeout=...) -> context manager
-      - node_map shortcut (your backend uses self._acquirer.node_map in read())
-    """
-
-    def __init__(self, *, serial="FAKE-GENTL-0", width=1920, height=1080, pixel_format="Mono8"):
-        self.serial = serial
-        self._started = False
-        self._destroyed = False
-
-        # Node map used by open() and read()
-        self.remote_device = _FakeRemoteDevice(_FakeNodeMap(width=width, height=height, pixel_format=pixel_format))
-        self.node_map = self.remote_device.node_map
-
-        # Simple FIFO of frames (buffers)
-        self._queue: list[_FakePayload] = []
-        self._populate_default_frames()
-
-    def _populate_default_frames(self):
-        # Make one frame available by default
-        pf = str(self.node_map.PixelFormat.value or "Mono8")
-        if pf in ("RGB8", "BGR8"):
-            channels = 3
-            dtype = np.uint8
-        elif pf == "Mono16":
-            channels = 1
-            dtype = np.uint16
-        else:
-            channels = 1
-            dtype = np.uint8
->>>>>>> cy/pre-release-fixes-2.0
 
         comp = _FakeComponent(self.node_map.Width.value, self.node_map.Height.value, channels, dtype=dtype)
         self._queue.append(_FakePayload(comp))
 
     def start(self):
-<<<<<<< cy/upgrade-gentl-backend
         self.start_calls += 1
         self._started = True
 
@@ -846,22 +706,6 @@ class FakeImageAcquirer:
 
         if not self._queue:
             raise FakeGenTLTimeoutException(f"timeout after {timeout}s")
-=======
-        self._started = True
-
-    def stop(self):
-        self._started = False
-
-    def destroy(self):
-        self._destroyed = True
-
-    def fetch(self, timeout: float = 2.0):
-        if not self._started:
-            raise FakeGenTLTimeoutException("Acquirer not started")
-
-        if not self._queue:
-            raise FakeGenTLTimeoutException(f"Timeout after {timeout}s")
->>>>>>> cy/pre-release-fixes-2.0
 
         payload = self._queue.pop(0)
         return _FakeFetchedBufferCtx(payload)
@@ -869,7 +713,6 @@ class FakeImageAcquirer:
 
 class FakeHarvester:
     """
-<<<<<<< cy/upgrade-gentl-backend
     Minimal Harvester:
       - add_file/update/reset
       - device_info_list
@@ -1001,95 +844,11 @@ def patch_gentl_sdk(monkeypatch, fake_harvester_factory):
     monkeypatch.setattr(gb, "HarvesterTimeoutError", FakeGenTLTimeoutException, raising=False)
 
     # Avoid filesystem CTI searching
-=======
-    Minimal fake for 'from harvesters.core import Harvester' supporting:
-      - add_file/update/reset
-      - device_info_list for enumeration
-      - create()/create_image_acquirer() returning FakeImageAcquirer
-
-    This enables GenTLCameraBackend.open/read/close paths.
-    """
-
-    def __init__(self):
-        self.device_info_list = []
-        self._files = []
-        self._acquirers: list[FakeImageAcquirer] = []
-
-    def add_file(self, file_path: str):
-        self._files.append(str(file_path))
-
-    def update(self):
-        # Harvesters tutorial output shows dict-like device entries.
-        self.device_info_list = [
-            {
-                "display_name": "TLSimuMono (FAKE-GENTL-0)",
-                "model": "FakeGenTLModel",
-                "vendor": "FakeVendor",
-                "serial_number": "FAKE-GENTL-0",
-                "id_": "FakeDeviceId",
-                "tl_type": "Custom",
-                "user_defined_name": "Center",
-                "version": "1.0.0",
-            }
-        ]
-
-    def reset(self):
-        # "release" resources
-        self.device_info_list = []
-        self._files = []
-        self._acquirers = []
-
-    def create(self, selector=None, index: int | None = None, *args, **kwargs):
-        serial = None
-
-        # Selector dict commonly used: {"serial_number": "..."} [1](https://github.com/genicam/harvesters/issues/454)
-        if isinstance(selector, dict):
-            serial = selector.get("serial_number")
-
-        if serial is None and index is None:
-            index = 0
-
-        if not self.device_info_list:
-            self.update()
-
-        if serial is None:
-            if index is None:
-                index = 0
-            if index < 0 or index >= len(self.device_info_list):
-                raise RuntimeError("Index out of range")
-            info = _DeviceInfoAdapter(self.device_info_list[index])
-            serial = info.serial_number or "FAKE-GENTL-0"
-
-        acq = FakeImageAcquirer(serial=serial)
-        self._acquirers.append(acq)
-        return acq
-
-    def create_image_acquirer(self, *args, **kwargs):
-        # Alias used by some Harvesters versions; just delegate to create()
-        return self.create(*args, **kwargs)
-
-
-@pytest.fixture()
-def fake_harvester_class():
-    """Provides FakeHarvester class for patching GenTL backend."""
-    return FakeHarvester
-
-
-@pytest.fixture()
-def patch_gentl_sdk(monkeypatch, fake_harvester_class):
-    import dlclivegui.cameras.backends.gentl_backend as gb
-
-    monkeypatch.setattr(gb, "Harvester", fake_harvester_class, raising=False)
-    monkeypatch.setattr(gb, "HarvesterTimeoutError", FakeGenTLTimeoutException, raising=False)
-
-    # Prevent CTI searching from blocking open/get_device_count
->>>>>>> cy/pre-release-fixes-2.0
     monkeypatch.setattr(gb.GenTLCameraBackend, "_find_cti_file", lambda self: "dummy.cti", raising=False)
     monkeypatch.setattr(
         gb.GenTLCameraBackend, "_search_cti_file", staticmethod(lambda patterns: "dummy.cti"), raising=False
     )
 
-<<<<<<< cy/upgrade-gentl-backend
     return gb
 
 
@@ -1128,9 +887,6 @@ def gentl_settings_factory():
         )
 
     return _make
-=======
-    return fake_harvester_class
->>>>>>> cy/pre-release-fixes-2.0
 
 
 # -----------------------------------------------------------------------------
