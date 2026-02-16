@@ -25,9 +25,15 @@ from dlclivegui.config import CameraSettings
 
 def _try_import_gui_apply_identity():
     try:
+<<<<<<< cy/upgrade-gentl-backend
         from dlclivegui.gui.camera_config.camera_config_dialog import apply_detected_identity  # type: ignore
 
         return apply_detected_identity
+=======
+        from dlclivegui.gui.camera_config_dialog import _apply_detected_identity  # type: ignore
+
+        return _apply_detected_identity
+>>>>>>> cy/pre-release-fixes-2.0
     except Exception:
         return None
 

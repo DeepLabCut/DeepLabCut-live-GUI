@@ -40,8 +40,7 @@ def register_processor(cls):
     return cls
 
 
-# pragma: no cover
-class OneEuroFilter:
+class OneEuroFilter:  # pragma: no cover
     def __init__(self, t0, x0, dx0=None, min_cutoff=1.0, beta=0.0, d_cutoff=1.0):
         self.min_cutoff = min_cutoff
         self.beta = beta
@@ -81,8 +80,6 @@ class OneEuroFilter:
 
 
 # pragma: cover
-
-
 class BaseProcessorSocket(Processor):
     """
     Base processor class that implements a socket server to help remote control recording in experiments.
@@ -492,7 +489,7 @@ class BaseProcessorSocket(Processor):
 
 
 @register_processor
-class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):
+class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):  # pragma: no cover
     """
     DLC Processor with pose calculations (center, heading, head angle) and optional filtering.
 
@@ -663,7 +660,7 @@ class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):
 
 
 @register_processor
-class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):
+class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no cover
     PROCESSOR_NAME = "Mouse Pose with less keypoints"
     PROCESSOR_DESCRIPTION = "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
     PROCESSOR_PARAMS = {
