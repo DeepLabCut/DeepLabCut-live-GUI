@@ -85,10 +85,20 @@ class CameraSettings(BaseModel):
     def _validate_crop(self):
         for f in ("crop_x0", "crop_y0", "crop_x1", "crop_y1"):
             setattr(self, f, max(0, int(getattr(self, f))))
-        # Optional: if any crop is set, enforce x1>x0 and y1>y0
-        if any([self.crop_x0, self.crop_y0, self.crop_x1, self.crop_y1]):
-            if not (self.crop_x1 > self.crop_x0 and self.crop_y1 > self.crop_y0):
-                raise ValueError("Invalid crop rectangle: require x1>x0 and y1>y0 when cropping is enabled.")
+
+        # No crop
+        if self.crop_x0 == self.crop_y0 == self.crop_x1 == self.crop_y1 == 0:
+            return self
+
+        # Allow x1/y1 == 0 to mean "to edge"
+        # If x1 is explicitly set (>0), it must be > x0
+        if self.crop_x1 > 0 and self.crop_x1 <= self.crop_x0:
+            raise ValueError("Invalid crop rectangle: require x1 > x0 (or x1=0 for 'to edge').")
+
+        # If y1 is explicitly set (>0), it must be > y0
+        if self.crop_y1 > 0 and self.crop_y1 <= self.crop_y0:
+            raise ValueError("Invalid crop rectangle: require y1 > y0 (or y1=0 for 'to edge').")
+
         return self
 
     def get_crop_region(self) -> tuple[int, int, int, int] | None:
@@ -129,6 +139,32 @@ class CameraSettings(BaseModel):
                 setattr(self, field, getattr(default, field))
 
         return self
+
+    @staticmethod
+    def check_diff(old: CameraSettings, new: CameraSettings) -> dict:
+        keys = (
+            "width",
+            "height",
+            "fps",
+            "exposure",
+            "gain",
+            "rotation",
+            "crop_x0",
+            "crop_y0",
+            "crop_x1",
+            "crop_y1",
+            "enabled",
+        )
+        out = {}
+        for k in keys:
+            try:
+                ov = getattr(old, k, None)
+                nv = getattr(new, k, None)
+                if ov != nv:
+                    out[k] = (ov, nv)
+            except Exception:
+                pass
+        return out
 
 
 class MultiCameraSettings(BaseModel):
