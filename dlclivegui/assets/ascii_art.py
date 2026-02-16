@@ -11,7 +11,7 @@ Cross-platform and CI-safe:
 Dependencies: opencv-python, numpy
 """
 
-# dlclivegui/assets/ascii.py
+# dlclivegui/assets/ascii_art.py
 from __future__ import annotations
 
 import os
