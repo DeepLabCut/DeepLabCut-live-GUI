@@ -118,7 +118,7 @@ def test_elides_when_narrow_and_restores_when_wide(label, qtbot):
     [
         (Qt.ElideLeft, lambda s: s.startswith("…")),
         (Qt.ElideRight, lambda s: s.endswith("…")),
-        (Qt.ElideMiddle, lambda s: ("…" in s and not s.startswith("…") and not s.endswith("…"))),
+        (Qt.ElideMiddle, lambda s: "…" in s and not s.startswith("…") and not s.endswith("…")),
     ],
 )
 def test_elide_modes_affect_ellipsis_position(qtbot, mode, assert_fn):
