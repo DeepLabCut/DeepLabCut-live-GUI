@@ -10,7 +10,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication
 
 # ---- Splash screen config ----
-SHOW_SPLASH = True
+SHOW_SPLASH = False
 SPLASH_SCREEN_WIDTH = 600
 SPLASH_SCREEN_HEIGHT = 400
 SPLASH_SCREEN_DURATION_MS = 1000

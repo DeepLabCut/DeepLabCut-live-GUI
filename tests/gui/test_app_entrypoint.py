@@ -16,6 +16,12 @@ def _import_fresh():
     return importlib.import_module(MODULE_UNDER_TEST)
 
 
+@pytest.fixture(autouse=True)
+def set_use_splash_true(monkeypatch):
+    #  Ensure thems.py SHOW_SPLASH is True for tests that rely on it, without affecting other tests
+    monkeypatch.setattr("dlclivegui.gui.theme.SHOW_SPLASH", True)
+
+
 @pytest.mark.gui
 def test_main_with_splash(monkeypatch):
     appmod = _import_fresh()
