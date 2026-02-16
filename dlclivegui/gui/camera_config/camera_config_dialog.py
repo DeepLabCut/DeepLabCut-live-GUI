@@ -586,7 +586,7 @@ class CameraConfigDialog(QDialog):
             LOGGER.debug("[Selection] Suppressed currentRowChanged event at index %d.", row)
             return
         prev_row = self._current_edit_index
-        LOGGER.info(
+        LOGGER.debug(
             "[Select] row=%s prev=%s preview_state=%s",
             row,
             prev_row,
@@ -878,7 +878,7 @@ class CameraConfigDialog(QDialog):
             self._working_settings.cameras[row] = new_model
             self._update_active_list_item(row, new_model)
 
-            LOGGER.info(
+            LOGGER.debug(
                 "[Apply] backend=%s idx=%s changes=%s",
                 getattr(new_model, "backend", None),
                 getattr(new_model, "index", None),
@@ -903,7 +903,7 @@ class CameraConfigDialog(QDialog):
             if should_consider_restart:
                 restart = self._should_restart_preview(old_settings, new_model)
 
-            LOGGER.info(
+            LOGGER.debug(
                 "[Apply] preview_state=%s restart=%s backend=%s idx=%s",
                 self._preview.state,
                 restart,
@@ -1237,7 +1237,7 @@ class CameraConfigDialog(QDialog):
         - Creates and wires loader
         - Sets requested_cam
         """
-        LOGGER.info("[Preview] begin load reason=%s backend=%s idx=%s", reason, cam.backend, cam.index)
+        LOGGER.debug("[Preview] begin load reason=%s backend=%s idx=%s", reason, cam.backend, cam.index)
 
         # If already loading, just coalesce restart/intention
         if self._preview.state == PreviewState.LOADING:
@@ -1292,7 +1292,7 @@ class CameraConfigDialog(QDialog):
             return
 
         self._current_edit_index = row
-        LOGGER.info(
+        LOGGER.debug(
             "[Preview] resolved start row=%s active_row=%s",
             self._current_edit_index,
             self.active_cameras_list.currentRow(),
@@ -1313,7 +1313,7 @@ class CameraConfigDialog(QDialog):
 
     def _stop_preview_internal(self, *, reason: str) -> None:
         """Tear down loader/backend/timer. Safe to call from anywhere."""
-        LOGGER.info("[Preview] stop reason=%s state=%s", reason, self._preview.state)
+        LOGGER.debug("[Preview] stop reason=%s state=%s", reason, self._preview.state)
 
         self._preview.state = PreviewState.STOPPING
 

@@ -9,8 +9,10 @@ import os
 import time
 from pathlib import Path
 
-os.environ["PYLON_CAMEMU"] = "2"
-
+# NOTE @C-Achard: his could be added in settings eventually
+# Forces pypylon to create 2 emulation virtual cameras,
+# mostly for testing. This shold not be enabled for release.
+# os.environ["PYLON_CAMEMU"] = "2"
 import cv2
 import numpy as np
 from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl
@@ -72,6 +74,8 @@ from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import format_dlc_stats
 from ..utils.utils import FPSTracker
 from .camera_config.camera_config_dialog import CameraConfigDialog
+from .misc import color_dropdowns as color_ui
+from .misc import layouts as lyts
 from .misc.drag_spinbox import ScrubSpinBox
 from .misc.eliding_label import ElidingPathLabel
 from .recording_manager import RecordingManager
@@ -306,7 +310,7 @@ class DLCLiveMainWindow(QMainWindow):
         controls_layout.addWidget(self._build_camera_group())
         controls_layout.addWidget(self._build_dlc_group())
         controls_layout.addWidget(self._build_recording_group())
-        controls_layout.addWidget(self._build_bbox_group())
+        controls_layout.addWidget(self._build_viz_group())
 
         # Preview/Stop buttons at bottom of controls - wrap in widget
         button_bar_widget = QWidget()
@@ -378,7 +382,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._init_theme_actions()
 
     def _build_camera_group(self) -> QGroupBox:
-        group = QGroupBox("Camera settings")
+        group = QGroupBox("Camera")
         form = QFormLayout(group)
 
         # Camera config button - opens dialog for all camera configuration
@@ -397,7 +401,7 @@ class DLCLiveMainWindow(QMainWindow):
         return group
 
     def _build_dlc_group(self) -> QGroupBox:
-        group = QGroupBox("DLCLive settings")
+        group = QGroupBox("DLCLive")
         form = QFormLayout(group)
 
         path_layout = QHBoxLayout()
@@ -443,7 +447,7 @@ class DLCLiveMainWindow(QMainWindow):
         # form.addRow("Additional options", self.additional_options_edit)
         self.dlc_camera_combo = QComboBox()
         self.dlc_camera_combo.setToolTip("Select which camera to use for pose inference")
-        form.addRow("Inference Camera", self.dlc_camera_combo)
+        form.addRow("Inference camera", self.dlc_camera_combo)
 
         # Wrap inference buttons in a widget to prevent shifting
         inference_button_widget = QWidget()
@@ -461,9 +465,9 @@ class DLCLiveMainWindow(QMainWindow):
         inference_buttons.addWidget(self.stop_inference_button)
         form.addRow(inference_button_widget)
 
-        self.show_predictions_checkbox = QCheckBox("Display pose predictions")
-        self.show_predictions_checkbox.setChecked(True)
-        form.addRow(self.show_predictions_checkbox)
+        # self.show_predictions_checkbox = QCheckBox("Display pose predictions")
+        # self.show_predictions_checkbox.setChecked(True)
+        # form.addRow(self.show_predictions_checkbox)
 
         self.allow_processor_ctrl_checkbox = QCheckBox("Allow processor-based control")
         self.allow_processor_ctrl_checkbox.setChecked(False)
@@ -495,7 +499,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Session + run name
         self.session_name_edit = QLineEdit()
         self.session_name_edit.setPlaceholderText("e.g. mouseA_day1")
-        form.addRow("Session name", self.session_name_edit)
+        # form.addRow("Session name", self.session_name_edit)
 
         self.use_timestamp_checkbox = QCheckBox("Use timestamp for run folder name")
         self.use_timestamp_checkbox.setChecked(True)
@@ -503,7 +507,11 @@ class DLCLiveMainWindow(QMainWindow):
             "If checked, run folder will be run_YYYYMMDD_HHMMSS_mmm.\n"
             "If unchecked, run folder will be run_0001, run_0002, ..."
         )
-        form.addRow("", self.use_timestamp_checkbox)
+        # form.addRow("", self.use_timestamp_checkbox)
+        session_opts = lyts.make_two_field_row(
+            "Session name", self.session_name_edit, None, self.use_timestamp_checkbox, key_width=100
+        )
+        form.addRow(session_opts)
 
         # Show recording path preview
 
@@ -575,7 +583,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         ## CRF
         crf_label = QLabel("CRF")
-        crf_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        crf_label.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
         grid.addWidget(crf_label, 0, 4)
 
         self.crf_spin = QSpinBox()
@@ -618,24 +626,55 @@ class DLCLiveMainWindow(QMainWindow):
 
         return group
 
-    def _build_bbox_group(self) -> QGroupBox:
-        group = QGroupBox("Bounding Box Visualization")
+    def _build_viz_group(self) -> QGroupBox:
+        group = QGroupBox("Visualization")
         form = QFormLayout(group)
+        self.show_predictions_checkbox = QCheckBox("Display pose predictions")
+        self.show_predictions_checkbox.setChecked(True)
 
-        row_widget = QWidget()
-        checkbox_layout = QHBoxLayout(row_widget)
-        checkbox_layout.setContentsMargins(0, 0, 0, 0)
+        self.cmap_combo = QComboBox()
+        self.cmap_combo.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        self.cmap_combo.setToolTip("Select colormap to use when displaying keypoints (bodypart-based coloring)")
+        color_ui.populate_colormap_combo(
+            self.cmap_combo,
+            current=self._colormap,
+            favorites_first=["turbo", "jet", "hsv"],
+            exclude_reversed=True,
+            filters={"cet_": 5},  # include only first 5 colormaps from the 'cet_' family to avoid redundant options
+        )
+        lyts.enable_combo_shrink_to_current(self.cmap_combo, min_width=80, max_width=200)
+
+        keypoints_settings = lyts.make_two_field_row(
+            "Keypoint colormap: ",
+            self.cmap_combo,
+            None,
+            self.show_predictions_checkbox,
+            key_width=None,
+            left_stretch=0,
+            right_stretch=0,
+        )
+        form.addRow(keypoints_settings)
+
         self.bbox_enabled_checkbox = QCheckBox("Show bounding box")
         self.bbox_enabled_checkbox.setChecked(False)
-        checkbox_layout.addWidget(self.bbox_enabled_checkbox)
-        checkbox_layout.addWidget(QLabel("Color:"))
 
         self.bbox_color_combo = QComboBox()
-        self._populate_bbox_color_combo_with_swatches()
+        self.bbox_color_combo.setToolTip("Select color for bounding box")
+        self.bbox_color_combo.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        color_ui.populate_bbox_color_combo(self.bbox_color_combo, BBoxColors, current_bgr=self._bbox_color)
         self.bbox_color_combo.setCurrentIndex(0)
-        checkbox_layout.addWidget(self.bbox_color_combo)
-        checkbox_layout.addStretch(1)
-        form.addRow(row_widget)
+        lyts.enable_combo_shrink_to_current(self.bbox_color_combo, min_width=80, max_width=200)
+
+        bbox_settings = lyts.make_two_field_row(
+            "Bounding box color: ",
+            self.bbox_color_combo,
+            None,
+            self.bbox_enabled_checkbox,
+            key_width=None,
+            left_stretch=0,
+            right_stretch=0,
+        )
+        form.addRow(bbox_settings)
 
         bbox_layout = QHBoxLayout()
         self.bbox_x0_spin = ScrubSpinBox()
@@ -679,7 +718,10 @@ class DLCLiveMainWindow(QMainWindow):
         # Camera config dialog
         self.config_cameras_button.clicked.connect(self._open_camera_config_dialog)
 
-        # Connect bounding box controls
+        # Visualization settings
+        ## Colormap change
+        self.cmap_combo.currentIndexChanged.connect(self._on_colormap_changed)
+        ## Connect bounding box controls
         self.bbox_enabled_checkbox.stateChanged.connect(self._on_bbox_changed)
         self.bbox_x0_spin.valueChanged.connect(self._on_bbox_changed)
         self.bbox_y0_spin.valueChanged.connect(self._on_bbox_changed)
@@ -760,9 +802,11 @@ class DLCLiveMainWindow(QMainWindow):
         viz = config.visualization
         self._p_cutoff = viz.p_cutoff
         self._colormap = viz.colormap
+        if hasattr(self, "cmap_combo"):
+            color_ui.set_cmap_combo_from_name(self.cmap_combo, self._colormap, fallback="viridis")
         self._bbox_color = viz.get_bbox_color_bgr()
         if hasattr(self, "bbox_color_combo"):
-            self._set_combo_from_color(self._bbox_color)
+            color_ui.set_bbox_combo_from_bgr(self.bbox_color_combo, self._bbox_color)
 
         # Update DLC camera list
         self._refresh_dlc_camera_list()
@@ -1050,11 +1094,16 @@ class DLCLiveMainWindow(QMainWindow):
         self._settings_store.set_use_timestamp(self.use_timestamp_checkbox.isChecked())
         self._update_recording_path_preview()
 
+    def _on_colormap_changed(self, _index: int) -> None:
+        self._colormap = color_ui.get_cmap_name_from_combo(self.cmap_combo, fallback=self._colormap)
+        if self._current_frame is not None:
+            self._display_frame(self._current_frame, force=True)
+
     def _on_bbox_color_changed(self, _index: int) -> None:
-        enum_item = self.bbox_color_combo.currentData()
-        if enum_item is None:
+        bgr = color_ui.get_bbox_bgr_from_combo(self.bbox_color_combo, fallback=self._bbox_color)
+        if bgr is None:
             return
-        self._bbox_color = enum_item.value
+        self._bbox_color = bgr
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
 
