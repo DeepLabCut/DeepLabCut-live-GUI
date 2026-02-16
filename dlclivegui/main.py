@@ -1,6 +1,7 @@
 # dlclivegui/gui/main.py
 from __future__ import annotations
 
+import logging
 import signal
 import sys
 
@@ -27,6 +28,7 @@ def _maybe_allow_keyboard_interrupt(app: QApplication) -> None:
     """
 
     def _request_quit() -> None:
+        logging.info("Keyboard interrupt received, closing application...")
         win = getattr(app, "_main_window", None)
         if win is not None:
             # Trigger your existing closeEvent cleanup (camera stop, threads, timers, etc.)
