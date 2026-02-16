@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from ...cameras import CameraFactory
 from ..misc.drag_spinbox import ScrubSpinBox
 from ..misc.eliding_label import ElidingPathLabel
-from ..misc.layouts import _make_two_field_row
+from ..misc.layouts import make_two_field_row
 
 if TYPE_CHECKING:
     from camera_config_dialog import CameraConfigDialog
@@ -250,7 +250,7 @@ def build_settings_group(dlg: CameraConfigDialog) -> QGroupBox:
     dlg.cam_index_label = QLabel("0")
 
     dlg.cam_backend_label = QLabel("opencv")
-    id_backend_row = _make_two_field_row(
+    id_backend_row = make_two_field_row(
         "Index:",
         dlg.cam_index_label,
         "Backend:",
@@ -267,7 +267,7 @@ def build_settings_group(dlg: CameraConfigDialog) -> QGroupBox:
     dlg.detected_fps_label = QLabel("—")
     dlg.detected_fps_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-    detected_row = _make_two_field_row(
+    detected_row = make_two_field_row(
         "Detected resolution:",
         dlg.detected_resolution_label,
         "Detected FPS:",
@@ -288,7 +288,7 @@ def build_settings_group(dlg: CameraConfigDialog) -> QGroupBox:
     dlg.cam_height.setValue(0)
     dlg.cam_height.setSpecialValueText("Auto")
 
-    res_row = _make_two_field_row("W", dlg.cam_width, "H", dlg.cam_height, key_width=30)
+    res_row = make_two_field_row("W", dlg.cam_width, "H", dlg.cam_height, key_width=30)
     dlg.settings_form.addRow("Resolution:", res_row)
 
     # --- FPS + Rotation grouped ---
@@ -305,7 +305,7 @@ def build_settings_group(dlg: CameraConfigDialog) -> QGroupBox:
     dlg.cam_rotation.addItem("180°", 180)
     dlg.cam_rotation.addItem("270°", 270)
 
-    fps_rot_row = _make_two_field_row("FPS", dlg.cam_fps, "Rot", dlg.cam_rotation, key_width=30)
+    fps_rot_row = make_two_field_row("FPS", dlg.cam_fps, "Rot", dlg.cam_rotation, key_width=30)
     dlg.settings_form.addRow("Capture:", fps_rot_row)
 
     # --- Exposure + Gain grouped ---
@@ -321,7 +321,7 @@ def build_settings_group(dlg: CameraConfigDialog) -> QGroupBox:
     dlg.cam_gain.setSpecialValueText("Auto")
     dlg.cam_gain.setDecimals(2)
 
-    exp_gain_row = _make_two_field_row("Exp", dlg.cam_exposure, "Gain", dlg.cam_gain, key_width=30)
+    exp_gain_row = make_two_field_row("Exp", dlg.cam_exposure, "Gain", dlg.cam_gain, key_width=30)
     dlg.settings_form.addRow("Analog:", exp_gain_row)
 
     # --- Crop row ---
