@@ -296,8 +296,9 @@ class DLCLiveMainWindow(QMainWindow):
         self.controls_dock.setObjectName("ControlsDock")  # important for state saving
         self.controls_dock.setWidget(controls_widget)
         ### Dock features
-        self.controls_dock.setFeatures(  # must not close independently
-            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable
+        self.controls_dock.setFeatures(
+            # must not be closable by user but visibility can be toggled from View -> Show controls
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable  # | QDockWidget.DockWidgetClosable
         )
         self.addDockWidget(Qt.LeftDockWidgetArea, self.controls_dock)
         self.setDockOptions(
@@ -390,10 +391,16 @@ class DLCLiveMainWindow(QMainWindow):
 
         # View menu
         view_menu = self.menuBar().addMenu("&View")
-        view_menu.addAction(self.controls_dock.toggleViewAction())
+        ## Show/hide controls dock
+        self.action_show_controls = QAction("Show controls", self, checkable=True)
+        self.action_show_controls.setChecked(True)
+        self.action_show_controls.toggled.connect(self.controls_dock.setVisible)
+        self.controls_dock.visibilityChanged.connect(self.action_show_controls.setChecked)
+        view_menu.addAction(self.action_show_controls)
+        ## --------------------
         view_menu.addSeparator()
-        appearance_menu = view_menu.addMenu("Appearance")
         ## Style actions
+        appearance_menu = view_menu.addMenu("Appearance")
         self.action_dark_mode = QAction("Dark theme", self, checkable=True)
         self.action_light_mode = QAction("System theme", self, checkable=True)
         theme_group = QActionGroup(self)
@@ -402,7 +409,7 @@ class DLCLiveMainWindow(QMainWindow):
         theme_group.addAction(self.action_light_mode)
         self.action_dark_mode.triggered.connect(lambda: self._apply_theme(AppStyle.DARK))
         self.action_light_mode.triggered.connect(lambda: self._apply_theme(AppStyle.SYS_DEFAULT))
-
+        # ----------------------
         appearance_menu.addAction(self.action_light_mode)
         appearance_menu.addAction(self.action_dark_mode)
         self._apply_theme(self._current_style)
