@@ -32,6 +32,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # If we use UV later, the lock file should be included here for caching and validation
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -61,7 +62,7 @@ jobs:
       - name: Install from wheel & smoke test
         run: |
           # Install from the built wheel (not from the source tree)
-          python -m pip install --no-deps dist/*.whl
+          python -m pip install dist/*.whl
 
           python - <<'PY'
           import importlib
