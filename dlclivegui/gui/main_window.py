@@ -31,6 +31,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDockWidget,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -231,28 +232,86 @@ class DLCLiveMainWindow(QMainWindow):
         self.setWindowIcon(QIcon(LOGO))
 
     def _setup_ui(self) -> None:
-        central = QWidget()
-        layout = QHBoxLayout(central)
+        # central = QWidget()
+        # layout = QHBoxLayout(central)
 
         # Video panel with display and performance stats
         video_panel = QWidget()
         video_layout = QVBoxLayout(video_panel)
         video_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Video display widget
+        ## Video display widget
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumSize(640, 360)
         self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         video_layout.addWidget(self.video_label, stretch=1)
-
-        # Stats panel below video with clear labels
+        ## Stats panel below video with clear labels
         stats_widget = QWidget()
         stats_widget.setStyleSheet("padding: 5px;")
         # stats_widget.setMinimumWidth(800)  # Prevent excessive line breaks
         stats_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         stats_widget.setMinimumHeight(80)
+        self._build_stats_layout(stats_widget)
 
+        video_layout.addWidget(stats_widget, stretch=0)
+
+        # Central widget is just the video panel (video + stats)
+        video_panel.setLayout(video_layout)
+        self.setCentralWidget(video_panel)
+
+        # Allow user to select stats text
+        for lbl in (self.camera_stats_label, self.dlc_stats_label, self.recording_stats_label):
+            lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        # Controls panel with fixed width to prevent shifting
+        controls_widget = QWidget()
+        # controls_widget.setMaximumWidth(500)
+        controls_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        controls_layout = QVBoxLayout(controls_widget)
+        controls_layout.setContentsMargins(5, 5, 5, 5)
+        controls_layout.addWidget(self._build_camera_group())
+        controls_layout.addWidget(self._build_dlc_group())
+        controls_layout.addWidget(self._build_recording_group())
+        controls_layout.addWidget(self._build_viz_group())
+
+        # Preview/Stop buttons at bottom of controls - wrap in widget
+        button_bar_widget = QWidget()
+        button_bar = QHBoxLayout(button_bar_widget)
+        button_bar.setContentsMargins(0, 5, 0, 5)
+        self.preview_button = QPushButton("Start Preview")
+        self.preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.preview_button.setMinimumWidth(150)
+        self.stop_preview_button = QPushButton("Stop Preview")
+        self.stop_preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        self.stop_preview_button.setEnabled(False)
+        self.stop_preview_button.setMinimumWidth(150)
+        button_bar.addWidget(self.preview_button)
+        button_bar.addWidget(self.stop_preview_button)
+        controls_layout.addWidget(button_bar_widget)
+        controls_layout.addStretch(1)
+
+        # Add controls and video panel to main layout
+        ## Dock widget for controls
+        self.controls_dock = QDockWidget("Controls", self)
+        self.controls_dock.setObjectName("ControlsDock")  # important for state saving
+        self.controls_dock.setWidget(controls_widget)
+        ### Dock features
+        self.controls_dock.setFeatures(  # must not close independently
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable
+        )
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.controls_dock)
+        self.setDockOptions(
+            self.dockOptions()
+            | QMainWindow.DockOption.AllowTabbedDocks
+            | QMainWindow.DockOption.GroupedDragging
+            | QMainWindow.DockOption.AnimatedDocks
+        )
+
+        self.setStatusBar(QStatusBar())
+        self._build_menus()
+        QTimer.singleShot(0, self._show_logo_and_text)
+
+    def _build_stats_layout(self, stats_widget: QWidget) -> QGridLayout:
         stats_layout = QGridLayout(stats_widget)
         stats_layout.setContentsMargins(5, 5, 5, 5)
         stats_layout.setHorizontalSpacing(8)  # tighten horizontal gap between title and value
@@ -295,49 +354,8 @@ class DLCLiveMainWindow(QMainWindow):
         # Critical: make column 1 (values) eat the width, keep column 0 tight
         stats_layout.setColumnStretch(0, 0)
         stats_layout.setColumnStretch(1, 1)
-        video_layout.addWidget(stats_widget, stretch=0)
 
-        # Allow user to select stats text
-        for lbl in (self.camera_stats_label, self.dlc_stats_label, self.recording_stats_label):
-            lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-
-        # Controls panel with fixed width to prevent shifting
-        controls_widget = QWidget()
-        controls_widget.setMaximumWidth(500)
-        controls_widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        controls_layout = QVBoxLayout(controls_widget)
-        controls_layout.setContentsMargins(5, 5, 5, 5)
-        controls_layout.addWidget(self._build_camera_group())
-        controls_layout.addWidget(self._build_dlc_group())
-        controls_layout.addWidget(self._build_recording_group())
-        controls_layout.addWidget(self._build_viz_group())
-
-        # Preview/Stop buttons at bottom of controls - wrap in widget
-        button_bar_widget = QWidget()
-        button_bar = QHBoxLayout(button_bar_widget)
-        button_bar.setContentsMargins(0, 5, 0, 5)
-        self.preview_button = QPushButton("Start Preview")
-        self.preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        self.preview_button.setMinimumWidth(150)
-        self.stop_preview_button = QPushButton("Stop Preview")
-        self.stop_preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
-        self.stop_preview_button.setEnabled(False)
-        self.stop_preview_button.setMinimumWidth(150)
-        button_bar.addWidget(self.preview_button)
-        button_bar.addWidget(self.stop_preview_button)
-        controls_layout.addWidget(button_bar_widget)
-        controls_layout.addStretch(1)
-
-        # Add controls and video panel to main layout
-        layout.addWidget(controls_widget, stretch=0)
-        layout.addWidget(video_panel, stretch=1)
-        layout.setStretch(0, 0)
-        layout.setStretch(1, 1)
-
-        self.setCentralWidget(central)
-        self.setStatusBar(QStatusBar())
-        self._build_menus()
-        QTimer.singleShot(0, self._show_logo_and_text)
+        stats_widget.setLayout(stats_layout)
 
     def _build_menus(self) -> None:
         # File menu
@@ -365,6 +383,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         # View menu
         view_menu = self.menuBar().addMenu("&View")
+        view_menu.addAction(self.controls_dock.toggleViewAction())
         appearance_menu = view_menu.addMenu("Appearance")
         ## Style actions
         self.action_dark_mode = QAction("Dark theme", self, checkable=True)
@@ -437,7 +456,7 @@ class DLCLiveMainWindow(QMainWindow):
         processor_path_layout.addWidget(self.refresh_processors_button)
         form.addRow("Processor folder", processor_path_layout)
 
-        self.processor_combo = color_ui.ShrinkCurrentWidePopupComboBox()
+        self.processor_combo = color_ui.ShrinkCurrentWidePopupComboBox(sizing=color_ui.ComboSizing(max_width=100))
         self.processor_combo.addItem("No Processor", None)
         # form.addRow("Processor", self.processor_combo)
 
@@ -445,9 +464,10 @@ class DLCLiveMainWindow(QMainWindow):
         # self.additional_options_edit.setPlaceholderText("")
         # self.additional_options_edit.setFixedHeight(40)
         # form.addRow("Additional options", self.additional_options_edit)
-        self.dlc_camera_combo = color_ui.ShrinkCurrentWidePopupComboBox()
+        self.dlc_camera_combo = color_ui.ShrinkCurrentWidePopupComboBox(sizing=color_ui.ComboSizing(max_width=180))
         self.dlc_camera_combo.setToolTip("Select which camera to use for pose inference")
         # form.addRow("Inference camera", self.dlc_camera_combo)
+        self.dlc_camera_combo.setPlaceholderText("None")
         processing_sttgs = lyts.make_two_field_row(
             "Inference camera",
             self.dlc_camera_combo,
@@ -455,6 +475,7 @@ class DLCLiveMainWindow(QMainWindow):
             self.processor_combo,
             key_width=None,
         )
+        self.dlc_camera_combo.update_shrink_width()
         form.addRow(processing_sttgs)
 
         # Wrap inference buttons in a widget to prevent shifting
@@ -751,6 +772,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._dlc.error.connect(self._on_dlc_error)
         self._dlc.initialized.connect(self._on_dlc_initialised)
         self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
+        self.dlc_camera_combo.currentTextChanged.connect(self.dlc_camera_combo.update_shrink_width)
 
         # Recording settings
         ## Session name persistence + preview updates
@@ -1041,6 +1063,7 @@ class DLCLiveMainWindow(QMainWindow):
             display_name = f"{info['name']} ({info['file']})"
             self.processor_combo.addItem(display_name, key)
 
+        self.processor_combo.update_shrink_width()
         self.statusBar().showMessage(
             f"Found {len(self._processor_keys)} processor(s) in package dlclivegui.processors", 3000
         )
@@ -1250,10 +1273,12 @@ class DLCLiveMainWindow(QMainWindow):
                 self._inference_camera_id = self.dlc_camera_combo.currentData()
 
         self.dlc_camera_combo.blockSignals(False)
+        self.dlc_camera_combo.update_shrink_width()
 
     def _on_dlc_camera_changed(self, _index: int) -> None:
         """Track user selection of the inference camera."""
         self._inference_camera_id = self.dlc_camera_combo.currentData()
+        self.dlc_camera_combo.update_shrink_width()
         # Force redraw so bbox/pose overlays switch to the new tile immediately
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
@@ -1972,6 +1997,9 @@ class DLCLiveMainWindow(QMainWindow):
         self._dlc.shutdown()
         if hasattr(self, "_metrics_timer"):
             self._metrics_timer.stop()
+
+        if hasattr(self, "_display_timer"):
+            self._display_timer.stop()
 
         # Remember model path on exit
         self._model_path_store.save_if_valid(self.model_path_edit.text().strip())
