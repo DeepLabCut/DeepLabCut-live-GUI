@@ -437,17 +437,25 @@ class DLCLiveMainWindow(QMainWindow):
         processor_path_layout.addWidget(self.refresh_processors_button)
         form.addRow("Processor folder", processor_path_layout)
 
-        self.processor_combo = QComboBox()
+        self.processor_combo = color_ui.ShrinkCurrentWidePopupComboBox()
         self.processor_combo.addItem("No Processor", None)
-        form.addRow("Processor", self.processor_combo)
+        # form.addRow("Processor", self.processor_combo)
 
         # self.additional_options_edit = QPlainTextEdit()
         # self.additional_options_edit.setPlaceholderText("")
         # self.additional_options_edit.setFixedHeight(40)
         # form.addRow("Additional options", self.additional_options_edit)
-        self.dlc_camera_combo = QComboBox()
+        self.dlc_camera_combo = color_ui.ShrinkCurrentWidePopupComboBox()
         self.dlc_camera_combo.setToolTip("Select which camera to use for pose inference")
-        form.addRow("Inference camera", self.dlc_camera_combo)
+        # form.addRow("Inference camera", self.dlc_camera_combo)
+        processing_sttgs = lyts.make_two_field_row(
+            "Inference camera",
+            self.dlc_camera_combo,
+            "Processor",
+            self.processor_combo,
+            key_width=None,
+        )
+        form.addRow(processing_sttgs)
 
         # Wrap inference buttons in a widget to prevent shifting
         inference_button_widget = QWidget()
