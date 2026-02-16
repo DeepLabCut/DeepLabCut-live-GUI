@@ -24,7 +24,7 @@ classifiers = [
 dynamic = [ "version" ]
 dependencies = [
   "cv2-enumerate-cameras",
-  "deeplabcut-live>=2",    # might be missing timm and scipy
+  "deeplabcut-live==1.1",
   "matplotlib",
   "numpy",
   "opencv-python",
@@ -49,7 +49,7 @@ dev = [
 ]
 gentl = [ "harvesters" ]
 pytorch = [
-  "deeplabcut-live[pytorch]>=2", # this includes timm and scipy
+  "deeplabcut-live[pytorch]==1.1", # includes timm and scipy
 ]
 test = [
   "hypothesis>=6",
@@ -59,7 +59,7 @@ test = [
   "pytest-qt>=4.2",
 ]
 tf = [
-  "deeplabcut-live[tf]>=2",
+  "deeplabcut-live[tf]==1.1",
 ]
 [project.scripts]
 dlclivegui = "dlclivegui:main"
