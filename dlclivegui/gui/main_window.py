@@ -297,7 +297,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.controls_dock.setWidget(controls_widget)
         ### Dock features
         self.controls_dock.setFeatures(  # must not close independently
-            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable
         )
         self.addDockWidget(Qt.LeftDockWidgetArea, self.controls_dock)
         self.setDockOptions(
@@ -305,6 +305,13 @@ class DLCLiveMainWindow(QMainWindow):
             | QMainWindow.DockOption.AllowTabbedDocks
             | QMainWindow.DockOption.GroupedDragging
             | QMainWindow.DockOption.AnimatedDocks
+        )
+        self.controls_dock.setStyleSheet(
+            """/* Docked title bar: fully transparent */
+            QDockWidget#ControlsDock::title {
+                background-color: rgba(0, 0, 0, 0);
+            }
+            """
         )
 
         self.setStatusBar(QStatusBar())
@@ -384,6 +391,7 @@ class DLCLiveMainWindow(QMainWindow):
         # View menu
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.controls_dock.toggleViewAction())
+        view_menu.addSeparator()
         appearance_menu = view_menu.addMenu("Appearance")
         ## Style actions
         self.action_dark_mode = QAction("Dark theme", self, checkable=True)
