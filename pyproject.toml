@@ -4,7 +4,6 @@ requires = [ "setuptools>=68" ]
 
 [project]
 name = "deeplabcut-live-gui"
-version = "2.0.0rc0"  # PLACEHOLDER
 description = "PySide6-based GUI to run real time pose estimation experiments with DeepLabCut"
 readme = "README.md"
 keywords = [ "deep learning", "deeplabcut", "gui", "pose estimation", "real-time" ]
@@ -22,6 +21,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+dynamic = [ "version" ]  # version is set in dlclivegui/__init__.py
 dependencies = [
   "cv2-enumerate-cameras",
   "deeplabcut-live==1.1",
