@@ -25,10 +25,10 @@ jobs:
         python-version: [ "3.10", "3.11", "3.12" ]  # adjust to what you support
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -71,8 +71,15 @@ jobs:
           print("Imported:", m.__name__, "version:", getattr(m, "__version__", "n/a"))
           PY
 
-          # Console entry point best-effort check (adjust name if different)
-          (command -v dlclivegui && dlclivegui --help) || echo "CLI not available or returned non-zero; continuing."
+          if ! command -v dlclivegui >/dev/null 2>&1; then
+            echo "CLI entry point 'dlclivegui' not found in PATH; skipping CLI smoke test."
+          else
+            echo "Running 'dlclivegui --help' smoke test..."
+            if ! dlclivegui --help >/dev/null 2>&1; then
+              echo "::error::'dlclivegui --help' failed; this indicates a problem with the installed CLI package."
+              exit 1
+            fi
+          fi
 
   publish:
     name: Publish to PyPI
