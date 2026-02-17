@@ -47,7 +47,8 @@ def enable_windows_ansi_support() -> None:
     """
     if os.name == "nt":
         # This call toggles the console mode to enable VT processing in many hosts
-        os.system("")
+        #  Always leave the string empty.
+        os.system("")  # This is a known, safe workaround to enable ANSI support on Windows.
 
 
 def get_terminal_width(default: int = 80) -> int:
@@ -347,21 +348,24 @@ def build_help_description(
     enable_windows_ansi_support()
     desc = "DeepLabCut-Live GUI — launch the graphical interface." if desc is None else desc
     if static_banner is None:
-        banner = "\n".join(
-            generate_ascii_lines(
-                str(ASCII_IMAGE_PATH),
-                width=shutil.get_terminal_size((80, 24)).columns - 10,
-                aspect=0.5,
-                color=color,
-                fine=True,
-                invert=False,
-                crop_content=True,
-                crop_bg="white",
-                alpha_thresh=1,
-                crop_pad=1,
-                bg_bgr=(255, 255, 255),
+        try:
+            banner = "\n".join(
+                generate_ascii_lines(
+                    str(ASCII_IMAGE_PATH),
+                    width=shutil.get_terminal_size((80, 24)).columns - 10,
+                    aspect=0.5,
+                    color=color,
+                    fine=True,
+                    invert=False,
+                    crop_content=True,
+                    crop_bg="white",
+                    alpha_thresh=1,
+                    crop_pad=1,
+                    bg_bgr=(255, 255, 255),
+                )
             )
-        )
+        except (FileNotFoundError, RuntimeError, OSError):
+            banner = None
     else:
         banner = static_banner
     if banner and terminal_is_wide_enough(min_width=min_width):

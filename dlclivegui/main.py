@@ -55,8 +55,22 @@ def _maybe_allow_keyboard_interrupt(app: QApplication) -> None:
 
 
 def parse_args(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+
+    default_desc = "Welcome to DeepLabCut-Live GUI!"
+    no_art_flag = "--no-art" in argv
+    if not no_art_flag:
+        try:
+            desc = art.build_help_description()
+        except Exception as e:
+            logging.warning(f"Failed to build ASCII art for help description: {e}")
+            desc = default_desc
+    else:
+        desc = default_desc
+
     parser = argparse.ArgumentParser(
-        description=art.build_help_description(),
+        description=desc,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--no-art", action="store_true", help="Disable ASCII art in help and when launching.")
@@ -68,9 +82,9 @@ def main() -> None:
 
     # HiDPI pixmaps - always enabled in Qt 6 so no need to set it explicitly
     # QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
-    print("Starting DeepLabCut-Live GUI...")
+    logging.info("Starting DeepLabCut-Live GUI...")
     if not args.no_art:
-        print(art.build_help_description(desc="Welcome to DeepLabCut-Live GUI!"))
+        logging.info(art.build_help_description(desc="Welcome to DeepLabCut-Live GUI!"))
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(LOGO))
