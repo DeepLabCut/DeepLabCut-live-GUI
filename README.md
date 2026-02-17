@@ -2,7 +2,7 @@
 
 
 [![Code style:Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-![PyPI - Python Version](https://img.shields.io/pypi/v/deeplabcut-live-gui)
+![PyPI - Package Version](https://img.shields.io/pypi/v/deeplabcut-live-gui)
 ![PyPI - Downloads](https://img.shields.io/pypi/dm/deeplabcut-live-gui?color=purple)
 ![Python versions](https://img.shields.io/pypi/pyversions/deeplabcut-live-gui)
 <!-- ![Python package](https://github.com/DeepLabCut/DeepLabCut-live/workflows/Python%20package/badge.svg) -->
@@ -22,7 +22,7 @@ GUI to run [DeepLabCut-Live](https://github.com/DeepLabCut/DeepLabCut-live) on a
 
 ## Documentation
 
-> Full documentations is a work in progress and will be posted to DeepLabCut's official docs site when ready.
+> Full documentation is a work in progress and will be posted to DeepLabCut's official docs site when ready.
 
 ---
 
@@ -31,15 +31,16 @@ GUI to run [DeepLabCut-Live](https://github.com/DeepLabCut/DeepLabCut-live) on a
 - **Python 3.10, 3.11 or 3.12**
 - One inference backend (choose at least one):
   - **PyTorch** *(recommended for best performance & compatibility)*
-  - **TensorFlow** *(for backwards compatibility with existing models; Windows limitation applies for Python > 3.10)*
+  - **TensorFlow** *(for backwards compatibility with existing models; Windows installs are no longer available for Python > 3.10)*
 - A supported camera backend (OpenCV webcams by default; additional backends supported)
 
 ---
 
 ## Installation
 
-This project is currently installed **from source** (editable install).
-The newest GUI and features may not yet be available on PyPI.
+While `deeplabcut-live-gui` is available on **PyPI**, the newest PySide6-based GUI and features are currently best obtained by installing from source.
+
+To get the **latest version**, please follow the **instructions below**.
 
 ### Option A — Install with `uv`
 
@@ -146,8 +147,8 @@ Typical workflow:
    - Record video and timestamps to organized session folders
 
 > **Note:** OpenCV-compatible cameras (USB webcams, OBS virtual camera) work out of the box.
-> For additional camera ecosystems (Basler, GenTL, Aravis, etc.), see the camera backend docs.
-
+> For additional camera ecosystems (Basler, GenTL, Aravis, etc.), see the relevant documentation.
+<!-- TODO @C-Achard add link to docs website once available -->
 
 ---
 
