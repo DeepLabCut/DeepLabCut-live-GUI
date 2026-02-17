@@ -1,319 +1,69 @@
-<!-- FIXME @C-Achard out of date -->
-# DeepLabCut Live GUI
+# DeepLabCut-Live! GUI <img src="https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/1596193544929-NHMVMXPVEYZ6R4I45DSR/ke17ZwdGBToddI8pDm48kOHwsIwndRGCkvek0XAcW4ZZw-zPPgdn4jUwVcJE1ZvWEtT5uBSRWt4vQZAgTJucoTqqXjS3CfNDSuuf31e0tVH0wqgmu6zkAOZ3crWCtkmLcPIuzHaxU8QRzZwtrVtHupu3E9Ef3XsXP1C_826c-iU/DLCLIVEGUI_LOGO.png?format=750w" width="350" title="DLC-live GUI" alt="DLC LIVE! GUI" align="right" vspace = "100">
 
-A modern PySide6 GUI for running [DeepLabCut-live](https://github.com/DeepLabCut/DeepLabCut-live) experiments with real-time pose estimation. The application streams frames from industrial or consumer cameras, performs DLCLive inference, and records high-quality video with synchronized pose data.
+<a href="https://github.com/psf/black"><img alt="Code style: black" src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
+![PyPI - Python Version](https://img.shields.io/pypi/v/deeplabcut-live-gui)
+![PyPI - Downloads](https://img.shields.io/pypi/dm/deeplabcut-live-gui?color=purple)
+![Python package](https://github.com/DeepLabCut/DeepLabCut-live/workflows/Python%20package/badge.svg)
 
-## Features
+[![License](https://img.shields.io/pypi/l/deeplabcutcore.svg)](https://github.com/DeepLabCut/deeplabcutlive/raw/master/LICENSE)
+[![Image.sc forum](https://img.shields.io/badge/dynamic/json.svg?label=forum&amp;url=https%3A%2F%2Fforum.image.sc%2Ftags%2Fdeeplabcut.json&amp;query=%24.topic_list.tags.0.topic_count&amp;colorB=brightgreen&amp;&amp;suffix=%20topics&amp;logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAABPklEQVR42m3SyyqFURTA8Y2BER0TDyExZ+aSPIKUlPIITFzKeQWXwhBlQrmFgUzMMFLKZeguBu5y+//17dP3nc5vuPdee6299gohUYYaDGOyyACq4JmQVoFujOMR77hNfOAGM+hBOQqB9TjHD36xhAa04RCuuXeKOvwHVWIKL9jCK2bRiV284QgL8MwEjAneeo9VNOEaBhzALGtoRy02cIcWhE34jj5YxgW+E5Z4iTPkMYpPLCNY3hdOYEfNbKYdmNngZ1jyEzw7h7AIb3fRTQ95OAZ6yQpGYHMMtOTgouktYwxuXsHgWLLl+4x++Kx1FJrjLTagA77bTPvYgw1rRqY56e+w7GNYsqX6JfPwi7aR+Y5SA+BXtKIRfkfJAYgj14tpOF6+I46c4/cAM3UhM3JxyKsxiOIhH0IO6SH/A1Kb1WBeUjbkAAAAAElFTkSuQmCC)](https://forum.image.sc/tags/deeplabcut)
+[![Gitter](https://badges.gitter.im/DeepLabCut/community.svg)](https://gitter.im/DeepLabCut/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
+[![Twitter Follow](https://img.shields.io/twitter/follow/DeepLabCut.svg?label=DeepLabCut&style=social)](https://twitter.com/DeepLabCut)
 
-### Core Functionality
-- **Modern Python Stack**: Python 3.10+ compatible codebase with PySide6 interface
-- **Multi-Backend Camera Support**: OpenCV, GenTL (Harvesters), Aravis, and Basler (pypylon)
-- **Real-Time Pose Estimation**: Live DLCLive inference with configurable models (TensorFlow, PyTorch)
-- **High-Performance Recording**: Hardware-accelerated video encoding via FFmpeg
-- **Flexible Configuration**: Single JSON file for all settings with GUI editing
+GUI to run [DeepLabCut-live](https://github.com/DeepLabCut/DeepLabCut-live) on a video feed, record videos, and record external timestamps.
 
-### Camera Features
-- **Multiple Backends**:
-  - OpenCV - Universal webcam support
-  - GenTL - Industrial cameras via Harvesters (Windows/Linux)
-  - Aravis - GenICam/GigE cameras (Linux/macOS)
-  - Basler - Basler cameras via pypylon
-- **Smart Device Detection**: Automatic camera enumeration without unnecessary probing
-- **Camera Controls**: Exposure time, gain, frame rate, and ROI cropping
-- **Live Preview**: Real-time camera feed with rotation support (0°, 90°, 180°, 270°)
+## [Installation Instructions](docs/install.md)
 
-### DLCLive Features
-- **Model Support**: Only PyTorch models! (in theory also tensorflow models work)
-- **Processor System**: Plugin architecture for custom pose processing
-- **Auto-Recording**: Automatic video recording triggered by processor commands
-- **Performance Metrics**: Real-time FPS, latency, and queue monitoring
-- **Pose Visualization**: Optional overlay of detected keypoints on live feed
+## Getting Started
 
-### Recording Features
-- **Hardware Encoding**: NVENC (NVIDIA GPU) and software codecs (libx264, libx265)
-- **Configurable Quality**: CRF-based quality control
-- **Multiple Formats**: MP4, AVI, MOV containers
-- **Timestamp Support**: Frame-accurate timestamps for synchronization
-- **Performance Monitoring**: Write FPS, buffer status, and dropped frame tracking
+#### Open DeepLabCut-live-GUI
 
-### User Interface
-- **Intuitive Layout**: Organized control panels with clear separation of concerns
-- **Configuration Management**: Load/save settings, support for multiple configurations
-- **Status Indicators**: Real-time feedback on camera, inference, and recording status
-- **Bounding Box Tool**: Visual overlay for ROI definition
+In a terminal, activate the conda or virtual environment where DeepLabCut-live-GUI is installed, then run:
 
-## Installation
-
-### Basic Installation
-
-```bash
-pip install deeplabcut-live-gui
 ```
-
-This installs the core package with OpenCV camera support.
-
-### Full Installation with Optional Dependencies
-
-```bash
-# Install with gentl support
-pip install deeplabcut-live-gui[gentl]
-```
-
-### Platform-Specific Camera Backend Setup
-
-#### Windows (GenTL for Industrial Cameras)
-1. Install camera vendor drivers and SDK
-2. Ensure GenTL producer (.cti) files are accessible
-3. Common locations:
-   - `C:\Program Files\The Imaging Source Europe GmbH\IC4 GenTL Driver\bin\`
-   - Check vendor documentation for CTI file location
-
-#### Linux (Aravis for GenICam Cameras - Recommended)
-NOT tested
-```bash
-# Ubuntu/Debian
-sudo apt-get install gir1.2-aravis-0.8 python3-gi
-
-# Fedora
-sudo dnf install aravis python3-gobject
-```
-
-#### macOS (Aravis)
-NOT tested
-```bash
-brew install aravis
-pip install pygobject
-```
-
-#### Basler Cameras (All Platforms)
-NOT tested
-```bash
-# Install Pylon SDK from Basler website
-# Then install pypylon
-pip install pypylon
-```
-
-### Hardware Acceleration (Optional)
-
-For NVIDIA GPU encoding (highly recommended for high-resolution/high-FPS recording):
-```bash
-# Ensure NVIDIA drivers are installed
-# FFmpeg with NVENC support will be used automatically
-```
-
-## Quick Start
-
-1. **Launch the GUI**:
-   ```bash
-   dlclivegui
-   ```
-
-2. **Select Camera Backend**: Choose from the dropdown (opencv, gentl, aravis, basler)
-
-3. **Configure Camera**: Set FPS, exposure, gain, and other parameters
-
-4. **Start Preview**: Click "Start Preview" to begin camera streaming
-
-5. **Optional - Load DLC Model**: Browse to your exported DLCLive model directory
-
-6. **Optional - Start Inference**: Click "Start pose inference" for real-time tracking
-
-7. **Optional - Record Video**: Configure output path and click "Start recording"
-
-## Configuration
-
-The GUI uses a single JSON configuration file containing all experiment settings:
-
-```json
-{
-  "camera": {
-    "name": "Camera 0",
-    "index": 0,
-    "fps": 60.0,
-    "backend": "gentl",
-    "exposure": 10000,
-    "gain": 5.0,
-    "crop_x0": 0,
-    "crop_y0": 0,
-    "crop_x1": 0,
-    "crop_y1": 0,
-    "max_devices": 3,
-    "properties": {}
-  },
-  "dlc": {
-    "model_path": "/path/to/exported-model",
-    "model_type": "pytorch",
-  },
-  "recording": {
-    "enabled": true,
-    "directory": "~/Videos/deeplabcut-live",
-    "filename": "session.mp4",
-    "container": "mp4",
-    "codec": "h264_nvenc",
-    "crf": 23
-  },
-  "bbox": {
-    "enabled": false,
-    "x0": 0,
-    "y0": 0,
-    "x1": 200,
-    "y1": 100
-  }
-}
-```
-
-### Configuration Management
-
-- **Load**: File → Load configuration… (or Ctrl+O)
-- **Save**: File → Save configuration (or Ctrl+S)
-- **Save As**: File → Save configuration as… (or Ctrl+Shift+S)
-
-All GUI fields are automatically synchronized with the configuration file.
-
-## Camera Backends
-
-### Backend Selection Guide
-
-| Backend | Platform | Use Case | Auto-Detection |
-|---------|----------|----------|----------------|
-| **opencv** | All | Webcams, simple USB cameras | Basic |
-| **gentl** | Windows, Linux | Industrial cameras via CTI files | Yes |
-| **aravis** | Linux, macOS | GenICam/GigE cameras | Yes |
-| **basler** | All | Basler cameras specifically | Yes |
-
-### Backend-Specific Configuration
-
-#### OpenCV
-```json
-{
-  "camera": {
-    "backend": "opencv",
-    "index": 0,
-    "fps": 30.0
-  }
-}
-```
-**Note**: Exposure and gain controls are disabled for OpenCV backend due to limited driver support.
-
-#### GenTL (Harvesters)
-```json
-{
-  "camera": {
-    "backend": "gentl",
-    "index": 0,
-    "fps": 60.0,
-    "exposure": 15000,
-    "gain": 8.0,
-  }
-}
+dlclivegui
 ```
 
 
-See [Camera Backend Documentation](docs/camera_support.md) for detailed setup instructions.
-
-## DLCLive Integration
-
-### Model Types
-
-The GUI supports PyTorch DLCLive models:
-
-1. **PyTorch**: PyTorch-based models (requires PyTorch installation)
-
-Select the model type from the dropdown before starting inference.
-
-### Processor System
-
-The GUI includes a plugin system for custom pose processing:
-
-```python
-# Example processor
-class MyProcessor:
-    def process(self, pose, timestamp):
-        # Custom processing logic
-        x, y = pose[0, :2]  # First keypoint
-        print(f"Position: ({x}, {y})")
-    def save(self):
-      pass
-```
-
-Place processors in `dlclivegui/processors/` and refresh to load them.
-
-See [Processor Plugin Documentation](docs/PLUGIN_SYSTEM.md) for details.
-
-### Auto-Recording Feature
-
-Enable "Auto-record video on processor command" to automatically start/stop recording based on processor signals. Useful for event-triggered recording in behavioral experiments.
-
-## Performance Optimization
-
-### High-Speed Camera Tips
-
-1. **Use Hardware Encoding**: Select `h264_nvenc` codec for NVIDIA GPUs
-2. **Adjust Buffer Count**: Increase buffers for GenTL/Aravis backends
-   ```json
-   "properties": {"n_buffers": 20}
-   ```
-3. **Optimize CRF**: Lower CRF = higher quality but larger files (default: 23)
-4. **Disable Visualization**: Uncheck "Display pose predictions" during recording
-5. **Crop Region**: Use cropping to reduce frame size before inference
-
-### Project Structure
-
-```
-dlclivegui/
-├── __init__.py
-├── gui.py                 # Main PySide6 application
-├── config.py             # Configuration dataclasses
-├── camera_controller.py  # Camera capture thread
-├── dlc_processor.py      # DLCLive inference thread
-├── video_recorder.py     # Video encoding thread
-├── cameras/              # Camera backend modules
-│   ├── base.py          # Abstract base class
-│   ├── factory.py       # Backend registry and detection
-│   ├── opencv_backend.py
-│   ├── gentl_backend.py
-│   ├── aravis_backend.py
-│   └── basler_backend.py
-└── processors/           # Pose processor plugins
-    ├── processor_utils.py
-    └── dlc_processor_socket.py
-```
+#### Configurations
 
 
-## Documentation
+First, create a configuration file: select the drop down menu labeled `Config`, and click `Create New Config`. All settings, such as details about cameras, DLC networks, and DLC-live Processors, will be saved into configuration files so that you can close and reopen the GUI without losing all of these details. You can create multiple configuration files on the same system, so that different users can save different camera options, etc on the same computer. To load previous settings from a configuration file, please just select the file from the drop-down menu. Configuration files are stored at `$HOME/Documents/DeepLabCut-live-GUI/config`. These files do not need to be edited manually, they can be entirely created and edited automatically within the GUI.
 
-- [Camera Support](docs/camera_support.md) - All camera backends and setup
-- [Aravis Backend](docs/aravis_backend.md) - GenICam camera setup (Linux/macOS)
-- [Processor Plugins](docs/PLUGIN_SYSTEM.md) - Custom pose processing
-- [Installation Guide](docs/install.md) - Detailed setup instructions
-- [Timestamp Format](docs/timestamp_format.md) - Timestamp synchronization
+#### Set Up Cameras <img src= https://imagizer.imageshack.com/img924/626/acJhWD.png align="right">
 
-## System Requirements
+To setup a new camera, select `Add Camera` from the dropdown menu, and then click `Init Cam`. This will be bring up a new window where you need to select the type of camera (see [Camera Support](docs/camera_support.md)), input a name for the camera, and click `Add Camera`. This will initialize a new `Camera` entry in the drop down menu. Now, select your camera from the dropdown menu and click`Edit Camera Settings` to setup your camera settings (i.e. set the serial number, exposure, cropping parameters, etc; the exact settings depend on the specific type of camera). Once you have set the camera settings, click `Init Cam` to start streaming. To stop streaming data, click `Close Camera`, and to remove a camera from the dropdown menu, click `Remove Camera`.
 
+#### Processor (optional)
 
-### Recommended
-- Python 3.10+
-- 8 GB RAM
-- NVIDIA GPU with CUDA support (for DLCLive inference and video encoding)
-- USB 3.0 or GigE network (for industrial cameras)
-- SSD storage (for high-speed recording)
+To write custom `Processors`, please see [here](https://github.com/DeepLabCut/DeepLabCut-live/tree/master/dlclive/processor). The directory that contains your custom `Processor` should be a python module -- this directory must contain an `__init__.py` file that imports your custom `Processor`. For examples of how to structure a custom `Processor` directory, please see [here](https://github.com/DeepLabCut/DeepLabCut-live/tree/master/example_processors).
 
-### Tested Platforms
-- Windows 11
+To use your processor in the GUI, you must first add your custom `Processor` directory to the dropdown menu: next to the `Processor Dir` label, click `Browse`, and select your custom `Processor` directory. Next, select the desired directory from the `Processor Dir` dropdown menu, then select the `Processor` you would like to use from the `Processor` menu. If you would like to edit the arguments for your processor, please select `Edit Proc Settings`, and finally, to use the processor, click `Set Proc`. If you have previously set a `Processor` and would like to clear it, click `Clear Proc`.
 
-## License
+#### Configure DeepLabCut Network
 
-This project is licensed under the GNU Lesser General Public License v3.0. See the [LICENSE](LICENSE) file for more information.
+<img src= https://imagizer.imageshack.com/img923/9730/MNzr1J.png align="right">
 
-## Citation
+Select the `DeepLabCut` dropdown menu, and click `Add DLC`. This will bring up a new window to choose a name for the DeepLabCut configuration, choose the path to the exported DeepLabCut model, and set DeepLabCut-live settings, such as the cropping or resize parameters. Once configured, click `Update` to add this DeepLabCut configuration to the dropdown menu. You can edit the settings at any time by clicking `Edit DLC Settings`. Once configured, you can load the network and start performing inference by clicking `Start DLC`. If you would like to view the DeepLabCut pose estimation in real-time, select `Display DLC Keypoints`. You can edit the keypoint display settings (the color scheme, size of points, and the likelihood threshold for display) by selecting `Edit DLC Display Settings`.
 
-Cite the original DeepLabCut-live paper:
-```bibtex
-@article{Kane2020,
-  title={Real-time, low-latency closed-loop feedback using markerless posture tracking},
-  author={Kane, Gary A and Lopes, Gonçalo and Saunders, Jonny L and Mathis, Alexander and Mathis, Mackenzie W},
-  journal={eLife},
-  year={2020},
-  doi={10.7554/eLife.61909}
-}
-```
+If you want to stop performing inference at any time, just click `Stop DLC`, and if you want to remove a DeepLabCut configuration from the dropdown menu, click `Remove DLC`.
+
+#### Set Up Session
+
+Sessions are defined by the subject name, the date, and an attempt number. Within the GUI, select a `Subject` from the dropdown menu, or to add a new subject, type the new subject name in to the entry box and click `Add Subject`. Next, select an `Attempt` from the dropdown menu. Then, select the directory that you would like to save data to from the `Directory` dropdown menu. To add a new directory to the dropdown menu, click `Browse`. Finally, click `Set Up Session` to initiate a new recording. This will prepare the GUI to save data. Once you click `Set Up Session`, the `Ready` button should turn blue, indicating a session is ready to record.
+
+#### Controlling Recording
+
+If the `Ready` button is selected, you can now start a recording by clicking `On`. The `On` button will then turn green indicating a recording is active. To stop a recording, click `Off`. This will cause the `Ready` button to be selected again, as the GUI is prepared to restart the recording and to save the data to the same file. If you're session is complete, click `Save Video` to save all files: the video recording (as .avi file), a numpy file with timestamps for each recorded frame, the DeepLabCut poses as a pandas data frame (hdf5 file) that includes the time of each frame used for pose estimation and the time that each pose was obtained, and if applicable, files saved by the `Processor` in use. These files will be saved into a new directory at `{YOUR_SAVE_DIRECTORY}/{CAMERA NAME}_{SUBJECT}_{DATE}_{ATTEMPT}`
+
+- YOUR_SAVE_DIRECTORY : the directory chosen from the `Directory` dropdown menu.
+- CAMERA NAME : the name of selected camera (from the `Camera` dropdown menu).
+- SUBJECT : the subject chosen from the `Subject` drowdown menu.
+- DATE : the current date of the experiment.
+- ATTEMPT : the attempt number chosen from the `Attempt` dropdown.
+
+If you would not like to save the data from the session, please click `Delete Video`, and all data will be discarded. After you click `Save Video` or `Delete Video`, the `Off` button will be selected, indicating you can now set up a new session.
+
+#### References:
+
+If you use this code we kindly ask you to you please [cite Kane et al, eLife 2020](https://elifesciences.org/articles/61909). The preprint is available here: https://www.biorxiv.org/content/10.1101/2020.08.04.236422v2
