@@ -1,10 +1,19 @@
 # tests/cameras/backends/test_gentl_backend.py
 from __future__ import annotations
 
+import os
+import time
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
+
+from dlclivegui.cameras.backends.utils.gentl_discovery import (
+    GenTLDiscoveryPolicy,
+    choose_cti_files,
+    discover_cti_files,
+)
 
 
 # ---------------------------------------------------------------------
@@ -235,10 +244,12 @@ def test_open_persists_rich_metadata_in_namespace(patch_gentl_sdk, gentl_setting
     be.close()
 
 
-def test_open_persists_cti_file_even_when_provided_in_props(patch_gentl_sdk, gentl_settings_factory):
+def test_open_persists_cti_file_even_when_provided_in_props(patch_gentl_sdk, gentl_settings_factory, tmp_path):
     gb = patch_gentl_sdk
 
-    settings = gentl_settings_factory(properties={"cti_file": "from-props.cti", "gentl": {}})
+    cti = tmp_path / "from-props.cti"
+    cti.write_text("dummy", encoding="utf-8")
+    settings = gentl_settings_factory(properties={"cti_file": str(cti), "gentl": {}})
     be = gb.GenTLCameraBackend(settings)
     be.open()
 
@@ -529,3 +540,125 @@ def test__create_acquirer_raises_runtimeerror_with_joined_errors(patch_gentl_sdk
     # Error message should include some context about attempted creation methods
     msg = str(ei.value).lower()
     assert "failed to initialise gentl image acquirer" in msg
+
+
+# ----------------------------------
+# CTI discovery and selection logic
+# ----------------------------------
+
+
+def _make_cti(tmp_path: Path, name: str = "Producer.cti") -> Path:
+    p = tmp_path / name
+    p.write_text("dummy", encoding="utf-8")
+    return p
+
+
+def test_discover_explicit_cti_file(tmp_path):
+    cti = _make_cti(tmp_path, "A.cti")
+
+    candidates, diag = discover_cti_files(cti_file=str(cti), include_env=False, must_exist=True)
+
+    assert len(candidates) == 1
+    assert Path(candidates[0]).name == "A.cti"
+    assert diag.explicit_files == [str(cti)]
+
+
+def test_discover_missing_explicit_cti_is_rejected(tmp_path):
+    missing = tmp_path / "Missing.cti"
+    candidates, diag = discover_cti_files(cti_file=str(missing), include_env=False, must_exist=True)
+
+    assert candidates == []
+    assert any("not a file" in reason for _, reason in diag.rejected)
+
+
+def test_discover_glob_patterns(tmp_path):
+    _make_cti(tmp_path, "One.cti")
+    _make_cti(tmp_path, "Two.cti")
+
+    pattern = str(tmp_path / "*.cti")
+    candidates, diag = discover_cti_files(cti_search_paths=[pattern], include_env=False, must_exist=True)
+
+    names = sorted(Path(c).name for c in candidates)
+    assert names == ["One.cti", "Two.cti"]
+    assert pattern in diag.glob_patterns
+
+
+def test_discover_env_var_directory(monkeypatch, tmp_path):
+    _make_cti(tmp_path, "Env.cti")
+
+    monkeypatch.setenv("GENICAM_GENTL64_PATH", str(tmp_path))
+
+    candidates, diag = discover_cti_files(include_env=True, must_exist=True)
+
+    assert any(Path(c).name == "Env.cti" for c in candidates)
+    assert "GENICAM_GENTL64_PATH" in diag.env_vars_used
+
+
+def test_discover_env_var_direct_file(monkeypatch, tmp_path):
+    cti = _make_cti(tmp_path, "Direct.cti")
+
+    monkeypatch.setenv("GENICAM_GENTL64_PATH", str(cti))
+
+    candidates, diag = discover_cti_files(include_env=True, must_exist=True)
+
+    assert candidates == [str(cti.resolve())] or Path(candidates[0]).name == "Direct.cti"
+    assert diag.env_paths_expanded  # should include the raw env entry
+
+
+def test_discover_env_var_multiple_entries(monkeypatch, tmp_path):
+    d1 = tmp_path / "d1"
+    d2 = tmp_path / "d2"
+    d1.mkdir()
+    d2.mkdir()
+
+    _make_cti(d1, "A.cti")
+    _make_cti(d2, "B.cti")
+
+    combined = f"{d1}{os.pathsep}{d2}"
+    monkeypatch.setenv("GENICAM_GENTL64_PATH", combined)
+
+    candidates, _ = discover_cti_files(include_env=True, must_exist=True)
+    names = sorted(Path(c).name for c in candidates)
+
+    assert names == ["A.cti", "B.cti"]
+
+
+def test_discover_deduplicates_same_file_from_multiple_sources(monkeypatch, tmp_path):
+    cti = _make_cti(tmp_path, "Dup.cti")
+
+    # Discover it twice: explicit + env dir
+    monkeypatch.setenv("GENICAM_GENTL64_PATH", str(tmp_path))
+
+    candidates, _ = discover_cti_files(
+        cti_file=str(cti),
+        include_env=True,
+        must_exist=True,
+    )
+
+    # Should appear only once
+    assert len(candidates) == 1
+    assert Path(candidates[0]).name == "Dup.cti"
+
+
+def test_choose_cti_files_raises_if_multiple_candidates(tmp_path):
+    c1 = _make_cti(tmp_path, "One.cti")
+    c2 = _make_cti(tmp_path, "Two.cti")
+
+    # This is the key test: "duplicates should raise" (i.e. >1 CTI found)
+    with pytest.raises(RuntimeError) as exc:
+        choose_cti_files([str(c1), str(c2)], policy=GenTLDiscoveryPolicy.RAISE_IF_MULTIPLE, max_files=1)
+
+    assert "Multiple GenTL producers" in str(exc.value)
+
+
+def test_choose_cti_files_newest_policy(tmp_path):
+    old = _make_cti(tmp_path, "Old.cti")
+    new = _make_cti(tmp_path, "New.cti")
+
+    # Ensure distinct mtimes
+    time.sleep(0.01)
+    new.write_text("dummy2", encoding="utf-8")
+
+    selected = choose_cti_files([str(old), str(new)], policy=GenTLDiscoveryPolicy.NEWEST, max_files=1)
+    assert len(selected) == 1
+    assert Path(selected[0]).name == "New.cti"

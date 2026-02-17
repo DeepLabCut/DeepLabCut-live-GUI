@@ -3,17 +3,16 @@
 #  dlclivegui/cameras/backends/gentl_backend.py
 from __future__ import annotations
 
-import glob
 import logging
-import os
 import time
-from collections.abc import Iterable
 from typing import ClassVar
 
 import cv2
 import numpy as np
 
 from ..base import CameraBackend, SupportLevel, register_backend
+from ..factory import DetectedCamera
+from .utils import gentl_discovery as cti_finder
 
 LOG = logging.getLogger(__name__)
 
@@ -49,12 +48,6 @@ class GenTLCameraBackend(CameraBackend):
         ns = props.get(self.OPTIONS_KEY, {})
         if not isinstance(ns, dict):
             ns = {}
-
-        # --- CTI / transport configuration ---
-        self._cti_file: str | None = ns.get("cti_file") or props.get("cti_file")
-        self._cti_search_paths: tuple[str, ...] = self._parse_cti_paths(
-            ns.get("cti_search_paths", props.get("cti_search_paths"))
-        )
 
         # --- Fast probe mode (CameraProbeWorker sets this) ---
         # When fast_start=True, open() should avoid starting acquisition if possible.
@@ -171,7 +164,7 @@ class GenTLCameraBackend(CameraBackend):
 
     @classmethod
     def get_device_count(cls) -> int:
-        """Get the actual number of GenTL devices detected by Harvester.
+        """Get the number of GenTL devices detected by Harvester.
 
         Returns the number of devices found, or -1 if detection fails.
         """
@@ -180,16 +173,11 @@ class GenTLCameraBackend(CameraBackend):
 
         harvester = None
         try:
-            harvester = Harvester()
-            # Use the static helper to find CTI file with default patterns
-            cti_file = cls._search_cti_file(cls._DEFAULT_CTI_PATTERNS)
-
-            if not cti_file:
+            harvester, _, _ = cls._build_harvester_for_discovery(strict_single=False)
+            if harvester is None:
                 return -1
-
-            harvester.add_file(cti_file)
-            harvester.update()
-            return len(harvester.device_info_list)
+            infos = harvester.device_info_list or []
+            return len(infos)
         except Exception:
             return -1
         finally:
@@ -199,8 +187,150 @@ class GenTLCameraBackend(CameraBackend):
                 except Exception:
                     pass
 
+    def _resolve_cti_files_for_settings(self) -> list[str]:
+        """
+        Resolve CTI files to load.
+
+        Policy:
+        - If the user explicitly provides ctis (cti_files / cti_file), use only those.
+        - Otherwise, discover all CTIs (env vars + configured patterns/dirs) and return all.
+        - Never raise just because multiple CTIs exist.
+        - Raise only when none are found.
+        """
+        props = self.settings.properties if isinstance(self.settings.properties, dict) else {}
+        ns = props.get(self.OPTIONS_KEY, {})
+        if not isinstance(ns, dict):
+            ns = {}
+
+        # Explicit CTIs (namespace first, then legacy top-level)
+        ns_cti_files = ns.get("cti_files")
+        ns_cti_file = ns.get("cti_file")
+        legacy_cti_files = props.get("cti_files")
+        legacy_cti_file = props.get("cti_file")
+
+        # 1) If user provided explicit list/file in namespace, use that only
+        if ns_cti_files or ns_cti_file:
+            candidates, diag = cti_finder.discover_cti_files(
+                cti_file=str(ns_cti_file) if ns_cti_file else None,
+                cti_files=cti_finder.cti_files_as_list(ns_cti_files) if ns_cti_files else None,
+                include_env=False,
+                must_exist=True,
+            )
+            if not candidates:
+                raise RuntimeError(
+                    "No valid GenTL producer (.cti) found from properties.gentl.cti_file/cti_files.\n\n"
+                    f"Discovery details:\n{diag.summarize()}"
+                )
+            return list(candidates)
+
+        # 2) If user provided explicit list/file in legacy top-level, use that only
+        if legacy_cti_files or legacy_cti_file:
+            candidates, diag = cti_finder.discover_cti_files(
+                cti_file=str(legacy_cti_file) if legacy_cti_file else None,
+                cti_files=cti_finder.cti_files_as_list(legacy_cti_files) if legacy_cti_files else None,
+                include_env=False,
+                must_exist=True,
+            )
+            if not candidates:
+                raise RuntimeError(
+                    "No valid GenTL producer (.cti) found from properties.cti_file/cti_files.\n\n"
+                    f"Discovery details:\n{diag.summarize()}"
+                )
+            return list(candidates)
+
+        # 3) Discovery path: find all CTIs from env vars + configured patterns/dirs
+        search_paths = ns.get("cti_search_paths", props.get("cti_search_paths"))
+        extra_dirs = ns.get("cti_dirs", props.get("cti_dirs"))
+
+        candidates, diag = cti_finder.discover_cti_files(
+            cti_search_paths=cti_finder.cti_files_as_list(search_paths) if search_paths is not None else None,
+            include_env=True,
+            extra_dirs=cti_finder.cti_files_as_list(extra_dirs) if extra_dirs is not None else None,
+            recursive_env_search=False,
+            recursive_extra_search=False,
+            must_exist=True,
+        )
+
+        if not candidates:
+            raise RuntimeError(
+                "Could not locate any GenTL producer (.cti) file.\n\n"
+                "Fix options:\n"
+                "  - Set camera.properties.gentl.cti_file to the full path of a .cti file\n"
+                "  - Or set GENICAM_GENTL64_PATH / GENICAM_GENTL32_PATH to include the producer directory\n"
+                "  - Or provide camera.properties.gentl.cti_search_paths with glob patterns\n\n"
+                f"Discovery details:\n{diag.summarize()}"
+            )
+
+        # Default: try to load ALL discovered producers
+        return list(candidates)
+
+    @classmethod
+    def _build_harvester_for_discovery(
+        cls,
+        *,
+        strict_single: bool = False,  # retained for optional future use
+    ):
+        """
+        Build a Harvester instance and load CTI producers for class-level operations
+        (discover_devices, quick_ping, get_device_count, rebind_settings).
+
+        Default policy: try to load ALL discovered producers.
+        """
+        if Harvester is None:
+            return None, [], None
+
+        candidates, diag = cti_finder.discover_cti_files(
+            include_env=True,
+            cti_search_paths=list(cls._DEFAULT_CTI_PATTERNS),
+            must_exist=True,
+        )
+
+        if not candidates:
+            return None, [], diag
+
+        # Default: load all candidates
+        cti_files = list(candidates)
+
+        # Optional strict mode (off by default)
+        if strict_single:
+            # If you ever want strict, use choose_cti_files here; otherwise ignore.
+            cti_files = cti_finder.choose_cti_files(
+                cti_files, policy=cti_finder.GenTLDiscoveryPolicy.RAISE_IF_MULTIPLE, max_files=1
+            )
+
+        harvester = Harvester()
+        loaded: list[str] = []
+        failures: list[tuple[str, str]] = []
+
+        for cti in cti_files:
+            try:
+                harvester.add_file(cti)
+                loaded.append(cti)
+            except Exception as exc:
+                failures.append((cti, str(exc)))
+                LOG.warning("Failed to load CTI '%s': %s", cti, exc)
+
+        if not loaded:
+            try:
+                harvester.reset()
+            except Exception:
+                pass
+            return None, [], diag
+
+        try:
+            harvester.update()
+        except Exception as exc:
+            LOG.warning("Harvester.update() failed during discovery: %s", exc)
+            try:
+                harvester.reset()
+            except Exception:
+                pass
+            return None, loaded, diag
+
+        return harvester, loaded, diag
+
     def open(self) -> None:
-        if Harvester is None:  # pragma: no cover - optional dependency
+        if Harvester is None:  # pragma: no cover
             raise RuntimeError(
                 "The 'harvesters' package is required for the GenTL backend. Install it via 'pip install harvesters'."
             )
@@ -214,23 +344,60 @@ class GenTLCameraBackend(CameraBackend):
             ns = {}
             props[self.OPTIONS_KEY] = ns
 
+        # Resolve CTIs (may return many). This no longer raises just because there are multiple.
+        cti_files = self._resolve_cti_files_for_settings()
+
         self._harvester = Harvester()
 
-        # Resolve CTI file: explicit > configured > search
-        cti_file = self._cti_file or ns.get("cti_file") or props.get("cti_file") or self._find_cti_file()
-        self._harvester.add_file(cti_file)
+        loaded: list[str] = []
+        failed: list[tuple[str, str]] = []
+
+        for cti in cti_files:
+            try:
+                self._harvester.add_file(cti)
+                loaded.append(cti)
+            except Exception as exc:
+                failed.append((cti, str(exc)))
+                LOG.warning("Failed to load CTI '%s': %s", cti, exc)
+
+        # Persist diagnostics for UI / debugging
+        ns["cti_files"] = [str(p) for p in cti_files]  # all resolved candidates
+        ns["cti_files_loaded"] = [str(p) for p in loaded]  # successfully added to harvester
+        ns["cti_files_failed"] = [{"cti": c, "error": e} for c, e in failed]  # load failures
+
+        # Keep single-cti convenience key for backward compatibility / display
+        if loaded:
+            ns["cti_file"] = str(loaded[0])
+        elif cti_files:
+            ns["cti_file"] = str(cti_files[0])  # best effort
+
+        if not loaded:
+            raise RuntimeError(
+                "No GenTL producer (.cti) could be loaded.\n\n"
+                f"Resolved CTIs: {cti_files}\n"
+                f"Failures: {failed}\n"
+                "Fix: remove/repair incompatible producers or"
+                " set properties.gentl.cti_file to a known working producer."
+            )
+
+        # Update device list after loading producers
         self._harvester.update()
 
         if not self._harvester.device_info_list:
-            raise RuntimeError("No GenTL cameras detected via Harvesters")
+            raise RuntimeError(
+                "No GenTL cameras detected via Harvesters after loading producers.\n\n"
+                f"Loaded CTIs: {loaded}\n"
+                f"Failed CTIs: {failed}\n"
+                "Fix: ensure your camera vendor's GenTL producer is installed and working."
+            )
 
         infos = list(self._harvester.device_info_list)
 
-        # Helper: robustly read device_info fields (supports dict-like or attribute-like entries)
+        # Helper: robustly read device_info fields (dict-like or attribute-like)
         def _info_get(info, key: str, default=None):
             try:
                 if hasattr(info, "get"):
-                    v = info.get(key)  # type: ignore[attr-defined]
+                    v = info.get(key)
                     if v is not None:
                         return v
             except Exception:
@@ -250,12 +417,11 @@ class GenTLCameraBackend(CameraBackend):
         selected_index: int | None = None
         selected_serial: str | None = None
 
-        # 1) Try stable device_id first (supports "serial:..." and "fp:...")
         target_device_id = self._device_id or ns.get("device_id") or props.get("device_id")
         if target_device_id:
             target_device_id = str(target_device_id).strip()
 
-            # Match exact against computed device_id_from_info(info)
+            # Exact match against computed device_id
             for idx, info in enumerate(infos):
                 try:
                     did = self._device_id_from_info(info)
@@ -296,7 +462,7 @@ class GenTLCameraBackend(CameraBackend):
                                 f"Ambiguous GenTL serial match for '{serial_target}'. Candidates: {candidates}"
                             )
 
-        # 2) Try legacy serial selection if still not selected
+        # Legacy serial selection fallback
         if selected_index is None:
             serial = self._serial_number
             if serial:
@@ -327,7 +493,7 @@ class GenTLCameraBackend(CameraBackend):
                         available = [str(_info_get(i, "serial_number", "")).strip() for i in infos]
                         raise RuntimeError(f"Camera with serial '{serial}' not found. Available cameras: {available}")
 
-        # 3) Fallback to index selection
+        # Index fallback
         if selected_index is None:
             device_count = len(infos)
             if requested_index < 0 or requested_index >= device_count:
@@ -336,20 +502,17 @@ class GenTLCameraBackend(CameraBackend):
             sn = _info_get(infos[selected_index], "serial_number", "")
             selected_serial = str(sn).strip() if sn else None
 
-        # Update settings.index to the actual selected index (important for UI merge-back + stability)
+        # Update settings.index to actual selected index (UI stability)
         self.settings.index = int(selected_index)
         selected_info = infos[int(selected_index)]
 
-        # ------------------------------------------------------------------
-        # Create ImageAcquirer using the latest Harvesters API: Harvester.create(...)
-        # ------------------------------------------------------------------
+        # Create ImageAcquirer via Harvester.create(...)
         try:
             if selected_serial:
                 self._acquirer = self._harvester.create({"serial_number": str(selected_serial)})
             else:
                 self._acquirer = self._harvester.create(int(selected_index))
         except TypeError:
-            # Some versions accept keyword argument; keep as a safety net without reintroducing legacy API.
             if selected_serial:
                 self._acquirer = self._harvester.create({"serial_number": str(selected_serial)})
             else:
@@ -358,21 +521,16 @@ class GenTLCameraBackend(CameraBackend):
         remote = self._acquirer.remote_device
         node_map = remote.node_map
 
-        # Resolve human label for UI
         self._device_label = self._resolve_device_label(node_map)
 
-        # ------------------------------------------------------------------
-        # Apply configuration (existing behavior)
-        # ------------------------------------------------------------------
+        # Apply configuration
         self._configure_pixel_format(node_map)
         self._configure_resolution(node_map)
         self._configure_exposure(node_map)
         self._configure_gain(node_map)
         self._configure_frame_rate(node_map)
 
-        # ------------------------------------------------------------------
-        # Capture "actual" telemetry for GUI (existing behavior)
-        # ------------------------------------------------------------------
+        # Read back telemetry
         try:
             self._actual_width = int(node_map.Width.value)
             self._actual_height = int(node_map.Height.value)
@@ -394,9 +552,7 @@ class GenTLCameraBackend(CameraBackend):
         except Exception:
             self._actual_gain = None
 
-        # ------------------------------------------------------------------
-        # Persist identity + richer device metadata back into settings for UI merge-back
-        # ------------------------------------------------------------------
+        # Persist identity + metadata
         computed_id = None
         try:
             computed_id = self._device_id_from_info(selected_info)
@@ -408,16 +564,13 @@ class GenTLCameraBackend(CameraBackend):
         elif selected_serial:
             ns["device_id"] = f"serial:{selected_serial}"
 
-        # Canonical serial storage
         if selected_serial:
             ns["serial_number"] = str(selected_serial)
             ns["device_serial_number"] = str(selected_serial)
 
-        # UI-friendly name
         if self._device_label:
             ns["device_name"] = str(self._device_label)
 
-        # Extra metadata from discovery info (helps debugging and stable identity fallbacks)
         ns["device_display_name"] = str(_info_get(selected_info, "display_name", "") or "")
         ns["device_info_id"] = str(_info_get(selected_info, "id_", "") or "")
         ns["device_vendor"] = str(_info_get(selected_info, "vendor", "") or "")
@@ -427,12 +580,7 @@ class GenTLCameraBackend(CameraBackend):
         ns["device_version"] = str(_info_get(selected_info, "version", "") or "")
         ns["device_access_status"] = _info_get(selected_info, "access_status", None)
 
-        # Preserve CTI used (useful for stable operation)
-        ns["cti_file"] = str(cti_file)
-
-        # ------------------------------------------------------------------
-        # Start streaming unless fast_start probe mode is requested
-        # ------------------------------------------------------------------
+        # Start acquisition unless fast_start
         if getattr(self, "_fast_start", False):
             LOG.info("GenTL open() in fast_start probe mode: acquisition not started.")
             return
@@ -505,12 +653,14 @@ class GenTLCameraBackend(CameraBackend):
         """
         Rich discovery path for CameraFactory.detect_cameras().
         Returns a list of DetectedCamera with device_id filled when possible.
+
+        Cross-platform CTI discovery:
+        - Uses GENICAM_GENTL64_PATH / GENICAM_GENTL32_PATH when available
+        - Falls back to built-in Windows patterns
+        - Best-effort loads multiple CTI producers
         """
         if Harvester is None:
             return []
-
-        # Local import to avoid circulars at import time
-        from ..factory import DetectedCamera
 
         def _canceled() -> bool:
             return bool(should_cancel and should_cancel())
@@ -520,17 +670,15 @@ class GenTLCameraBackend(CameraBackend):
             if progress_cb:
                 progress_cb("Initializing GenTL discovery…")
 
-            harvester = Harvester()
+            harvester, loaded, _ = cls._build_harvester_for_discovery(strict_single=False)
 
-            # Use default CTI search; we don't have per-camera settings here.
-            cti_file = cls._search_cti_file(cls._DEFAULT_CTI_PATTERNS)
-            if not cti_file:
+            if harvester is None or not loaded:
                 if progress_cb:
-                    progress_cb("No .cti found (GenTL producer missing).")
+                    progress_cb("No GenTL producers could be loaded.")
                 return []
 
-            harvester.add_file(cti_file)
-            harvester.update()
+            if progress_cb:
+                progress_cb(f"Loaded {len(loaded)} GenTL producer(s). Scanning devices…")
 
             infos = list(harvester.device_info_list or [])
             if not infos:
@@ -543,8 +691,8 @@ class GenTLCameraBackend(CameraBackend):
                 if _canceled():
                     break
 
-                # Create a label for the UI, using display_name if available, otherwise vendor/model/serial.
                 info = infos[idx]
+
                 display_name = None
                 try:
                     display_name = (
@@ -565,10 +713,7 @@ class GenTLCameraBackend(CameraBackend):
                         or (info.get("serial_number") if hasattr(info, "get") else None)
                         or ""
                     )
-                    vendor = str(vendor).strip()
-                    model = str(model).strip()
-                    serial = str(serial).strip()
-
+                    vendor, model, serial = str(vendor).strip(), str(model).strip(), str(serial).strip()
                     label = f"{vendor} {model}".strip() if (vendor or model) else f"GenTL device {idx}"
                     if serial:
                         label = f"{label} ({serial})"
@@ -580,7 +725,6 @@ class GenTLCameraBackend(CameraBackend):
                         index=idx,
                         label=label,
                         device_id=device_id,
-                        # GenTL usually doesn't expose vid/pid/path consistently; leave None unless you have it
                         vid=None,
                         pid=None,
                         path=None,
@@ -595,8 +739,6 @@ class GenTLCameraBackend(CameraBackend):
             return out
 
         except Exception:
-            # Returning None would trigger probing fallback; but since you declared discovery supported,
-            # returning [] is usually less surprising than a slow probe storm.
             return []
         finally:
             if harvester is not None:
@@ -610,6 +752,10 @@ class GenTLCameraBackend(CameraBackend):
         """
         If a stable identity exists in settings.properties['gentl'], map it to the
         correct current index (and serial_number if available).
+
+        Strategy:
+        - If ctis were previously persisted (cti_files/cti_file), prefer those.
+        - Otherwise, fall back to env-var + pattern discovery (best-effort).
         """
         if Harvester is None:
             return settings
@@ -625,25 +771,48 @@ class GenTLCameraBackend(CameraBackend):
 
         harvester = None
         try:
-            harvester = Harvester()
-            cti_file = ns.get("cti_file") or props.get("cti_file") or cls._search_cti_file(cls._DEFAULT_CTI_PATTERNS)
-            if not cti_file:
-                return settings
+            # Prefer persisted CTIs for stability if present
+            explicit_files = ns.get("cti_files") or props.get("cti_files")
+            explicit_file = ns.get("cti_file") or props.get("cti_file")
 
-            harvester.add_file(cti_file)
-            harvester.update()
+            if explicit_files or explicit_file:
+                candidates, diag = cti_finder.discover_cti_files(
+                    cti_file=explicit_file,
+                    cti_files=cti_finder.cti_files_as_list(explicit_files),
+                    include_env=False,
+                    must_exist=True,
+                )
+                if not candidates:
+                    return settings
+
+                harvester = Harvester()
+                loaded: list[str] = []
+                for cti in candidates:
+                    try:
+                        harvester.add_file(cti)
+                        loaded.append(cti)
+                    except Exception:
+                        continue
+
+                if not loaded:
+                    return settings
+
+                harvester.update()
+            else:
+                harvester, loaded, diag = cls._build_harvester_for_discovery(strict_single=False)
+                if harvester is None:
+                    return settings
 
             infos = list(harvester.device_info_list or [])
             if not infos:
                 return settings
 
-            # Try exact match by computed device_id first
+            target_id_str = str(target_id).strip()
+
             match_index = None
             match_serial = None
 
-            # Normalize
-            target_id_str = str(target_id).strip()
-
+            # 1) Exact match by computed device_id
             for idx, info in enumerate(infos):
                 dev_id = cls._device_id_from_info(info)
                 if dev_id and dev_id == target_id_str:
@@ -651,7 +820,7 @@ class GenTLCameraBackend(CameraBackend):
                     match_serial = getattr(info, "serial_number", None)
                     break
 
-            # If not found, fallback: treat target as serial-ish substring (legacy behavior)
+            # 2) Fallback: treat target as serial-ish substring
             if match_index is None:
                 for idx, info in enumerate(infos):
                     serial = getattr(info, "serial_number", None)
@@ -666,7 +835,7 @@ class GenTLCameraBackend(CameraBackend):
             # Apply rebinding
             settings.index = int(match_index)
 
-            # Keep namespace consistent for open()
+            # Ensure namespace exists
             if not isinstance(settings.properties, dict):
                 settings.properties = {}
             ns2 = settings.properties.setdefault(cls.OPTIONS_KEY, {})
@@ -674,7 +843,6 @@ class GenTLCameraBackend(CameraBackend):
                 ns2 = {}
                 settings.properties[cls.OPTIONS_KEY] = ns2
 
-            # If we got a serial, save it for open() selection (backward compatible)
             if match_serial:
                 ns2["serial_number"] = str(match_serial)
             ns2["device_id"] = target_id_str
@@ -682,7 +850,6 @@ class GenTLCameraBackend(CameraBackend):
             return settings
 
         except Exception:
-            # Any failure should not prevent fallback to index-based open
             return settings
         finally:
             if harvester is not None:
@@ -702,12 +869,9 @@ class GenTLCameraBackend(CameraBackend):
 
         harvester = None
         try:
-            harvester = Harvester()
-            cti_file = cls._search_cti_file(cls._DEFAULT_CTI_PATTERNS)
-            if not cti_file:
+            harvester, _, _ = cls._build_harvester_for_discovery(strict_single=False)
+            if harvester is None:
                 return False
-            harvester.add_file(cti_file)
-            harvester.update()
             infos = harvester.device_info_list or []
             return 0 <= int(index) < len(infos)
         except Exception:
@@ -795,15 +959,6 @@ class GenTLCameraBackend(CameraBackend):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _parse_cti_paths(self, value) -> tuple[str, ...]:
-        if value is None:
-            return self._DEFAULT_CTI_PATTERNS
-        if isinstance(value, str):
-            return (value,)
-        if isinstance(value, Iterable):
-            return tuple(str(item) for item in value)
-        return self._DEFAULT_CTI_PATTERNS
-
     def _parse_crop(self, crop) -> tuple[int, int, int, int] | None:
         if isinstance(crop, (list, tuple)) and len(crop) == 4:
             return tuple(int(v) for v in crop)
@@ -880,31 +1035,6 @@ class GenTLCameraBackend(CameraBackend):
                 )
             else:
                 LOG.info(f"Resolution set to {actual_width}x{actual_height}")
-
-    @staticmethod
-    def _search_cti_file(patterns: tuple[str, ...]) -> str | None:
-        """Search for a CTI file using the given patterns.
-
-        Returns the first CTI file found, or None if none found.
-        """
-        for pattern in patterns:
-            for file_path in glob.glob(pattern):
-                if os.path.isfile(file_path):
-                    return file_path
-        return None
-
-    def _find_cti_file(self) -> str:
-        """Find a CTI file using configured or default search paths.
-
-        Raises RuntimeError if no CTI file is found.
-        """
-        cti_file = self._search_cti_file(self._cti_search_paths)
-        if cti_file is None:
-            raise RuntimeError(
-                "Could not locate a GenTL producer (.cti) file. Set 'cti_file' in "
-                "camera.properties or provide search paths via 'cti_search_paths'."
-            )
-        return cti_file
 
     def _available_serials(self) -> list[str]:
         assert self._harvester is not None

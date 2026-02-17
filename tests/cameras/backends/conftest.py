@@ -830,10 +830,11 @@ def fake_harvester_factory(gentl_inventory):
 
 
 @pytest.fixture()
-def patch_gentl_sdk(monkeypatch, fake_harvester_factory):
+def patch_gentl_sdk(monkeypatch, fake_harvester_factory, tmp_path):
     """
     Patch dlclivegui.cameras.backends.gentl_backend to use FakeHarvester + Fake timeout.
-    Also bypass CTI search logic so tests never hit filesystem/SDK paths.
+    Also ensure CTI discovery succeeds for classmethods (discover_devices/quick_ping)
+    by creating a real dummy .cti and exposing it via GENICAM_GENTL64_PATH.
     """
     import dlclivegui.cameras.backends.gentl_backend as gb
 
@@ -843,17 +844,19 @@ def patch_gentl_sdk(monkeypatch, fake_harvester_factory):
     # Keep your backend timeout contract as-is: it catches HarvesterTimeoutError
     monkeypatch.setattr(gb, "HarvesterTimeoutError", FakeGenTLTimeoutException, raising=False)
 
-    # Avoid filesystem CTI searching
-    monkeypatch.setattr(gb.GenTLCameraBackend, "_find_cti_file", lambda self: "dummy.cti", raising=False)
-    monkeypatch.setattr(
-        gb.GenTLCameraBackend, "_search_cti_file", staticmethod(lambda patterns: "dummy.cti"), raising=False
-    )
+    # Create a real CTI file and advertise it via env var (cross-platform via os.pathsep)
+    cti_file = tmp_path / "dummy.cti"
+    if not cti_file.exists():
+        cti_file.write_text("fake", encoding="utf-8")
+
+    monkeypatch.setenv("GENICAM_GENTL64_PATH", str(tmp_path))
+    monkeypatch.delenv("GENICAM_GENTL32_PATH", raising=False)
 
     return gb
 
 
 @pytest.fixture()
-def gentl_settings_factory():
+def gentl_settings_factory(tmp_path):
     """
     Convenience factory for CameraSettings for gentl backend tests.
     """
@@ -871,8 +874,13 @@ def gentl_settings_factory():
         enabled=True,
         properties=None,
     ):
+        cti = tmp_path / "dummy.cti"
+        if not cti.exists():
+            cti.write_text("fake", encoding="utf-8")
         props = properties if isinstance(properties, dict) else {}
         props.setdefault("gentl", {})
+        props["gentl"] = dict(props["gentl"])
+        props["gentl"].setdefault("cti_file", str(cti))
         return CameraSettings(
             name=name,
             index=index,
