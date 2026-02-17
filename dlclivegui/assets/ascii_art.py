@@ -27,7 +27,7 @@ try:
     import cv2 as cv
 except Exception as e:  # pragma: no cover
     raise RuntimeError(
-        "OpenCV (opencv-python) is required for dlclivegui.assets.ascii.\nInstall with: pip install opencv-python"
+        "OpenCV (opencv-python) is required for dlclivegui.assets.ascii_art.\nInstall with: pip install opencv-python"
     ) from e
 
 # Character ramps (dense -> sparse)
@@ -205,10 +205,12 @@ def _map_luminance_to_chars(gray: np.ndarray, fine: bool) -> Iterable[str]:
 
 def _color_ascii_lines(img_bgr: np.ndarray, fine: bool, invert: bool) -> Iterable[str]:
     ramp = ASCII_RAMP_FINE if fine else ASCII_RAMP_SIMPLE
-    ramp_bytes = [c.encode("utf-8") for c in ramp]  # 1-byte ASCII in practice
+    # ramp is ASCII; encode once
+    ramp_bytes = [c.encode("utf-8") for c in ramp]
+
     reset = b"\x1b[0m"
 
-    # luminance in float32 like your current code
+    # Luminance (same coefficients you used; keep exact behavior)
     b = img_bgr[..., 0].astype(np.float32)
     g = img_bgr[..., 1].astype(np.float32)
     r = img_bgr[..., 2].astype(np.float32)
@@ -216,45 +218,48 @@ def _color_ascii_lines(img_bgr: np.ndarray, fine: bool, invert: bool) -> Iterabl
     if invert:
         lum = 255.0 - lum
 
-    idx = (lum / 255.0 * (len(ramp) - 1)).astype(np.uint16)  # small dtype is fine
+    idx = (lum / 255.0 * (len(ramp) - 1)).astype(np.uint16)
 
-    # Pack color into one int: 0xRRGGBB (faster dict key than tuple)
+    # Pack color into 0xRRGGBB for fast comparisons
     rr = img_bgr[..., 2].astype(np.uint32)
     gg = img_bgr[..., 1].astype(np.uint32)
     bb = img_bgr[..., 0].astype(np.uint32)
     color_key = (rr << 16) | (gg << 8) | bb  # (H,W) uint32
 
-    # Cache: (color_key<<8)|idx -> bytes for full colored char INCLUDING reset
-    cache: dict[int, bytes] = {}
+    # Cache SGR prefixes by packed color
+    # e.g. 0xRRGGBB -> b"\x1b[38;2;R;G;Bm"
+    prefix_cache: dict[int, bytes] = {}
 
     h, w = idx.shape
     lines: list[str] = []
 
     for y in range(h):
         ba = bytearray()
-        ck_row = color_key[y]
-        idx_row = idx[y]
-        img_bgr[y]  # for extracting r/g/b when cache miss
+
+        ck_row = memoryview(color_key[y])
+        idx_row = memoryview(idx[y])
+
+        prev_ck: int | None = None
 
         for x in range(w):
-            ik = int(idx_row[x])
             ck = int(ck_row[x])
-            subkey = (ck << 8) | ik
 
-            piece = cache.get(subkey)
-            if piece is None:
-                # Decode r,g,b from packed key (same as current rr,gg,bb)
-                rr_i = (ck >> 16) & 255
-                gg_i = (ck >> 8) & 255
-                bb_i = ck & 255
+            # Emit new color code only when color changes
+            if ck != prev_ck:
+                prefix = prefix_cache.get(ck)
+                if prefix is None:
+                    rr_i = (ck >> 16) & 255
+                    gg_i = (ck >> 8) & 255
+                    bb_i = ck & 255
+                    prefix = f"\x1b[38;2;{rr_i};{gg_i};{bb_i}m".encode("ascii")
+                    prefix_cache[ck] = prefix
+                ba.extend(prefix)
+                prev_ck = ck
 
-                # EXACT same formatting as before
-                # \x1b[38;2;{rr};{gg};{bb}m{ch}\x1b[0m
-                prefix = f"\x1b[38;2;{rr_i};{gg_i};{bb_i}m".encode("ascii")
-                piece = prefix + ramp_bytes[ik] + reset
-                cache[subkey] = piece
+            ba.extend(ramp_bytes[int(idx_row[x])])
 
-            ba.extend(piece)
+        # Reset once per line to prevent color bleed into subsequent terminal output
+        ba.extend(reset)
 
         lines.append(ba.decode("utf-8", errors="strict"))
 
