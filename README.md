@@ -1,69 +1,177 @@
-# DeepLabCut-Live! GUI <img src="https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/1596193544929-NHMVMXPVEYZ6R4I45DSR/ke17ZwdGBToddI8pDm48kOHwsIwndRGCkvek0XAcW4ZZw-zPPgdn4jUwVcJE1ZvWEtT5uBSRWt4vQZAgTJucoTqqXjS3CfNDSuuf31e0tVH0wqgmu6zkAOZ3crWCtkmLcPIuzHaxU8QRzZwtrVtHupu3E9Ef3XsXP1C_826c-iU/DLCLIVEGUI_LOGO.png?format=750w" width="350" title="DLC-live GUI" alt="DLC LIVE! GUI" align="right" vspace = "100">
+# DeepLabCut-Live-GUI <img src="https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/1596193544929-NHMVMXPVEYZ6R4I45DSR/ke17ZwdGBToddI8pDm48kOHwsIwndRGCkvek0XAcW4ZZw-zPPgdn4jUwVcJE1ZvWEtT5uBSRWt4vQZAgTJucoTqqXjS3CfNDSuuf31e0tVH0wqgmu6zkAOZ3crWCtkmLcPIuzHaxU8QRzZwtrVtHupu3E9Ef3XsXP1C_826c-iU/DLCLIVEGUI_LOGO.png?format=750w" width="350" title="DLC-live GUI" alt="DLC LIVE! GUI" align="right" vspace="100"/>
 
-<a href="https://github.com/psf/black"><img alt="Code style: black" src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
+
+[![Code style:Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 ![PyPI - Python Version](https://img.shields.io/pypi/v/deeplabcut-live-gui)
 ![PyPI - Downloads](https://img.shields.io/pypi/dm/deeplabcut-live-gui?color=purple)
-![Python package](https://github.com/DeepLabCut/DeepLabCut-live/workflows/Python%20package/badge.svg)
+![Python versions](https://img.shields.io/pypi/pyversions/deeplabcut-live-gui)
+<!-- ![Python package](https://github.com/DeepLabCut/DeepLabCut-live/workflows/Python%20package/badge.svg) -->
 
-[![License](https://img.shields.io/pypi/l/deeplabcutcore.svg)](https://github.com/DeepLabCut/deeplabcutlive/raw/master/LICENSE)
-[![Image.sc forum](https://img.shields.io/badge/dynamic/json.svg?label=forum&amp;url=https%3A%2F%2Fforum.image.sc%2Ftags%2Fdeeplabcut.json&amp;query=%24.topic_list.tags.0.topic_count&amp;colorB=brightgreen&amp;&amp;suffix=%20topics&amp;logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAABPklEQVR42m3SyyqFURTA8Y2BER0TDyExZ+aSPIKUlPIITFzKeQWXwhBlQrmFgUzMMFLKZeguBu5y+//17dP3nc5vuPdee6299gohUYYaDGOyyACq4JmQVoFujOMR77hNfOAGM+hBOQqB9TjHD36xhAa04RCuuXeKOvwHVWIKL9jCK2bRiV284QgL8MwEjAneeo9VNOEaBhzALGtoRy02cIcWhE34jj5YxgW+E5Z4iTPkMYpPLCNY3hdOYEfNbKYdmNngZ1jyEzw7h7AIb3fRTQ95OAZ6yQpGYHMMtOTgouktYwxuXsHgWLLl+4x++Kx1FJrjLTagA77bTPvYgw1rRqY56e+w7GNYsqX6JfPwi7aR+Y5SA+BXtKIRfkfJAYgj14tpOF6+I46c4/cAM3UhM3JxyKsxiOIhH0IO6SH/A1Kb1WBeUjbkAAAAAElFTkSuQmCC)](https://forum.image.sc/tags/deeplabcut)
+[![License](https://img.shields.io/github/license/DeepLabCut/DeepLabCut-live-GUI?label=license)](https://github.com/DeepLabCut/DeepLabCut-live-GUI/blob/main/LICENSE)
+[![Image.sc forum](https://img.shields.io/badge/dynamic/json.svg?label=forum&url=https%3A%2F%2Fforum.image.sc%2Ftags%2Fdeeplabcut.json&query=%24.topic_list.tags.0.topic_count&colorB=brightgreen&&suffix=%20topics&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAABPklEQVR42m3SyyqFURTA8Y2BER0TDyExZ+aSPIKUlPIITFzKeQWXwhBlQrmFgUzMMFLKZeguBu5y+//17dP3nc5vuPdee6299gohUYYaDGOyyACq4JmQVoFujOMR77hNfOAGM+hBOQqB9TjHD36xhAa04RCuuXeKOvwHVWIKL9jCK2bRiV284QgL8MwEjAneeo9VNOEaBhzALGtoRy02cIcWhE34jj5YxgW+E5Z4iTPkMYpPLCNY3hdOYEfNbKYdmNngZ1jyEzw7h7AIb3fRTQ95OAZ6yQpGYHMMtOTgouktYwxuXsHgWLLl+4x++Kx1FJrjLTagA77bTPvYgw1rRqY56e+w7GNYsqX6JfPwi7aR+Y5SA+BXtKIRfkfJAYgj14tpOF6+I46c4/cAM3UhM3JxyKsxiOIhH0IO6SH/A1Kb1WBeUjbkAAAAAElFTkSuQmCC)](https://forum.image.sc/tags/deeplabcut)
 [![Gitter](https://badges.gitter.im/DeepLabCut/community.svg)](https://gitter.im/DeepLabCut/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 [![Twitter Follow](https://img.shields.io/twitter/follow/DeepLabCut.svg?label=DeepLabCut&style=social)](https://twitter.com/DeepLabCut)
 
-GUI to run [DeepLabCut-live](https://github.com/DeepLabCut/DeepLabCut-live) on a video feed, record videos, and record external timestamps.
+GUI to run [DeepLabCut-Live](https://github.com/DeepLabCut/DeepLabCut-live) on a video feed, **preview and record from one or multiple cameras**, and optionally record external timestamps and processor outputs.
 
-## [Installation Instructions](docs/install.md)
+## Update
 
-## Getting Started
+> The GUI has been modernized and is now built with **PySide6 (Qt)** (replacing tkinter). The new interface supports **multi-camera preview** with a **tiled display**, PyTorch models, and features improved interactive workflows for experimental use.
 
-#### Open DeepLabCut-live-GUI
+---
 
-In a terminal, activate the conda or virtual environment where DeepLabCut-live-GUI is installed, then run:
+## Documentation
 
+> Full documentations is a work in progress and will be posted to DeepLabCut's official docs site when ready.
+
+---
+
+## System requirements (quick summary)
+
+- **Python 3.10, 3.11 or 3.12**
+- One inference backend (choose at least one):
+  - **PyTorch** *(recommended for best performance & compatibility)*
+  - **TensorFlow** *(for backwards compatibility with existing models; Windows limitation applies for Python > 3.10)*
+- A supported camera backend (OpenCV webcams by default; additional backends supported)
+
+---
+
+## Installation
+
+This project is currently installed **from source** (editable install).
+The newest GUI and features may not yet be available on PyPI.
+
+### Option A — Install with `uv`
+
+#### 1) Create & activate a new virtual environment
+
+```bash
+uv venv dlclivegui
+# Linux/macOS:
+source dlclivegui/bin/activate
+# Windows (Command Prompt):
+# .\dlclivegui\Scripts\activate.bat
+# Windows (PowerShell):
+# .\dlclivegui\Scripts\Activate.ps1
 ```
-dlclivegui
+
+#### 2) Clone the repository
+
+```bash
+git clone https://github.com/DeepLabCut/DeepLabCut-live-GUI.git
+cd DeepLabCut-live-GUI
 ```
 
+#### 3) Choose inference backend and install
 
-#### Configurations
+You may install **PyTorch** or **TensorFlow** extras (or both), but you must choose at least one to run inference.
+
+- **PyTorch (recommended):**
+
+```bash
+uv pip install -e .[pytorch]
+```
+
+- **TensorFlow (backwards compatibility):**
+
+```bash
+uv pip install -e .[tf]
+```
+
+> For GPU/CUDA specifics and framework compatibility, please follow the official PyTorch/TensorFlow install guidance for your OS.
+
+---
+
+### Option B — Install with `mamba` / `conda`
+
+#### 1) Create & activate a new conda environment
+
+```bash
+conda create -n dlclivegui python=3.12
+conda activate dlclivegui
+```
+
+#### 2) Clone the repository
+
+```bash
+git clone https://github.com/DeepLabCut/DeepLabCut-live-GUI.git
+cd DeepLabCut-live-GUI
+```
+
+#### 3) Install with your inference backend
+
+- **PyTorch (recommended):**
+
+```bash
+pip install -e .[pytorch]
+```
+
+- **TensorFlow:**
+
+```bash
+pip install -e .[tf]
+```
+
+---
+
+## Run the application
+
+After installation, start the application with:
+
+```bash
+dlclivegui # in conda/mamba or after activating your venv
+# OR:
+uv run dlclivegui
+```
+
+> **Important:** Activate your venv/conda environment before launching so the GUI can access installed dependencies.
+
+---
+
+## Typical workflow
+
+The new GUI supports **one or more cameras**.
+
+Typical workflow:
+
+1. **Configure Cameras** (choose backend and devices)
+   - Adjust camera settings (serial, exposure, ROI/cropping, etc.)
+2. **Start Preview**
+   - Adjust visualization settings (keypoint color map, bounding boxes, etc.)
+3. **Start inference**
+   - Choose a DeepLabCut Live model
+   - Choose which camera to run inference on (currently one at a time)
+4. **Start recording**
+   - Adjust recording settings (codec, output format, etc.)
+   - Record video and timestamps to organized session folders
+
+> **Note:** OpenCV-compatible cameras (USB webcams, OBS virtual camera) work out of the box.
+> For additional camera ecosystems (Basler, GenTL, Aravis, etc.), see the camera backend docs.
 
 
-First, create a configuration file: select the drop down menu labeled `Config`, and click `Create New Config`. All settings, such as details about cameras, DLC networks, and DLC-live Processors, will be saved into configuration files so that you can close and reopen the GUI without losing all of these details. You can create multiple configuration files on the same system, so that different users can save different camera options, etc on the same computer. To load previous settings from a configuration file, please just select the file from the drop-down menu. Configuration files are stored at `$HOME/Documents/DeepLabCut-live-GUI/config`. These files do not need to be edited manually, they can be entirely created and edited automatically within the GUI.
+---
 
-#### Set Up Cameras <img src= https://imagizer.imageshack.com/img924/626/acJhWD.png align="right">
+## Current limitations
 
-To setup a new camera, select `Add Camera` from the dropdown menu, and then click `Init Cam`. This will be bring up a new window where you need to select the type of camera (see [Camera Support](docs/camera_support.md)), input a name for the camera, and click `Add Camera`. This will initialize a new `Camera` entry in the drop down menu. Now, select your camera from the dropdown menu and click`Edit Camera Settings` to setup your camera settings (i.e. set the serial number, exposure, cropping parameters, etc; the exact settings depend on the specific type of camera). Once you have set the camera settings, click `Init Cam` to start streaming. To stop streaming data, click `Close Camera`, and to remove a camera from the dropdown menu, click `Remove Camera`.
+- Pose inference runs on **one selected camera at a time** (even in multi-camera mode)
+- Camera features support and availability depends on backend capabilities and hardware
+  - OpenCV controls for resolution/FPS are best-effort and device-driver dependent
+- DeepLabCut-Live models must be exported and compatible with the chosen backend
+- Performance depends on resolution, frame rate, GPU availability, and codec choice
 
-#### Processor (optional)
+---
 
-To write custom `Processors`, please see [here](https://github.com/DeepLabCut/DeepLabCut-live/tree/master/dlclive/processor). The directory that contains your custom `Processor` should be a python module -- this directory must contain an `__init__.py` file that imports your custom `Processor`. For examples of how to structure a custom `Processor` directory, please see [here](https://github.com/DeepLabCut/DeepLabCut-live/tree/master/example_processors).
+## References
 
-To use your processor in the GUI, you must first add your custom `Processor` directory to the dropdown menu: next to the `Processor Dir` label, click `Browse`, and select your custom `Processor` directory. Next, select the desired directory from the `Processor Dir` dropdown menu, then select the `Processor` you would like to use from the `Processor` menu. If you would like to edit the arguments for your processor, please select `Edit Proc Settings`, and finally, to use the processor, click `Set Proc`. If you have previously set a `Processor` and would like to clear it, click `Clear Proc`.
+If you use this code we kindly ask you to please cite:
 
-#### Configure DeepLabCut Network
+- **[Kane et al., eLife 2020](https://elifesciences.org/articles/61909)**
+  - If preferred, see the **[Preprint](https://www.biorxiv.org/content/10.1101/2020.08.04.236422v2)**
 
-<img src= https://imagizer.imageshack.com/img923/9730/MNzr1J.png align="right">
+---
 
-Select the `DeepLabCut` dropdown menu, and click `Add DLC`. This will bring up a new window to choose a name for the DeepLabCut configuration, choose the path to the exported DeepLabCut model, and set DeepLabCut-live settings, such as the cropping or resize parameters. Once configured, click `Update` to add this DeepLabCut configuration to the dropdown menu. You can edit the settings at any time by clicking `Edit DLC Settings`. Once configured, you can load the network and start performing inference by clicking `Start DLC`. If you would like to view the DeepLabCut pose estimation in real-time, select `Display DLC Keypoints`. You can edit the keypoint display settings (the color scheme, size of points, and the likelihood threshold for display) by selecting `Edit DLC Display Settings`.
+## Contributing / Feedback
 
-If you want to stop performing inference at any time, just click `Stop DLC`, and if you want to remove a DeepLabCut configuration from the dropdown menu, click `Remove DLC`.
+This project is under active development — feedback from real experimental use is highly valued.
 
-#### Set Up Session
-
-Sessions are defined by the subject name, the date, and an attempt number. Within the GUI, select a `Subject` from the dropdown menu, or to add a new subject, type the new subject name in to the entry box and click `Add Subject`. Next, select an `Attempt` from the dropdown menu. Then, select the directory that you would like to save data to from the `Directory` dropdown menu. To add a new directory to the dropdown menu, click `Browse`. Finally, click `Set Up Session` to initiate a new recording. This will prepare the GUI to save data. Once you click `Set Up Session`, the `Ready` button should turn blue, indicating a session is ready to record.
-
-#### Controlling Recording
-
-If the `Ready` button is selected, you can now start a recording by clicking `On`. The `On` button will then turn green indicating a recording is active. To stop a recording, click `Off`. This will cause the `Ready` button to be selected again, as the GUI is prepared to restart the recording and to save the data to the same file. If you're session is complete, click `Save Video` to save all files: the video recording (as .avi file), a numpy file with timestamps for each recorded frame, the DeepLabCut poses as a pandas data frame (hdf5 file) that includes the time of each frame used for pose estimation and the time that each pose was obtained, and if applicable, files saved by the `Processor` in use. These files will be saved into a new directory at `{YOUR_SAVE_DIRECTORY}/{CAMERA NAME}_{SUBJECT}_{DATE}_{ATTEMPT}`
-
-- YOUR_SAVE_DIRECTORY : the directory chosen from the `Directory` dropdown menu.
-- CAMERA NAME : the name of selected camera (from the `Camera` dropdown menu).
-- SUBJECT : the subject chosen from the `Subject` drowdown menu.
-- DATE : the current date of the experiment.
-- ATTEMPT : the attempt number chosen from the `Attempt` dropdown.
-
-If you would not like to save the data from the session, please click `Delete Video`, and all data will be discarded. After you click `Save Video` or `Delete Video`, the `Off` button will be selected, indicating you can now set up a new session.
-
-#### References:
-
-If you use this code we kindly ask you to you please [cite Kane et al, eLife 2020](https://elifesciences.org/articles/61909). The preprint is available here: https://www.biorxiv.org/content/10.1101/2020.08.04.236422v2
+Please report issues, suggest features, or contribute on [GitHub](https://github.com/DeepLabCut/DeepLabCut-live-GUI).
