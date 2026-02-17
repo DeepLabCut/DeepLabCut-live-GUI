@@ -194,27 +194,70 @@ def resize_for_terminal(img: np.ndarray, width: int | None, aspect: float | None
 
 def _map_luminance_to_chars(gray: np.ndarray, fine: bool) -> Iterable[str]:
     ramp = ASCII_RAMP_FINE if fine else ASCII_RAMP_SIMPLE
+    ramp_arr = np.array(list(ramp), dtype="<U1")  # vectorized char LUT
+
     idx = (gray.astype(np.float32) / 255.0 * (len(ramp) - 1)).astype(np.int32)
-    lines = ["".join(ramp[i] for i in row) for row in idx]
-    return lines
+    chars = ramp_arr[idx]  # (H,W) array of 1-char strings
+
+    # Join per-row (still Python per row, but NOT per pixel)
+    return ["".join(row.tolist()) for row in chars]
 
 
 def _color_ascii_lines(img_bgr: np.ndarray, fine: bool, invert: bool) -> Iterable[str]:
     ramp = ASCII_RAMP_FINE if fine else ASCII_RAMP_SIMPLE
-    b, g, r = cv.split(img_bgr)
-    lum = (0.0722 * b + 0.7152 * g + 0.2126 * r).astype(np.float32)
+    ramp_bytes = [c.encode("utf-8") for c in ramp]  # 1-byte ASCII in practice
+    reset = b"\x1b[0m"
+
+    # luminance in float32 like your current code
+    b = img_bgr[..., 0].astype(np.float32)
+    g = img_bgr[..., 1].astype(np.float32)
+    r = img_bgr[..., 2].astype(np.float32)
+    lum = 0.0722 * b + 0.7152 * g + 0.2126 * r
     if invert:
         lum = 255.0 - lum
-    idx = (lum / 255.0 * (len(ramp) - 1)).astype(np.int32)
+
+    idx = (lum / 255.0 * (len(ramp) - 1)).astype(np.uint16)  # small dtype is fine
+
+    # Pack color into one int: 0xRRGGBB (faster dict key than tuple)
+    rr = img_bgr[..., 2].astype(np.uint32)
+    gg = img_bgr[..., 1].astype(np.uint32)
+    bb = img_bgr[..., 0].astype(np.uint32)
+    color_key = (rr << 16) | (gg << 8) | bb  # (H,W) uint32
+
+    # Cache: (color_key<<8)|idx -> bytes for full colored char INCLUDING reset
+    cache: dict[int, bytes] = {}
+
     h, w = idx.shape
-    lines = []
+    lines: list[str] = []
+
     for y in range(h):
-        seg = []
+        ba = bytearray()
+        ck_row = color_key[y]
+        idx_row = idx[y]
+        img_bgr[y]  # for extracting r/g/b when cache miss
+
         for x in range(w):
-            ch = ramp[idx[y, x]]
-            bb, gg, rr = img_bgr[y, x]
-            seg.append(f"\x1b[38;2;{rr};{gg};{bb}m{ch}\x1b[0m")
-        lines.append("".join(seg))
+            ik = int(idx_row[x])
+            ck = int(ck_row[x])
+            subkey = (ck << 8) | ik
+
+            piece = cache.get(subkey)
+            if piece is None:
+                # Decode r,g,b from packed key (same as current rr,gg,bb)
+                rr_i = (ck >> 16) & 255
+                gg_i = (ck >> 8) & 255
+                bb_i = ck & 255
+
+                # EXACT same formatting as before
+                # \x1b[38;2;{rr};{gg};{bb}m{ch}\x1b[0m
+                prefix = f"\x1b[38;2;{rr_i};{gg_i};{bb_i}m".encode("ascii")
+                piece = prefix + ramp_bytes[ik] + reset
+                cache[subkey] = piece
+
+            ba.extend(piece)
+
+        lines.append(ba.decode("utf-8", errors="strict"))
+
     return lines
 
 
