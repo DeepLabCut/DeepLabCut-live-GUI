@@ -10,9 +10,11 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-# Import the module under test
-# Adjust the import to your package layout as needed:
-# from dlclivegui.assets import ascii as ascii_mod
+try:
+    import cv2 as cv
+except Exception:
+    pytest.skip("OpenCV (opencv-python) is required for these tests.", allow_module_level=True)
+
 import dlclivegui.assets.ascii_art as ascii_mod
 
 MODULE_UNDER_TEST = "dlclivegui.main"
@@ -139,12 +141,6 @@ def test_main_without_splash(monkeypatch, set_use_splash_false):
     show_splash_mock.assert_not_called()
     assert calls["count"] == 0
     win_instance.show.assert_called_once()
-
-
-try:
-    import cv2 as cv
-except Exception:
-    pytest.skip("OpenCV (opencv-python) is required for these tests.", allow_module_level=True)
 
 
 # -------------------------
@@ -378,8 +374,8 @@ def test_generate_ascii_lines_crop_alpha(tmp_png_bgra_logo, force_tty):
     )
     # Both are non-empty; height may change either way depending on aspect ratio
     assert len(lines_no_crop) > 0 and len(lines_crop) > 0
-    # Optional: assert they differ (most likely); comment out if flakiness observed
-    assert len(lines_crop) != len(lines_no_crop)
+    # Cropping should affect the generated ASCII content
+    assert lines_crop != lines_no_crop
 
 
 def test_print_ascii_writes_file(tmp_png_gray, force_tty, tmp_path):
