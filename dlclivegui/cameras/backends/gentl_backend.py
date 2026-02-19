@@ -372,6 +372,7 @@ class GenTLCameraBackend(CameraBackend):
             ns["cti_file"] = str(cti_files[0])  # best effort
 
         if not loaded:
+            self._harvester = None
             raise RuntimeError(
                 "No GenTL producer (.cti) could be loaded.\n\n"
                 f"Resolved CTIs: {cti_files}\n"
@@ -384,6 +385,7 @@ class GenTLCameraBackend(CameraBackend):
         self._harvester.update()
 
         if not self._harvester.device_info_list:
+            self._harvester = None
             raise RuntimeError(
                 "No GenTL cameras detected via Harvesters after loading producers.\n\n"
                 f"Loaded CTIs: {loaded}\n"

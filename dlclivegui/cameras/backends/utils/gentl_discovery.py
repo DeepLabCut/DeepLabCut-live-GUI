@@ -174,7 +174,7 @@ def discover_cti_files(
     for entry in env_entries:
         norm_entry = _normalize_path(entry)
         p = Path(norm_entry)
-        if p.is_file() and p.suffix.lower() == ".cti":
+        if p.is_file():  # let _add_candidate check .cti extension and existence
             _add_candidate(norm_entry, "env:file")
         elif p.is_dir():
             for f in _iter_cti_files_in_dir(norm_entry, recursive=recursive_env_search):
@@ -227,7 +227,16 @@ def choose_cti_files(
         return []
 
     if policy == GenTLDiscoveryPolicy.NEWEST:
-        cand_sorted = sorted(cand, key=lambda p: Path(p).stat().st_mtime if Path(p).exists() else 0.0, reverse=True)
+
+        def _newest_mtime(p: str) -> float:
+            try:
+                if not Path(p).exists():
+                    return 0.0
+                return Path(p).stat().st_mtime
+            except OSError:
+                return 0.0
+
+        cand_sorted = sorted(cand, key=_newest_mtime, reverse=True)
         return cand_sorted[:max_files]
 
     if policy == GenTLDiscoveryPolicy.FIRST:

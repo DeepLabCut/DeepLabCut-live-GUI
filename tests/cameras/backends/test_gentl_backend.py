@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import time
 import types
 from pathlib import Path
 
@@ -655,9 +654,12 @@ def test_choose_cti_files_newest_policy(tmp_path):
     old = _make_cti(tmp_path, "Old.cti")
     new = _make_cti(tmp_path, "New.cti")
 
-    # Ensure distinct mtimes
-    time.sleep(0.01)
+    # Ensure distinct mtimes (platform agnostic)
     new.write_text("dummy2", encoding="utf-8")
+    old_stat = old.stat()
+    new_stat = new.stat()
+    if new_stat.st_mtime <= old_stat.st_mtime:
+        os.utime(new, (new_stat.st_atime, old_stat.st_mtime + 1))
 
     selected = choose_cti_files([str(old), str(new)], policy=GenTLDiscoveryPolicy.NEWEST, max_files=1)
     assert len(selected) == 1
