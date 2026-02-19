@@ -42,28 +42,31 @@ While `deeplabcut-live-gui` is available on **PyPI**, the newest PySide6-based G
 
 To get the **latest version**, please follow the **instructions below**.
 
-### Option A — Install with `uv`
-
-#### 1) Create & activate a new virtual environment
-
-```bash
-uv venv dlclivegui
-# Linux/macOS:
-source dlclivegui/bin/activate
-# Windows (Command Prompt):
-# .\dlclivegui\Scripts\activate.bat
-# Windows (PowerShell):
-# .\dlclivegui\Scripts\Activate.ps1
-```
-
-#### 2) Clone the repository
+### 1) Clone the repository
 
 ```bash
 git clone https://github.com/DeepLabCut/DeepLabCut-live-GUI.git
 cd DeepLabCut-live-GUI
 ```
 
-#### 3) Choose inference backend and install
+### Option A — Install with `uv`
+
+#### 2) Create & activate a new virtual environment
+
+```bash
+uv venv dlclivegui
+
+# Linux/macOS:
+source dlclivegui/bin/activate
+
+# Windows (Command Prompt):
+.\dlclivegui\Scripts\activate.bat
+
+# Windows (PowerShell):
+.\dlclivegui\Scripts\Activate.ps1
+```
+
+#### 2) Choose inference backend and install
 
 You may install **PyTorch** or **TensorFlow** extras (or both), but you must choose at least one to run inference.
 
@@ -79,8 +82,6 @@ uv pip install -e .[pytorch]
 uv pip install -e .[tf]
 ```
 
-> For GPU/CUDA specifics and framework compatibility, please follow the official PyTorch/TensorFlow install guidance for your OS.
-
 ---
 
 ### Option B — Install with `mamba` / `conda`
@@ -92,14 +93,7 @@ conda create -n dlclivegui python=3.12
 conda activate dlclivegui
 ```
 
-#### 2) Clone the repository
-
-```bash
-git clone https://github.com/DeepLabCut/DeepLabCut-live-GUI.git
-cd DeepLabCut-live-GUI
-```
-
-#### 3) Install with your inference backend
+#### 2) Install with your inference backend
 
 - **PyTorch (recommended):**
 
@@ -117,15 +111,20 @@ pip install -e .[tf]
 
 ## Run the application
 
+> [!TIP]
+> For GPU/CUDA support specifics and framework compatibility, please follow the official PyTorch/TensorFlow install guidance for your OS and drivers.
+
 After installation, start the application with:
 
 ```bash
-dlclivegui # in conda/mamba or after activating your venv
+dlclivegui # in conda/mamba
+
 # OR:
 uv run dlclivegui
 ```
 
-> **Important:** Activate your venv/conda environment before launching so the GUI can access installed dependencies.
+> [!IMPORTANT]
+> Activate your venv/conda environment before launching so the GUI can access installed dependencies.
 
 ---
 
@@ -146,7 +145,8 @@ Typical workflow:
    - Adjust recording settings (codec, output format, etc.)
    - Record video and timestamps to organized session folders
 
-> **Note:** OpenCV-compatible cameras (USB webcams, OBS virtual camera) work out of the box.
+> [!NOTE]
+> OpenCV-compatible cameras (USB webcams, OBS virtual camera) work out of the box.
 > For additional camera ecosystems (Basler, GenTL, Aravis, etc.), see the relevant documentation.
 <!-- TODO @C-Achard add link to docs website once available -->
 
