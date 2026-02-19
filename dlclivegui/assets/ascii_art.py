@@ -18,10 +18,11 @@ import os
 import shutil
 import sys
 from collections.abc import Iterable
-from importlib import resources
 from typing import Literal
 
 import numpy as np
+
+from dlclivegui.gui.theme import LOGO_ALPHA
 
 try:
     import cv2 as cv
@@ -381,11 +382,10 @@ def print_ascii(
 # -----------------------------
 # Optional: Help banner helpers
 # -----------------------------
-ASCII_IMAGE_PATH = resources.files("dlclivegui.assets") / "logo_transparent.png"
 
 
 def build_help_description(
-    static_banner: str | None = None, *, desc=None, color: ColorMode = "auto", min_width: int = 60
+    static_banner: str | None = None, *, desc=None, color: ColorMode = "auto", min_width: int = 60, max_width: int = 120
 ) -> str:
     """Return a help description string that conditionally includes a colored ASCII banner.
 
@@ -395,12 +395,20 @@ def build_help_description(
     """
     enable_windows_ansi_support()
     desc = "DeepLabCut-Live GUI — launch the graphical interface." if desc is None else desc
-    if static_banner is None:
+    if not sys.stdout.isatty() and terminal_is_wide_enough(min_width=min_width):
+        return desc
+
+    banner: str | None
+    if static_banner is not None:
+        banner = static_banner
+    else:
         try:
+            term_width = get_terminal_width(default=max_width)
+            width = max(min(term_width, max_width), min_width)
             banner = "\n".join(
                 generate_ascii_lines(
-                    str(ASCII_IMAGE_PATH),
-                    width=shutil.get_terminal_size((80, 24)).columns - 10,
+                    str(LOGO_ALPHA),
+                    width=width,
                     aspect=0.5,
                     color=color,
                     fine=True,
@@ -414,9 +422,8 @@ def build_help_description(
             )
         except (FileNotFoundError, RuntimeError, OSError):
             banner = None
-    else:
-        banner = static_banner
-    if banner and terminal_is_wide_enough(min_width=min_width):
+
+    if banner:
         if should_use_color(color):
             banner = f"\x1b[36m{banner}\x1b[0m"
         return banner + "\n" + desc
