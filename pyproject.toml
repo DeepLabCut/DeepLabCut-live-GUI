@@ -135,7 +135,6 @@ exclude_lines = [
 ]
 omit = [
   "tests/*",
-  "dlclivegui/assets/*",
 ]
 [tool.coverage.run]
 branch = true

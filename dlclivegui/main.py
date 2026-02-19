@@ -60,7 +60,10 @@ def parse_args(argv=None):
 
     default_desc = "Welcome to DeepLabCut-Live GUI!"
     no_art_flag = "--no-art" in argv
-    if not no_art_flag:
+    wants_help = any(a in ("-h", "--help") for a in argv)
+
+    # Only build banner description if we're about to print help
+    if wants_help and not no_art_flag:
         try:
             desc = art.build_help_description()
         except Exception as e:
@@ -80,11 +83,15 @@ def parse_args(argv=None):
 def main() -> None:
     args, _unknown = parse_args()
 
-    # HiDPI pixmaps - always enabled in Qt 6 so no need to set it explicitly
-    # QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
     logging.info("Starting DeepLabCut-Live GUI...")
-    if not args.no_art:
-        logging.info(art.build_help_description(desc="Welcome to DeepLabCut-Live GUI!"))
+
+    # If you want a startup banner, PRINT it (not log), and only in TTY contexts.
+    if not args.no_art and sys.stdout.isatty() and art.terminal_is_wide_enough():
+        try:
+            print(art.build_help_description(desc="Welcome to DeepLabCut-Live GUI!"))
+        except Exception:
+            # Keep startup robust; don't fail if banner fails
+            pass
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(LOGO))
