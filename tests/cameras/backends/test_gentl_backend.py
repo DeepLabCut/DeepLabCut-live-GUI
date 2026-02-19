@@ -14,6 +14,31 @@ from dlclivegui.cameras.backends.utils.gentl_discovery import (
     discover_cti_files,
 )
 
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def isolate_gentl_env(monkeypatch):
+    monkeypatch.delenv("GENICAM_GENTL64_PATH", raising=False)
+    monkeypatch.delenv("GENICAM_GENTL32_PATH", raising=False)
+    yield
+
+
+def _force_only_these_ctis(settings, ctis: list[str]) -> None:
+    # Ensure namespace exists
+    props = settings.properties
+    props.setdefault("gentl", {})
+    ns = props["gentl"]
+
+    # Make sure no default single-cti sneaks in (dummy.cti)
+    ns.pop("cti_file", None)
+    props.pop("cti_file", None)
+
+    # Explicit list
+    ns["cti_files"] = ctis
+
 
 # ---------------------------------------------------------------------
 # Core lifecycle + strict transaction model
@@ -582,7 +607,7 @@ def test_discover_glob_patterns(tmp_path):
     assert pattern in diag.glob_patterns
 
 
-def test_discover_env_var_directory(monkeypatch, tmp_path):
+def test_discover_env_var_directory(monkeypatch, tmp_path, isolate_gentl_env):
     _make_cti(tmp_path, "Env.cti")
 
     monkeypatch.setenv("GENICAM_GENTL64_PATH", str(tmp_path))
@@ -593,18 +618,19 @@ def test_discover_env_var_directory(monkeypatch, tmp_path):
     assert "GENICAM_GENTL64_PATH" in diag.env_vars_used
 
 
-def test_discover_env_var_direct_file(monkeypatch, tmp_path):
+def test_discover_env_var_direct_file(monkeypatch, tmp_path, isolate_gentl_env):
     cti = _make_cti(tmp_path, "Direct.cti")
 
     monkeypatch.setenv("GENICAM_GENTL64_PATH", str(cti))
 
     candidates, diag = discover_cti_files(include_env=True, must_exist=True)
 
-    assert candidates == [str(cti.resolve())] or Path(candidates[0]).name == "Direct.cti"
+    assert len(candidates) == 1
+    assert Path(candidates[0]).name == "Direct.cti"
     assert diag.env_paths_expanded  # should include the raw env entry
 
 
-def test_discover_env_var_multiple_entries(monkeypatch, tmp_path):
+def test_discover_env_var_multiple_entries(monkeypatch, tmp_path, isolate_gentl_env):
     d1 = tmp_path / "d1"
     d2 = tmp_path / "d2"
     d1.mkdir()
@@ -622,7 +648,7 @@ def test_discover_env_var_multiple_entries(monkeypatch, tmp_path):
     assert names == ["A.cti", "B.cti"]
 
 
-def test_discover_deduplicates_same_file_from_multiple_sources(monkeypatch, tmp_path):
+def test_discover_deduplicates_same_file_from_multiple_sources(monkeypatch, tmp_path, isolate_gentl_env):
     cti = _make_cti(tmp_path, "Dup.cti")
 
     # Discover it twice: explicit + env dir
@@ -664,3 +690,81 @@ def test_choose_cti_files_newest_policy(tmp_path):
     selected = choose_cti_files([str(old), str(new)], policy=GenTLDiscoveryPolicy.NEWEST, max_files=1)
     assert len(selected) == 1
     assert Path(selected[0]).name == "New.cti"
+
+
+def test_open_persists_cti_load_diagnostics_all_success(patch_gentl_sdk, gentl_settings_factory, tmp_path):
+    gb = patch_gentl_sdk
+
+    c1 = _make_cti(tmp_path, "A.cti")
+    c2 = _make_cti(tmp_path, "B.cti")
+
+    # Provide multiple CTIs (how your backend reads these may vary)
+    settings = gentl_settings_factory(properties={"gentl": {"cti_files": [str(c1), str(c2)]}})
+    _force_only_these_ctis(settings, [str(c1), str(c2)])
+    be = gb.GenTLCameraBackend(settings)
+
+    be.open()
+
+    ns = settings.properties["gentl"]
+    assert ns["cti_files"] == [str(c1), str(c2)]
+    assert ns["cti_files_loaded"] == [str(c1), str(c2)]
+    # If dict:
+    assert ns["cti_files_failed"] == []
+
+    be.close()
+
+
+def test_open_persists_cti_load_diagnostics_partial_failure(patch_gentl_sdk, gentl_settings_factory, tmp_path):
+    gb = patch_gentl_sdk
+
+    ok = _make_cti(tmp_path, "OK.cti")
+    bad = _make_cti(tmp_path, "BAD.cti")
+
+    gb.fail_add_file_for.clear()
+    gb.fail_add_file_for.add(str(bad))
+
+    settings = gentl_settings_factory(properties={"gentl": {"cti_files": [str(ok), str(bad)]}})
+    _force_only_these_ctis(settings, [str(ok), str(bad)])
+
+    be = gb.GenTLCameraBackend(settings)
+    be.open()
+
+    ns = settings.properties["gentl"]
+    assert ns["cti_files"] == [str(ok), str(bad)]
+    assert ns["cti_files_loaded"] == [str(ok)]
+
+    failed = ns["cti_files_failed"]
+    assert isinstance(failed, list)
+    assert len(failed) == 1
+    assert failed[0]["cti"] == str(bad)
+    assert isinstance(failed[0]["error"], str) and failed[0]["error"]
+
+    be.close()
+
+
+def test_open_persists_cti_load_diagnostics_complete_failure(patch_gentl_sdk, gentl_settings_factory, tmp_path):
+    gb = patch_gentl_sdk
+
+    b1 = _make_cti(tmp_path, "B1.cti")
+    b2 = _make_cti(tmp_path, "B2.cti")
+
+    gb.fail_add_file_for.clear()
+    gb.fail_add_file_for.update({str(b1), str(b2)})
+
+    settings = gentl_settings_factory(properties={"gentl": {"cti_files": [str(b1), str(b2)]}})
+    _force_only_these_ctis(settings, [str(b1), str(b2)])
+    be = gb.GenTLCameraBackend(settings)
+
+    with pytest.raises(RuntimeError):
+        be.open()
+
+    # Keys should still be persisted for debugging even though open failed.
+    ns = settings.properties.get("gentl", {})
+    assert ns.get("cti_files") == [str(b1), str(b2)]
+    assert ns.get("cti_files_loaded") == []
+
+    failed = ns.get("cti_files_failed")
+    assert isinstance(failed, list)
+    assert sorted(d["cti"] for d in failed) == sorted([str(b1), str(b2)])
+    for d in failed:
+        assert isinstance(d.get("error"), str) and d["error"]

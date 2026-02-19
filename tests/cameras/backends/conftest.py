@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import pytest
+
+logger = logging.getLogger(__name__)
 
 
 # -----------------------------
@@ -720,20 +723,19 @@ class FakeHarvester:
     Inventory-driven so tests can control enumeration.
     """
 
-    def __init__(self, inventory: list[dict[str, Any]] | None = None):
+    def __init__(self, inventory: list[dict[str, Any]] | None = None, *, fail_add_file_for: set[str] | None = None):
         self._files: list[str] = []
         self._inventory: list[dict[str, Any]] = list(inventory or [])
         self.device_info_list: list[Any] = []
+
+        # NEW: failure control
+        self._fail_add_file_for = set(fail_add_file_for or [])
 
         # Call tracing
         self.add_file_calls: list[str] = []
         self.update_calls = 0
         self.reset_calls = 0
         self.create_calls: list[Any] = []
-
-    def add_file(self, file_path: str):
-        self._files.append(str(file_path))
-        self.add_file_calls.append(str(file_path))
 
     def update(self):
         self.update_calls += 1
@@ -788,6 +790,16 @@ class FakeHarvester:
     def create_image_acquirer(self, *args, **kwargs):
         return self.create(*args, **kwargs)
 
+    def add_file(self, file_path: str):
+        p = str(file_path)
+        self.add_file_calls.append(p)
+
+        # NEW: fail deterministically if requested
+        if p in self._fail_add_file_for:
+            raise RuntimeError(f"Simulated CTI load failure for: {p}")
+
+        self._files.append(p)
+
 
 # -----------------------------------------------------------------------------
 # GentL fixtures: inventory, patching, settings factory
@@ -817,40 +829,52 @@ def gentl_inventory():
 
 
 @pytest.fixture()
-def fake_harvester_factory(gentl_inventory):
+def fake_harvester_factory(gentl_inventory, gentl_fail_add_file_for):
     """
-    Factory that returns a FakeHarvester bound to the current gentl_inventory.
-    Allows tests to mutate gentl_inventory before calling backend.open().
+    Factory that returns a FakeHarvester bound to the current gentl_inventory and
+    gentl_fail_add_file_for. Tests can mutate both before calling backend.open().
     """
 
     def _make():
-        return FakeHarvester(inventory=gentl_inventory)
+        return FakeHarvester(inventory=gentl_inventory, fail_add_file_for=gentl_fail_add_file_for)
 
     return _make
 
 
 @pytest.fixture()
-def patch_gentl_sdk(monkeypatch, fake_harvester_factory, tmp_path):
+def gentl_fail_add_file_for():
+    """
+    Mutable set of CTI file paths that FakeHarvester.add_file should fail on.
+    Tests can add/remove paths to simulate partial/complete CTI load failures.
+    """
+    return set()
+
+
+@pytest.fixture()
+def patch_gentl_sdk(monkeypatch, fake_harvester_factory, gentl_fail_add_file_for, tmp_path):
     """
     Patch dlclivegui.cameras.backends.gentl_backend to use FakeHarvester + Fake timeout.
-    Also ensure CTI discovery succeeds for classmethods (discover_devices/quick_ping)
-    by creating a real dummy .cti and exposing it via GENICAM_GENTL64_PATH.
+    Ensure CTI discovery succeeds for classmethods by creating a real dummy .cti and
+    exposing it via GENICAM_GENTL64_PATH.
     """
     import dlclivegui.cameras.backends.gentl_backend as gb
 
     # Patch Harvester symbol (the backend calls Harvester() directly)
     monkeypatch.setattr(gb, "Harvester", lambda: fake_harvester_factory(), raising=False)
 
-    # Keep your backend timeout contract as-is: it catches HarvesterTimeoutError
+    # Keep timeout contract
     monkeypatch.setattr(gb, "HarvesterTimeoutError", FakeGenTLTimeoutException, raising=False)
 
-    # Create a real CTI file and advertise it via env var (cross-platform via os.pathsep)
+    # Create a real CTI file and advertise it via env var
     cti_file = tmp_path / "dummy.cti"
     if not cti_file.exists():
         cti_file.write_text("fake", encoding="utf-8")
 
     monkeypatch.setenv("GENICAM_GENTL64_PATH", str(tmp_path))
     monkeypatch.delenv("GENICAM_GENTL32_PATH", raising=False)
+
+    # OPTIONAL: expose failure control so tests can do gb.fail_add_file_for.add(...)
+    gb.fail_add_file_for = gentl_fail_add_file_for
 
     return gb
 
@@ -877,10 +901,22 @@ def gentl_settings_factory(tmp_path):
         cti = tmp_path / "dummy.cti"
         if not cti.exists():
             cti.write_text("fake", encoding="utf-8")
+
         props = properties if isinstance(properties, dict) else {}
         props.setdefault("gentl", {})
-        props["gentl"] = dict(props["gentl"])
-        props["gentl"].setdefault("cti_file", str(cti))
+        props["gentl"] = dict(props["gentl"])  # copy to avoid mutating caller dict unexpectedly
+
+        ns = props["gentl"]
+
+        # Detect whether CTIs were explicitly provided in *either* namespace or legacy keys
+        explicit_ns = bool(ns.get("cti_file") or ns.get("cti_files"))
+        explicit_legacy = bool(props.get("cti_file") or props.get("cti_files"))
+
+        # Only inject a default dummy.cti if nothing explicit was provided
+        if not explicit_ns and not explicit_legacy:
+            logger.debug("No CTI file(s) explicitly provided in settings; injecting dummy CTI for gentl tests.")
+            ns.setdefault("cti_file", str(cti))
+
         return CameraSettings(
             name=name,
             index=index,
