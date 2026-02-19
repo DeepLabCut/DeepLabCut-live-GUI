@@ -377,8 +377,7 @@ class GenTLCameraBackend(CameraBackend):
                 "No GenTL producer (.cti) could be loaded.\n\n"
                 f"Resolved CTIs: {cti_files}\n"
                 f"Failures: {failed}\n"
-                "Fix: remove/repair incompatible producers or"
-                " set properties.gentl.cti_file to a known working producer."
+                "Fix: remove/repair incompatible producers or set properties.gentl.cti_file to a known working producer."
             )
 
         # Update device list after loading producers
