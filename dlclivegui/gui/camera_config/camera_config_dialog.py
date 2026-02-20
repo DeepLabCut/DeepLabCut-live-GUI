@@ -1393,7 +1393,7 @@ class CameraConfigDialog(QDialog):
         if not cam:
             return
 
-        LOGGER.info("[Preview] executing restart reason=%s", reason)
+        LOGGER.debug("[Preview] executing restart reason=%s", reason)
         self._begin_preview_load(cam, reason="restart")
 
     def _cancel_loading(self) -> None:

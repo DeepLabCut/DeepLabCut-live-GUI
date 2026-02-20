@@ -194,11 +194,6 @@ class DLCLiveMainWindow(QMainWindow):
         self._display_timer.timeout.connect(self._update_display_from_pending)
         self._display_timer.start()
 
-        # Show status message if myconfig.json was loaded
-        # FIXME @C-Achard deprecated behavior, remove later
-        if self._config_path and self._config_path.name == "myconfig.json":
-            self.statusBar().showMessage(f"Auto-loaded configuration from {self._config_path}", 5000)
-
         # Validate cameras from loaded config (deferred to allow window to show first)
         # NOTE IMPORTANT (tests/CI): This is scheduled via a QTimer and may fire during pytest-qt teardown.
         QTimer.singleShot(100, self._validate_configured_cameras)
@@ -208,7 +203,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Mitigations for tests/CI:
         #   - Disable this timer by monkeypatching _validate_configured_cameras in GUI tests
         #   - OR monkeypatch/override _show_warning/_show_error to no-op in GUI tests (easiest)
-        #   - OR use a cancellable QTimer attribute and stop() it in closeEven
+        #   - OR use a cancellable QTimer attribute and stop() it in closeEvent
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
