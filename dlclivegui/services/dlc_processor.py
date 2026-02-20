@@ -28,8 +28,8 @@ ENABLE_PROFILING = True
 try:  # pragma: no cover - optional dependency
     from dlclive import (
         DLCLive,  # type: ignore
-        Engine,  # type: ignore
     )
+    from dlclivegui.temp import Engine  # type: ignore # TODO use main package one when released
 except Exception as e:  # pragma: no cover - handled gracefully
     logger.error(f"dlclive package could not be imported: {e}")
     DLCLive = None  # type: ignore[assignment]
