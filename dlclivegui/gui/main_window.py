@@ -875,14 +875,15 @@ class DLCLiveMainWindow(QMainWindow):
         return json.loads(text)
 
     def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
+        model_path = self.model_path_edit.text().strip()
         return DLCProcessorSettings(
-            model_path=self.model_path_edit.text().strip(),
+            model_path=model_path,
             model_directory=self._config.dlc.model_directory,  # Preserve from config
             device=self._config.dlc.device,  # Preserve from config
             dynamic=self._config.dlc.dynamic,  # Preserve from config
             resize=self._config.dlc.resize,  # Preserve from config
             precision=self._config.dlc.precision,  # Preserve from config
-            model_type="pytorch",  # FIXME @C-Achard hardcoded for now, we should allow tf models too
+            model_type=DLCLiveProcessor.get_model_backend(model_path),
             # additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
         )
 

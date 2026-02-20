@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 ENABLE_PROFILING = True
 
 try:  # pragma: no cover - optional dependency
-    from dlclive import DLCLive  # type: ignore
+    from dlclive import (
+        DLCLive,  # type: ignore
+        Engine,  # type: ignore
+    )
 except Exception as e:  # pragma: no cover - handled gracefully
     logger.error(f"dlclive package could not be imported: {e}")
     DLCLive = None  # type: ignore[assignment]
@@ -95,6 +98,10 @@ class DLCLiveProcessor(QObject):
         self._total_process_times: deque[float] = deque(maxlen=60)
         self._gpu_inference_times: deque[float] = deque(maxlen=60)
         self._processor_overhead_times: deque[float] = deque(maxlen=60)
+
+    @staticmethod
+    def get_model_backend(model_path: str) -> str:
+        return Engine.from_model_path(model_path).value
 
     def configure(self, settings: DLCProcessorSettings, processor: Any | None = None) -> None:
         self._settings = settings
