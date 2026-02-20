@@ -11,7 +11,6 @@ from ...cameras.base import CameraSettings
 from ...cameras.factory import CameraBackend, CameraFactory
 
 LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(logging.DEBUG)
 
 
 # -------------------------------

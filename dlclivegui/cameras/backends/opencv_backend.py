@@ -25,7 +25,6 @@ from .utils.opencv_discovery import (
 )
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # FIXME @C-Achard remove before release
 
 if TYPE_CHECKING:
     from dlclivegui.config import CameraSettings

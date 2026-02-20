@@ -82,8 +82,6 @@ from .misc.eliding_label import ElidingPathLabel
 from .recording_manager import RecordingManager
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 
-# logging.basicConfig(level=logging.INFO)
-logging.basicConfig(level=logging.DEBUG)  # FIXME @C-Achard set back to INFO for release
 logger = logging.getLogger("DLCLiveGUI")
 
 

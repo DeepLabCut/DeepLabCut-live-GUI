@@ -24,7 +24,6 @@ from .preview import PreviewSession, PreviewState, apply_crop, apply_rotation, r
 from .ui_blocks import setup_camera_config_dialog_ui
 
 LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(logging.DEBUG)  # TODO @C-Achard remove for release
 
 
 class CameraConfigDialog(QDialog):
