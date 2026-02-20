@@ -1,6 +1,7 @@
 from enum import Enum
 from pathlib import Path
 
+
 class Engine(Enum):
     TENSORFLOW = "tensorflow"
     PYTORCH = "pytorch"
@@ -27,7 +28,7 @@ class Engine(Enum):
             if has_cfg and has_pb:
                 return cls.TENSORFLOW
         elif path.is_file():
-            if path.suffix == ".pt":
+            if path.suffix in (".pt", ".pth"):
                 return cls.PYTORCH
 
         raise ValueError(f"Could not determine engine from model path: {model_path}")

@@ -63,10 +63,10 @@ def test_worker_processes_frames(qtbot, monkeypatch_dlclive, settings_model):
             proc.enqueue_frame(frame, timestamp=2.0 + i)
             qtbot.wait(5)  # ms
 
-        # NOTE @C-Achard this still fails randomly
-        # the timeout has to be surprisingly large here
-        # not sure if it's qtbot or threading scheduling delays
-        # Should be fixed now.
+        # NOTE @C-Achard The timeout here is intentionally large to account for potential
+        # Qt event-loop and threading scheduling delays in CI environments.
+        # This was previously flaky with a smaller timeout; increasing it should
+        # keep the test stable.
         qtbot.waitUntil(lambda: proc.get_stats().frames_processed >= 3, timeout=3000)
 
     finally:

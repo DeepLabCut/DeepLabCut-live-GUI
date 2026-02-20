@@ -19,6 +19,7 @@ from dlclivegui.config import DLCProcessorSettings
 
 # from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.processors.processor_utils import instantiate_from_scan
+from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,6 @@ try:  # pragma: no cover - optional dependency
     from dlclive import (
         DLCLive,  # type: ignore
     )
-    from dlclivegui.temp import Engine  # type: ignore # TODO use main package one when released
 except Exception as e:  # pragma: no cover - handled gracefully
     logger.error(f"dlclive package could not be imported: {e}")
     DLCLive = None  # type: ignore[assignment]

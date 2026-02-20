@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from dlclivegui.temp import Engine
+
 Rotation = Literal[0, 90, 180, 270]
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
 Precision = Literal["FP32", "FP16"]
@@ -239,7 +241,7 @@ class DLCProcessorSettings(BaseModel):
     resize: float = Field(default=1.0, gt=0)
     precision: Precision = "FP32"
     additional_options: dict[str, Any] = Field(default_factory=dict)
-    model_type: Literal["pytorch"] = "pytorch"
+    model_type: Engine = "pytorch"
     single_animal: bool = True
 
     @field_validator("dynamic", mode="before")
