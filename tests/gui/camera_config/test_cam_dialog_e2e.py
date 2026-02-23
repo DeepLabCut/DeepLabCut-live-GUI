@@ -8,16 +8,32 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
 
-from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
-from dlclivegui.cameras.factory import DetectedCamera
+from dlclivegui.cameras.factory import CameraFactory, DetectedCamera
 from dlclivegui.config import CameraSettings, MultiCameraSettings
-from dlclivegui.gui.camera_config.camera_config_dialog import CameraConfigDialog, CameraLoadWorker
+from dlclivegui.gui.camera_config.camera_config_dialog import CameraConfigDialog
+from dlclivegui.gui.camera_config.loaders import CameraLoadWorker
 from dlclivegui.gui.camera_config.preview import PreviewState
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
+
+def _run_scan_and_wait(dialog: CameraConfigDialog, qtbot, timeout: int = 2000) -> None:
+    """
+    Trigger a scan via UI and wait for the dialog's scan_finished,
+    which now means: UI is stable and available list is populated (or placeholder).
+    """
+    qtbot.waitUntil(lambda: not dialog._is_scan_running(), timeout=timeout)
+    qtbot.wait(50)
+
+    # Wait for the scan started by *this click* to both start and finish
+    with qtbot.waitSignals([dialog.scan_started, dialog.scan_finished], timeout=timeout, order="strict"):
+        qtbot.mouseClick(dialog.refresh_btn, Qt.LeftButton)
+
+    # Now the list should be stable
+    qtbot.waitUntil(lambda: dialog.available_cameras_list.count() > 0, timeout=timeout)
 
 
 def _select_backend_for_active_cam(dialog: CameraConfigDialog, cam_row: int = 0) -> str:
@@ -119,9 +135,10 @@ def dialog(qtbot, patch_detect_cameras):
     except Exception:
         d.close()
 
-    qtbot.waitUntil(lambda: getattr(d, "_loader", None) is None, timeout=2000)
-    qtbot.waitUntil(lambda: getattr(d, "_scan_worker", None) is None, timeout=2000)
-    qtbot.waitUntil(lambda: not getattr(d, "_preview_active", False), timeout=2000)
+    qtbot.waitUntil(lambda: d._preview.loader is None, timeout=2000)
+    qtbot.waitUntil(lambda: not d._is_scan_running(), timeout=2000)
+    qtbot.wait(50)
+    qtbot.waitUntil(lambda: d._preview.state == PreviewState.IDLE, timeout=2000)
 
 
 # ---------------------------------------------------------------------
@@ -131,9 +148,7 @@ def dialog(qtbot, patch_detect_cameras):
 
 @pytest.mark.gui
 def test_e2e_async_camera_scan(dialog, qtbot):
-    qtbot.mouseClick(dialog.refresh_btn, Qt.LeftButton)
-    with qtbot.waitSignal(dialog.scan_finished, timeout=2000):
-        pass
+    _run_scan_and_wait(dialog, qtbot, timeout=2000)
     assert dialog.available_cameras_list.count() == 2
 
 
@@ -247,19 +262,17 @@ def test_e2e_apply_settings_does_not_restart_on_crop_or_rotation(dialog, qtbot, 
 
 @pytest.mark.gui
 def test_e2e_selection_change_auto_commits(dialog, qtbot):
-    """
-    Guard contract: switching selection commits pending edits.
-    Use FPS (supported) rather than gain (OpenCV gain is intentionally disabled).
-    """
-    # Ensure backend combo matches active cam (important for add/dup logic)
     _select_backend_for_active_cam(dialog, cam_row=0)
 
-    # Add second camera deterministically
-    dialog._on_scan_result([DetectedCamera(index=1, label="ExtraCam")])
-    dialog.available_cameras_list.setCurrentRow(0)
+    # Discover cameras via UI
+    _run_scan_and_wait(dialog, qtbot, timeout=2000)
+    assert dialog.available_cameras_list.count() == 2
+
+    # Select the second detected camera to avoid duplicate (index 1)
+    dialog.available_cameras_list.setCurrentRow(1)
     qtbot.mouseClick(dialog.add_camera_btn, Qt.LeftButton)
 
-    assert len(dialog._working_settings.cameras) >= 2
+    qtbot.waitUntil(lambda: len(dialog._working_settings.cameras) >= 2, timeout=1000)
 
     dialog.active_cameras_list.setCurrentRow(0)
     qtbot.waitUntil(lambda: dialog._current_edit_index == 0, timeout=1000)
@@ -300,10 +313,6 @@ def test_cancel_scan(dialog, qtbot, monkeypatch):
 
 @pytest.mark.gui
 def test_duplicate_camera_prevented(dialog, qtbot, monkeypatch):
-    """
-    Duplicate detection compares identity keys including backend.
-    Ensure backend combo is set to match existing active camera backend.
-    """
     calls = {"n": 0}
 
     def _warn(parent, title, text, *args, **kwargs):
@@ -312,14 +321,15 @@ def test_duplicate_camera_prevented(dialog, qtbot, monkeypatch):
 
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(_warn))
 
-    backend = _select_backend_for_active_cam(dialog, cam_row=0)
-
+    _select_backend_for_active_cam(dialog, cam_row=0)
     initial_count = dialog.active_cameras_list.count()
 
-    # Same backend + same index -> duplicate
-    dialog._on_scan_result([DetectedCamera(index=0, label=f"{backend}-X")])
-    dialog.available_cameras_list.setCurrentRow(0)
+    # Scan normally
+    _run_scan_and_wait(dialog, qtbot, timeout=2000)
+    assert dialog.available_cameras_list.count() == 2
 
+    # Choose the entry that matches index 0 (duplicate)
+    dialog.available_cameras_list.setCurrentRow(0)
     qtbot.mouseClick(dialog.add_camera_btn, Qt.LeftButton)
 
     assert dialog.active_cameras_list.count() == initial_count
@@ -328,9 +338,6 @@ def test_duplicate_camera_prevented(dialog, qtbot, monkeypatch):
 
 @pytest.mark.gui
 def test_max_cameras_prevented(qtbot, monkeypatch, patch_detect_cameras):
-    """
-    Dialog enforces MAX_CAMERAS enabled cameras.
-    """
     calls = {"n": 0}
 
     def _warn(parent, title, text, *args, **kwargs):
@@ -354,14 +361,13 @@ def test_max_cameras_prevented(qtbot, monkeypatch, patch_detect_cameras):
 
     try:
         _select_backend_for_active_cam(d, cam_row=0)
-
         initial_count = d.active_cameras_list.count()
 
-        qtbot.waitUntil(lambda: not d._is_scan_running(), timeout=1000)
-        d._on_scan_result([DetectedCamera(index=4, label="Extra")])
-        d._on_scan_finished()
-        d.available_cameras_list.setCurrentRow(0)
+        _run_scan_and_wait(d, qtbot, timeout=2000)
+        assert d.available_cameras_list.count() == 2
 
+        # Try to add any detected camera (should hit MAX_CAMERAS guard)
+        d.available_cameras_list.setCurrentRow(1)
         qtbot.mouseClick(d.add_camera_btn, Qt.LeftButton)
 
         assert d.active_cameras_list.count() == initial_count

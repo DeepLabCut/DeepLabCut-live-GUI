@@ -196,7 +196,7 @@ def build_available_cameras_group(dlg: CameraConfigDialog) -> QGroupBox:
     # The original UI block connects cancel here; preserve that.
     # dlg must provide _on_scan_cancel
     if hasattr(dlg, "_on_scan_cancel"):
-        dlg.scan_cancel_btn.clicked.connect(dlg._on_scan_cancel)  # type: ignore[attr-defined]
+        dlg.scan_cancel_btn.clicked.connect(dlg.request_scan_cancel)  # type: ignore[attr-defined]
 
     available_layout.addWidget(dlg.scan_cancel_btn)
 

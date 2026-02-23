@@ -1,37 +1,57 @@
 """Workers and state logic for loading cameras in the GUI."""
 
-# dlclivegui/gui/camera_loaders.py
+# dlclivegui/gui/loaders.py
+from __future__ import annotations
+
 import copy
 import logging
+from enum import Enum, auto
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QWidget
 
-from ...cameras.base import CameraSettings
 from ...cameras.factory import CameraBackend, CameraFactory
+from ...config import CameraSettings
+
+if TYPE_CHECKING:
+    pass  # only for typing
 
 LOGGER = logging.getLogger(__name__)
+
+
+class CameraScanState(Enum):
+    IDLE = auto()
+    RUNNING = auto()
+    CANCELING = auto()
+    DONE = auto()
 
 
 # -------------------------------
 # Background worker to detect cameras
 # -------------------------------
 class DetectCamerasWorker(QThread):
-    """Background worker to detect cameras for the selected backend."""
+    """Background worker to detect cameras for the selected backend.
 
-    progress = Signal(str)  # human-readable text
-    result = Signal(list)  # list[DetectedCamera]
+    Signals:
+      - progress(str): human-readable status
+      - result(list): list of DetectedCamera (may be empty)
+      - error(str): error message (on exception)
+      - canceled(): emitted if interruption was requested during/after discovery
+    """
+
+    progress = Signal(str)
+    result = Signal(list)  # list[DetectedCamera] at runtime
     error = Signal(str)
-    finished = Signal()
+    canceled = Signal()
 
     def __init__(self, backend: str, max_devices: int = 10, parent: QWidget | None = None):
         super().__init__(parent)
         self.backend = backend
         self.max_devices = max_devices
 
-    def run(self):
+    def run(self) -> None:
         try:
-            # Initial message
             self.progress.emit(f"Scanning {self.backend} cameras…")
 
             cams = CameraFactory.detect_cameras(
@@ -40,11 +60,17 @@ class DetectCamerasWorker(QThread):
                 should_cancel=self.isInterruptionRequested,
                 progress_cb=self.progress.emit,
             )
-            self.result.emit(cams)
+
+            # Always emit result (even if empty) so UI can stabilize deterministically.
+            self.result.emit(cams or [])
+
+            # If canceled, emit canceled so UI can set ScanState.CANCELING/DONE if desired.
+            if self.isInterruptionRequested():
+                self.canceled.emit()
+
         except Exception as exc:
             self.error.emit(f"{type(exc).__name__}: {exc}")
-        finally:
-            self.finished.emit()
+        # No custom finished signal: QThread.finished is emitted automatically when run() returns.
 
 
 class CameraProbeWorker(QThread):
@@ -53,7 +79,6 @@ class CameraProbeWorker(QThread):
     progress = Signal(str)
     success = Signal(object)  # emits CameraSettings
     error = Signal(str)
-    finished = Signal()
 
     def __init__(self, cam: CameraSettings, parent: QWidget | None = None):
         super().__init__(parent)
@@ -66,10 +91,10 @@ class CameraProbeWorker(QThread):
             if isinstance(ns, dict):
                 ns.setdefault("fast_start", True)
 
-    def request_cancel(self):
+    def request_cancel(self) -> None:
         self._cancel = True
 
-    def run(self):
+    def run(self) -> None:
         try:
             self.progress.emit("Probing device defaults…")
             if self._cancel:
@@ -77,8 +102,7 @@ class CameraProbeWorker(QThread):
             self.success.emit(self._cam)
         except Exception as exc:
             self.error.emit(f"{type(exc).__name__}: {exc}")
-        finally:
-            self.finished.emit()
+        # QThread.finished will fire automatically.
 
 
 # -------------------------------
@@ -87,27 +111,24 @@ class CameraProbeWorker(QThread):
 class CameraLoadWorker(QThread):
     """Open/configure a camera backend off the UI thread with progress and cancel support."""
 
-    progress = Signal(str)  # Human-readable status updates
-    success = Signal(object)  # Emits the ready backend (CameraBackend)
-    error = Signal(str)  # Emits error message
-    canceled = Signal()  # Emits when canceled before success
+    progress = Signal(str)
+    success = Signal(object)  # emits CameraSettings for GUI-thread open
+    error = Signal(str)
+    canceled = Signal()
 
     def __init__(self, cam: CameraSettings, parent: QWidget | None = None):
         super().__init__(parent)
         self._cam = copy.deepcopy(cam)
-
         self._cancel = False
         self._backend: CameraBackend | None = None
 
-        # Do not use fast_start here as we want to actually open the camera to probe capabilities
-        # If you want a quick probe without full open, use CameraProbeWorker instead which sets fast_start=True
         # Ensure preview open never uses fast_start probe mode
         if isinstance(self._cam.properties, dict):
             ns = self._cam.properties.setdefault(self._cam.backend.lower(), {})
             if isinstance(ns, dict):
                 ns["fast_start"] = False
 
-    def request_cancel(self):
+    def request_cancel(self) -> None:
         self._cancel = True
 
     def _check_cancel(self) -> bool:
@@ -116,15 +137,16 @@ class CameraLoadWorker(QThread):
             return True
         return False
 
-    def run(self):
+    def run(self) -> None:
         try:
             self.progress.emit("Creating backend…")
             if self._check_cancel():
                 self.canceled.emit()
                 return
 
-            LOGGER.debug("Creating camera backend for %s:%d", self._cam.backend, self._cam.index)
+            LOGGER.debug("Preparing camera open for %s:%d", self._cam.backend, self._cam.index)
             self.progress.emit("Opening device…")
+
             # Open only in GUI thread to avoid simultaneous opens
             self.success.emit(self._cam)
 
