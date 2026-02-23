@@ -1,41 +1,138 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 import pytest
 
 import dlclivegui.utils.utils as u
+from dlclivegui.temp.engine import Engine  # e.g. dlclivegui/utils/engine.py
 
 pytestmark = pytest.mark.unit
 
 
+# NOTE @C-Achard: These tests are currently in test_utils.py for convenience,
+# but we may want to use dlclive.Engine directly
+# and possibly move these tests to dlclive's test suite
 # -----------------------------
-# is_model_file
+# Engine.from_model_type
 # -----------------------------
-@pytest.mark.unit
-def test_is_model_file_true_for_supported_extensions(tmp_path: Path):
-    for ext in [".pt", ".pth", ".pb"]:
-        p = tmp_path / f"model{ext}"
-        p.write_text("x")
-        assert u.is_model_file(p) is True
-        assert u.is_model_file(str(p)) is True  # also accepts str
+@pytest.mark.parametrize(
+    "inp, expected",
+    [
+        ("pytorch", Engine.PYTORCH),
+        ("PYTORCH", Engine.PYTORCH),
+        ("tensorflow", Engine.TENSORFLOW),
+        ("TensorFlow", Engine.TENSORFLOW),
+        ("base", Engine.TENSORFLOW),
+        ("tensorrt", Engine.TENSORFLOW),
+        ("lite", Engine.TENSORFLOW),
+    ],
+)
+def test_engine_from_model_type(inp: str, expected: Engine):
+    assert Engine.from_model_type(inp) == expected
 
-    # case-insensitive
-    p2 = tmp_path / "MODEL.PT"
-    p2.write_text("x")
-    assert u.is_model_file(p2) is True
+
+def test_engine_from_model_type_unknown():
+    with pytest.raises(ValueError):
+        Engine.from_model_type("onnx")
 
 
-@pytest.mark.unit
-def test_is_model_file_false_for_missing_or_dir(tmp_path: Path):
-    missing = tmp_path / "missing.pt"
-    assert u.is_model_file(missing) is False
+# -----------------------------
+# Engine.is_pytorch_model_path
+# -----------------------------
+@pytest.mark.parametrize("ext", [".pt", ".pth"])
+def test_engine_is_pytorch_model_path_true(tmp_path: Path, ext: str):
+    p = tmp_path / f"model{ext}"
+    p.write_text("x")
+    assert Engine.is_pytorch_model_path(p) is True
+    assert Engine.is_pytorch_model_path(str(p)) is True
 
+
+def test_engine_is_pytorch_model_path_false_for_missing(tmp_path: Path):
+    p = tmp_path / "missing.pt"
+    assert Engine.is_pytorch_model_path(p) is False
+
+
+def test_engine_is_pytorch_model_path_false_for_dir(tmp_path: Path):
     d = tmp_path / "model.pt"
     d.mkdir()
-    assert u.is_model_file(d) is False
+    assert Engine.is_pytorch_model_path(d) is False
 
-    bad = tmp_path / "model.onnx"
-    bad.write_text("x")
-    assert u.is_model_file(bad) is False
+
+def test_engine_is_pytorch_model_path_case_insensitive(tmp_path: Path):
+    # only include if you applied the .lower() patch
+    p = tmp_path / "MODEL.PT"
+    p.write_text("x")
+    assert Engine.is_pytorch_model_path(p) is True
+
+
+# -----------------------------
+# Engine.is_tensorflow_model_dir_path
+# -----------------------------
+def _make_tf_dir(tmp_path: Path, *, with_cfg: bool = True, with_pb: bool = True, pb_name: str = "graph.pb") -> Path:
+    d = tmp_path / "tf_model"
+    d.mkdir()
+    if with_cfg:
+        (d / "pose_cfg.yaml").write_text("cfg: 1\n")
+    if with_pb:
+        (d / pb_name).write_text("pbdata")
+    return d
+
+
+def test_engine_is_tensorflow_model_dir_path_true(tmp_path: Path):
+    d = _make_tf_dir(tmp_path, with_cfg=True, with_pb=True)
+    assert Engine.is_tensorflow_model_dir_path(d) is True
+    assert Engine.is_tensorflow_model_dir_path(str(d)) is True
+
+
+def test_engine_is_tensorflow_model_dir_path_false_missing_cfg(tmp_path: Path):
+    d = _make_tf_dir(tmp_path, with_cfg=False, with_pb=True)
+    assert Engine.is_tensorflow_model_dir_path(d) is False
+
+
+def test_engine_is_tensorflow_model_dir_path_false_missing_pb(tmp_path: Path):
+    d = _make_tf_dir(tmp_path, with_cfg=True, with_pb=False)
+    assert Engine.is_tensorflow_model_dir_path(d) is False
+
+
+def test_engine_is_tensorflow_model_dir_path_case_insensitive_pb(tmp_path: Path):
+    # only include if you applied the .lower() patch for pb suffix
+    d = _make_tf_dir(tmp_path, with_cfg=True, with_pb=True, pb_name="GRAPH.PB")
+    assert Engine.is_tensorflow_model_dir_path(d) is True
+
+
+# -----------------------------
+# Engine.from_model_path
+# -----------------------------
+def test_engine_from_model_path_missing_raises(tmp_path: Path):
+    missing = tmp_path / "does_not_exist.pt"
+    with pytest.raises(FileNotFoundError):
+        Engine.from_model_path(missing)
+
+
+def test_engine_from_model_path_pytorch_file(tmp_path: Path):
+    p = tmp_path / "net.pth"
+    p.write_text("x")
+    assert Engine.from_model_path(p) == Engine.PYTORCH
+
+
+def test_engine_from_model_path_tensorflow_dir(tmp_path: Path):
+    d = _make_tf_dir(tmp_path, with_cfg=True, with_pb=True)
+    assert Engine.from_model_path(d) == Engine.TENSORFLOW
+
+
+def test_engine_from_model_path_dir_not_tf_raises(tmp_path: Path):
+    d = tmp_path / "some_dir"
+    d.mkdir()
+    with pytest.raises(ValueError):
+        Engine.from_model_path(d)
+
+
+def test_engine_from_model_path_file_not_pytorch_raises(tmp_path: Path):
+    p = tmp_path / "model.pb"
+    p.write_text("x")  # PB file alone is not a TF dir
+    with pytest.raises(ValueError):
+        Engine.from_model_path(p)
 
 
 # -----------------------------

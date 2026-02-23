@@ -235,19 +235,21 @@ def test_model_path_store_resolve_prefers_config_path_when_valid(tmp_path: Path)
     assert mps.resolve(str(model)) == str(model)
 
 
-def test_model_path_store_resolve_falls_back_to_persisted(tmp_path: Path):
+def test_model_path_store_resolve_falls_back_to_persisted_tf_dir(tmp_path: Path):
     settings = InMemoryQSettings()
     mps = store.ModelPathStore(settings=settings)
 
-    persisted = tmp_path / "persisted.pb"
-    persisted.write_text("x")
-    settings.setValue("dlc/last_model_path", str(persisted))
+    tf_dir = tmp_path / "tf_model"
+    tf_dir.mkdir()
+    (tf_dir / "pose_cfg.yaml").write_text("cfg: 1\n")
+    (tf_dir / "graph.pb").write_text("pb")
 
-    # invalid config path
+    settings.setValue("dlc/last_model_path", str(tf_dir / "graph.pb"))
+
     bad = tmp_path / "notamodel.onnx"
     bad.write_text("x")
 
-    assert mps.resolve(str(bad)) == str(persisted)
+    assert mps.resolve(str(bad)) == str(tf_dir / "graph.pb")
 
 
 def test_model_path_store_resolve_returns_empty_when_nothing_valid(tmp_path: Path):

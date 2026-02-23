@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings
 
 from ..config import ApplicationSettings
-from .utils import is_model_file
+from ..temp import Engine  # type: ignore # TODO use main package enum when released
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ class ModelPathStore:
         try:
             pp = Path(path)
             # Accept a valid model *file*
-            if pp.is_file() and is_model_file(str(pp)):
+            if pp.is_file() and (Engine.is_pytorch_model_path(pp) or Engine.is_tensorflow_model_dir_path(pp.parent)):
                 return str(pp)
         except Exception:
             logger.debug("Last model path not valid/usable: %s", path)
@@ -172,10 +172,12 @@ class ModelPathStore:
                 self._settings.setValue("dlc/last_model_dir", model_dir_norm)
 
             # Persist model path if it is a valid model file, or a TF model directory
-            if p.is_file() and is_model_file(str(p)):
+            if Engine.is_pytorch_model_path(p):
                 self._settings.setValue("dlc/last_model_path", str(p))
-            elif p.is_dir() and self._looks_like_tf_model_dir(p):
+            elif p.parent.is_dir() and Engine.is_tensorflow_model_dir_path(p.parent):
                 self._settings.setValue("dlc/last_model_path", str(p))
+            # elif p.is_dir() and Engine.is_tensorflow_model_dir_path(p):
+            #     self._settings.setValue("dlc/last_model_path", str(p))
 
         except Exception:
             logger.debug("Failed to save model path: %s", path, exc_info=True)
@@ -204,9 +206,9 @@ class ModelPathStore:
         if cfg:
             try:
                 p = Path(cfg)
-                if p.is_file() and is_model_file(cfg):
+                if p.is_file() and Engine.is_pytorch_model_path(p):
                     return cfg
-                if p.is_dir() and self._looks_like_tf_model_dir(p):
+                if p.is_dir() and Engine.is_tensorflow_model_dir_path(p):
                     return cfg
             except Exception:
                 logger.debug("Config path not usable: %s", cfg)

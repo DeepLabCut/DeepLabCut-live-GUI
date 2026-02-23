@@ -304,11 +304,13 @@ def test_cancel_scan(dialog, qtbot, monkeypatch):
 
     qtbot.mouseClick(dialog.scan_cancel_btn, Qt.LeftButton)
 
+    # scan_finished = UI stable, not necessarily worker fully stopped / controls unlocked
     with qtbot.waitSignal(dialog.scan_finished, timeout=3000):
         pass
 
-    assert dialog.refresh_btn.isEnabled()
-    assert dialog.backend_combo.isEnabled()
+    # Wait until scan controls are unlocked (worker finished)
+    qtbot.waitUntil(lambda: dialog.refresh_btn.isEnabled(), timeout=3000)
+    qtbot.waitUntil(lambda: dialog.backend_combo.isEnabled(), timeout=3000)
 
 
 @pytest.mark.gui
