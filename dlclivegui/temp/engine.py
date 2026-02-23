@@ -21,7 +21,7 @@ class Engine(Enum):
         if not path.is_dir():
             return False
         has_cfg = (path / "pose_cfg.yaml").is_file()
-        has_pb = any(p.suffix.lower() == ".pb" for p in path.glob("*.pb"))
+        has_pb = any(p.is_file() and p.suffix.lower() == ".pb" for p in path.iterdir())
         return has_cfg and has_pb
 
     @classmethod
