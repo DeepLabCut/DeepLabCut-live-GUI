@@ -876,6 +876,10 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
         model_path = self.model_path_edit.text().strip()
+        if Path(model_path).exists() and Path(model_path).suffix in (".pb"):
+            # IMPORTANT NOTE: DLClive expects a directory for TensorFlow models,
+            # so if user selects a .pb file, we should pass the parent directory to DLCLive
+            model_path = str(Path(model_path).parent)
         if model_path == "":
             raise ValueError("Model path cannot be empty. Please enter a valid path to a DLCLive model file.")
         try:
@@ -976,13 +980,12 @@ class DLCLiveMainWindow(QMainWindow):
         preselect = self._model_path_store.suggest_selected_file()
 
         dlg = QFileDialog(self, "Select DLCLive model file")
-        dlg.setFileMode(QFileDialog.FileMode.AnyFile)
+        dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
         dlg.setNameFilters(
             [
                 "Model files (*.pt *.pth)",
                 "PyTorch models (*.pt *.pth)",
-                # "TensorFlow models (*.pb)",
-                "TensorFlow model directory (*.*)",
+                "TensorFlow models (*.pb)",
             ]
         )
         dlg.setDirectory(start_dir)
@@ -995,7 +998,20 @@ class DLCLiveMainWindow(QMainWindow):
             selected = dlg.selectedFiles()
             if not selected:
                 return
-            file_path = selected[0]
+            file_path = Path(selected[0]).expanduser()
+            if not file_path.exists():
+                QMessageBox.warning(self, "File not found", f"The selected file does not exist:\n{file_path}")
+                return
+
+            try:
+                DLCLiveProcessor.get_model_backend(str(file_path))
+            except FileNotFoundError as e:
+                QMessageBox.warning(self, "Model selection error", str(e))
+                return
+            except ValueError as e:
+                QMessageBox.warning(self, "Model selection error", str(e))
+                return
+            file_path = str(file_path)
             self.model_path_edit.setText(file_path)
 
             # Persist model path + directory

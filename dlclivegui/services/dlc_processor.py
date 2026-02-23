@@ -16,8 +16,6 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from dlclivegui.config import DLCProcessorSettings
-
-# from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.processors.processor_utils import instantiate_from_scan
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
 

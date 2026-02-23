@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import json
+from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-
-from dlclivegui.temp import Engine
 
 Rotation = Literal[0, 90, 180, 270]
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
@@ -241,13 +240,45 @@ class DLCProcessorSettings(BaseModel):
     resize: float = Field(default=1.0, gt=0)
     precision: Precision = "FP32"
     additional_options: dict[str, Any] = Field(default_factory=dict)
-    model_type: Engine = Engine.PYTORCH
+    model_type: str = "pytorch"
     single_animal: bool = True
 
     @field_validator("dynamic", mode="before")
     @classmethod
     def _coerce_dynamic(cls, v):
         return DynamicCropModel.from_tupleish(v)
+
+    @field_validator("model_type", mode="before")
+    @classmethod
+    def _coerce_model_type(cls, v):
+        """
+        Accept:
+          - "pytorch"/"tensorflow"/etc as strings
+          - Enum instances (e.g. Engine.PYTORCH) and store their .value
+        Always return a lowercase string.
+        """
+        if v is None or v == "":
+            return "pytorch"
+
+        # If caller passed Engine enum or any Enum, use its value
+        if isinstance(v, Enum):
+            v = v.value
+
+        # If caller passed something with a `.value` attribute (defensive)
+        if not isinstance(v, str) and hasattr(v, "value"):
+            v = v.value
+
+        if not isinstance(v, str):
+            raise TypeError(f"model_type must be a string or Enum, got {type(v)!r}")
+
+        v = v.strip().lower()
+
+        # Optional: enforce allowed values
+        allowed = {"pytorch", "tensorflow"}
+        if v not in allowed:
+            raise ValueError(f"Unknown model type: {v!r}. Allowed: {sorted(allowed)}")
+
+        return v
 
 
 class BoundingBoxSettings(BaseModel):

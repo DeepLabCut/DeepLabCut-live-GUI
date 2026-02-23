@@ -24,6 +24,7 @@ class Engine(Enum):
 
         if path.is_dir():
             has_cfg = (path / "pose_cfg.yaml").is_file()
+            # has_cfg is DLClive specific and is considered a requirement for TF live models.
             has_pb = any(p.suffix == ".pb" for p in path.glob("*.pb"))
             if has_cfg and has_pb:
                 return cls.TENSORFLOW
