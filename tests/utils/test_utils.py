@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import dlclivegui.utils.utils as u
-from dlclivegui.temp.engine import Engine  # e.g. dlclivegui/utils/engine.py
+from dlclivegui.temp import Engine
 
 pytestmark = pytest.mark.unit
 
