@@ -457,7 +457,10 @@ class CameraConfigDialog(QDialog):
         self._refresh_available_cameras()
 
     def _is_scan_running(self) -> bool:
-        return self._scan_state in (CameraScanState.RUNNING, CameraScanState.CANCELING)
+        if self._scan_state in (CameraScanState.RUNNING, CameraScanState.CANCELING):
+            return True
+        w = self._scan_worker
+        return bool(w and w.isRunning())
 
     def _set_scan_state(self, state: CameraScanState, message: str | None = None) -> None:
         """Single source of truth for scan-related UI controls."""
@@ -539,11 +542,17 @@ class CameraConfigDialog(QDialog):
         w.start()
 
     def _on_scan_progress(self, msg: str) -> None:
+        if self.sender() is not self._scan_worker:
+            LOGGER.debug("[Scan] Ignoring progress from old worker: %s", msg)
+            return
         if self._scan_state not in (CameraScanState.RUNNING, CameraScanState.CANCELING):
             return
         self._show_scan_overlay(msg or "Discovering cameras…")
 
     def _on_scan_result(self, cams: list) -> None:
+        if self.sender() is not self._scan_worker:
+            LOGGER.debug("[Scan] Ignoring result from old worker: %d cameras", len(cams) if cams else 0)
+            return
         if self._scan_state not in (CameraScanState.RUNNING, CameraScanState.CANCELING):
             return
 
@@ -566,6 +575,9 @@ class CameraConfigDialog(QDialog):
         self._finish_scan("result")
 
     def _on_scan_error(self, msg: str) -> None:
+        if self.sender() is not self._scan_worker:
+            LOGGER.debug("[Scan] Ignoring error from old worker: %s", msg)
+            return
         if self._scan_state not in (CameraScanState.RUNNING, CameraScanState.CANCELING):
             return
 
@@ -598,9 +610,13 @@ class CameraConfigDialog(QDialog):
             placeholder.setFlags(Qt.ItemIsEnabled)
             self.available_cameras_list.addItem(placeholder)
 
-        self._finish_scan("cancel")
+        if w is None or not w.isRunning():
+            self._finish_scan("cancel")
 
     def _on_scan_canceled(self) -> None:
+        if self.sender() is not self._scan_worker:
+            LOGGER.debug("[Scan] Ignoring canceled signal from old worker.")
+            return
         self._set_scan_state(CameraScanState.CANCELING, message="Finalizing cancellation…")
         # If cancel is requested without clicking cancel (e.g., dialog closing), ensure UI finishes
         if self._scan_state in (CameraScanState.RUNNING, CameraScanState.CANCELING):
