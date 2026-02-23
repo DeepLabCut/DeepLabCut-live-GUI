@@ -38,6 +38,17 @@ jobs:
           python -m pip install -U pip wheel
           python -m pip install -U tox tox-gh-actions
 
+      - name: Install Qt/OpenGL runtime deps (Ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libopengl0 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0
+
       - name: Run tests (exclude hardware) with coverage via tox
         run: |
           tox -q
@@ -54,6 +65,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage to Codecov
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage.xml
