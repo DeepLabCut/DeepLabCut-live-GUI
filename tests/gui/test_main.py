@@ -42,7 +42,7 @@ def test_preview_renders_frames(qtbot, window, multi_camera_controller):
 
 @pytest.mark.gui
 @pytest.mark.functional
-def test_start_inference_emits_pose(qtbot, window, multi_camera_controller, dlc_processor):
+def test_start_inference_emits_pose(qtbot, window, multi_camera_controller, dlc_processor, tmp_path):
     """
     Validate that:
       - Preview is running
@@ -67,7 +67,9 @@ def test_start_inference_emits_pose(qtbot, window, multi_camera_controller, dlc_
         timeout=6000,
     )
 
-    w.model_path_edit.setText("dummy_model.pt")
+    model_weights = tmp_path / "dummy_model.pt"
+    model_weights.touch()  # create an empty file to satisfy existence check
+    w.model_path_edit.setText(str(model_weights))
     pose_count = [0]
 
     def _on_pose(result):
