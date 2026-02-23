@@ -100,8 +100,8 @@ class DLCLiveProcessor(QObject):
         self._processor_overhead_times: deque[float] = deque(maxlen=60)
 
     @staticmethod
-    def get_model_backend(model_path: str) -> str:
-        return Engine.from_model_path(model_path).value
+    def get_model_backend(model_path: str) -> Engine:
+        return Engine.from_model_path(model_path)
 
     def configure(self, settings: DLCProcessorSettings, processor: Any | None = None) -> None:
         self._settings = settings

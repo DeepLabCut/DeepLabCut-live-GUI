@@ -241,7 +241,7 @@ class DLCProcessorSettings(BaseModel):
     resize: float = Field(default=1.0, gt=0)
     precision: Precision = "FP32"
     additional_options: dict[str, Any] = Field(default_factory=dict)
-    model_type: Engine = "pytorch"
+    model_type: Engine = Engine.PYTORCH
     single_animal: bool = True
 
     @field_validator("dynamic", mode="before")

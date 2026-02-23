@@ -876,11 +876,13 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
         model_path = self.model_path_edit.text().strip()
+        if model_path == "":
+            raise ValueError("Model path cannot be empty. Please enter a valid path to a DLCLive model file.")
         try:
-            DLCLiveProcessor.get_model_backend(model_path)
+            model_bknd = DLCLiveProcessor.get_model_backend(model_path)
         except Exception as e:
             raise RuntimeError(
-                "Could not determine model backend from path."
+                "Could not determine model backend from path. "
                 "Please ensure the model file is valid and has an appropriate extension "
                 "(.pt, .pth for PyTorch or model directory for TensorFlow)."
             ) from e
@@ -891,7 +893,7 @@ class DLCLiveMainWindow(QMainWindow):
             dynamic=self._config.dlc.dynamic,  # Preserve from config
             resize=self._config.dlc.resize,  # Preserve from config
             precision=self._config.dlc.precision,  # Preserve from config
-            model_type=DLCLiveProcessor.get_model_backend(model_path),
+            model_type=model_bknd,
             # additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
         )
 
@@ -974,13 +976,13 @@ class DLCLiveMainWindow(QMainWindow):
         preselect = self._model_path_store.suggest_selected_file()
 
         dlg = QFileDialog(self, "Select DLCLive model file")
-        dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
+        dlg.setFileMode(QFileDialog.FileMode.AnyFile)
         dlg.setNameFilters(
             [
                 "Model files (*.pt *.pth)",
                 "PyTorch models (*.pt *.pth)",
                 # "TensorFlow models (*.pb)",
-                "All files (*.*)",
+                "TensorFlow model directory (*.*)",
             ]
         )
         dlg.setDirectory(start_dir)
