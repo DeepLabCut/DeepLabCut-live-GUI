@@ -7,6 +7,7 @@ from .config import (
     MultiCameraSettings,
     RecordingSettings,
 )
+from .main import main
 
 __all__ = [
     "ApplicationSettings",
