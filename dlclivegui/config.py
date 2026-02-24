@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 Rotation = Literal[0, 90, 180, 270]
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
 Precision = Literal["FP32", "FP16"]
+ModelType = Literal["pytorch", "tensorflow"]
 
 
 class CameraSettings(BaseModel):
@@ -240,7 +241,7 @@ class DLCProcessorSettings(BaseModel):
     resize: float = Field(default=1.0, gt=0)
     precision: Precision = "FP32"
     additional_options: dict[str, Any] = Field(default_factory=dict)
-    model_type: str = "pytorch"
+    model_type: ModelType = "pytorch"
     single_animal: bool = True
 
     @field_validator("dynamic", mode="before")
