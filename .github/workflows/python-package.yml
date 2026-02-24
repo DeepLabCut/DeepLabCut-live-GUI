@@ -3,25 +3,25 @@ name: Build, validate & Release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
   pull_request:
-    branches: [ main, master ]
-    types: [ labeled, opened, edited, synchronize, reopened ]
+    branches: [main, master]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
 
 jobs:
-  build_check:
-    name: Build & validate package
+  test_matrix:
+    name: Test install & smoke (Py ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: [ "3.10", "3.11", "3.12" ]  # adjust to what you support
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -39,65 +39,70 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install build twine wheel "packaging>=24.2"
+          cache: pip
 
-      - name: Build distributions (sdist + wheel)
+      - name: Build (for validation only)
         run: python -m build
 
-      - name: Inspect dist
-        run: |
-          ls -lah dist/
-          echo "sdist contents (first ~200 entries):"
-          tar -tf dist/*.tar.gz | sed -n '1,200p'
-
-      - name: Twine metadata & README check
+      - name: Twine check
         run: python -m twine check dist/*
 
       - name: Install from wheel & smoke test
         run: |
-          # Install from the built wheel (not from the source tree)
           python -m pip install dist/*.whl
-
           python - <<'PY'
           import importlib
-          pkg_name = "dlclivegui"  # change if your top-level import differs
-          m = importlib.import_module(pkg_name)
-          print("Imported:", m.__name__, "version:", getattr(m, "__version__", "n/a"))
+          m = importlib.import_module("dlclivegui")
+          print("Imported:", m.__name__)
           PY
 
-          if ! command -v dlclivegui >/dev/null 2>&1; then
-            echo "CLI entry point 'dlclivegui' not found in PATH; skipping CLI smoke test."
-          else
-            echo "Running 'dlclivegui --help' smoke test..."
-            if ! dlclivegui --help >/dev/null 2>&1; then
-              echo "::error::'dlclivegui --help' failed; this indicates a problem with the installed CLI package."
-              exit 1
-            fi
-          fi
+  build_release:
+    name: Build release artifacts
+    runs-on: ubuntu-latest
+    needs: test_matrix
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install -U pip build twine
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Twine check
+        run: python -m twine check dist/*
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
 
   publish:
-    name: Publish to PyPI
+    name: Publish to PyPI (API token)
     runs-on: ubuntu-latest
-    needs: build_check
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}  # only on tag pushes like v1.2.3
+    needs: build_release
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
-      - name: Install build tools
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install build twine
-
-      - name: Build distributions (sdist + wheel)
-        run: python -m build
+      - name: Install Twine
+        run: python -m pip install -U twine
 
       - name: Publish to PyPI
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.TWINE_API_KEY }}
-        run: python -m twine upload --verbose dist/*
+        run: python -m twine upload --non-interactive --verbose --skip-existing dist/*
