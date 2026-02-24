@@ -17,4 +17,3 @@ __all__ = [
     "RecordingSettings",
     "main",
 ]
-__version__ = "2.0.0rc0"  # PLACEHOLDER
