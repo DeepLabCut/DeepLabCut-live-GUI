@@ -1007,6 +1007,8 @@ class DLCLiveMainWindow(QMainWindow):
                 if file_path.suffix == ".pb":
                     # For TensorFlow, DLCLive expects a directory, so we pass the parent directory for validation
                     model_check_path = file_path.parent
+                else:
+                    model_check_path = file_path
                 DLCLiveProcessor.get_model_backend(str(model_check_path))
             except FileNotFoundError as e:
                 QMessageBox.warning(self, "Model selection error", str(e))
