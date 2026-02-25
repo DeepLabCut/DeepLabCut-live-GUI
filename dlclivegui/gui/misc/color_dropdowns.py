@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (
     QStyleOptionComboBox,
 )
 
-BGR = tuple[int, int, int]
+from dlclivegui.config import BGR
+
 TEnum = TypeVar("TEnum")
 
 

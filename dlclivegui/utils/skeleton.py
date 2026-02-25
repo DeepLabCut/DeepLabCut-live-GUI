@@ -1,3 +1,5 @@
+"""Skeleton definition, validation, and drawing utilities."""
+
 # dlclivegui/utils/skeleton.py
 from __future__ import annotations
 
@@ -10,6 +12,8 @@ import cv2
 import numpy as np
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator
+
+from dlclivegui.config import BGR, SkeletonColorMode, SkeletonStyle
 
 
 # ############### #
@@ -59,27 +63,6 @@ class SkeletonValidationError(SkeletonLoadError):
 # ################## #
 #  Skeleton display  #
 # ################## #
-
-BGR = tuple[int, int, int]  # (B, G, R) color format
-
-
-class SkeletonColorMode(str, Enum):
-    SOLID = "solid"
-    GRADIENT_KEYPOINTS = "gradient_keypoints"  # use endpoint keypoint colors
-
-
-@dataclass
-class SkeletonStyle:
-    mode: SkeletonColorMode = SkeletonColorMode.SOLID
-    color: BGR = (0, 255, 255)  # default if SOLID
-    thickness: int = 2  # base thickness in pixels
-    gradient_steps: int = 16  # segments per edge when gradient
-    scale_with_zoom: bool = True  # scale thickness with (sx, sy)
-
-    def effective_thickness(self, sx: float, sy: float) -> int:
-        if not self.scale_with_zoom:
-            return max(1, int(self.thickness))
-        return max(1, int(round(self.thickness * min(sx, sy))))
 
 
 class SkeletonStyleModel(BaseModel):
