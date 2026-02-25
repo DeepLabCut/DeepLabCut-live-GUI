@@ -1,11 +1,13 @@
 # dlclivegui/utils/settings_store.py
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
 from ..config import ApplicationSettings
-from .utils import is_model_file
+from ..temp import Engine  # type: ignore # TODO use main package enum when released
 
 logger = logging.getLogger(__name__)
 
@@ -70,124 +72,196 @@ class ModelPathStore:
     def __init__(self, settings: QSettings | None = None):
         self._settings = settings or QSettings("DeepLabCut", "DLCLiveGUI")
 
-    def _norm(self, p: str | None) -> str | None:
+    # -------------------------
+    # Normalization helpers
+    # -------------------------
+    def _as_path(self, p: str | None) -> Path | None:
+        """Best-effort conversion to Path (expand ~, interpret '.' as cwd)."""
         if not p:
             return None
+        s = str(p).strip()
+        if not s:
+            return None
         try:
-            return str(Path(p).expanduser().resolve())
+            pp = Path(s).expanduser()
+            if s in (".", "./"):
+                pp = Path.cwd()
+            return pp
+        except Exception:
+            logger.debug("Failed to parse path: %s", p)
+            return None
+
+    def _norm_existing_dir(self, p: str | None) -> str | None:
+        """Return an absolute, resolved existing directory path, else None."""
+        pp = self._as_path(p)
+        if pp is None:
+            return None
+        try:
+            # If a file was given, use its parent directory
+            if pp.exists() and pp.is_file():
+                pp = pp.parent
+
+            if pp.exists() and pp.is_dir():
+                return str(pp.resolve())
+        except Exception:
+            logger.debug("Failed to normalize directory: %s", p)
+        return None
+
+    def _norm_existing_path(self, p: str | None) -> str | None:
+        """Return an absolute, resolved existing path (file or dir), else None."""
+        pp = self._as_path(p)
+        if pp is None:
+            return None
+        try:
+            if pp.exists():
+                return str(pp.resolve())
         except Exception:
             logger.debug("Failed to normalize path: %s", p)
-            return None
+        return None
 
+    # -------------------------
+    # Load
+    # -------------------------
     def load_last(self) -> str | None:
+        """Return last model path if it still exists and looks usable."""
         val = self._settings.value("dlc/last_model_path")
-        path = self._norm(str(val)) if val else None
+        path = self._norm_existing_path(str(val)) if val else None
         if not path:
             return None
+
         try:
-            return path if is_model_file(path) else None
+            pp = Path(path)
+            # Accept a valid model *file*
+            if pp.is_file() and (Engine.is_pytorch_model_path(pp) or Engine.is_tensorflow_model_dir_path(pp.parent)):
+                return str(pp)
         except Exception:
-            logger.debug("Last model path is not a valid model file: %s", path)
-            return None
+            logger.debug("Last model path not valid/usable: %s", path)
+
+        return None
 
     def load_last_dir(self) -> str | None:
+        """Return last directory if it still exists and is a directory."""
         val = self._settings.value("dlc/last_model_dir")
-        d = self._norm(str(val)) if val else None
-        if not d:
-            return None
-        try:
-            p = Path(d)
-            return str(p) if p.exists() and p.is_dir() else None
-        except Exception:
-            logger.debug("Last model dir is not a valid directory: %s", d)
-            return None
+        d = self._norm_existing_dir(str(val)) if val else None
+        return d
 
+    # -------------------------
+    # Save
+    # -------------------------
     def save_if_valid(self, path: str) -> None:
-        """Save last model *file* if it looks valid, and always save its directory."""
-        path = self._norm(path) or ""
-        if not path:
+        """
+        Save last model path if it looks valid/usable, and always save its directory.
+        - For files: always save parent directory.
+        - For directories: save directory itself if it looks like a TF model dir.
+        """
+        norm = self._norm_existing_path(path)
+        if not norm:
             return
-        try:
-            parent = str(Path(path).parent)
-            self._settings.setValue("dlc/last_model_dir", parent)
 
-            if is_model_file(path):
-                self._settings.setValue("dlc/last_model_path", str(Path(path)))
+        try:
+            p = Path(norm)
+
+            # Always persist a *directory* that is safe for QFileDialog.setDirectory(...)
+            if p.is_dir():
+                model_dir = p
+            else:
+                model_dir = p.parent
+
+            model_dir_norm = self._norm_existing_dir(str(model_dir))
+            if model_dir_norm:
+                self._settings.setValue("dlc/last_model_dir", model_dir_norm)
+
+            # Persist model path if it is a valid model file, or a TF model directory
+            if Engine.is_pytorch_model_path(p):
+                self._settings.setValue("dlc/last_model_path", str(p))
+            elif p.parent.is_dir() and Engine.is_tensorflow_model_dir_path(p.parent):
+                self._settings.setValue("dlc/last_model_path", str(p))
+            # elif p.is_dir() and Engine.is_tensorflow_model_dir_path(p):
+            #     self._settings.setValue("dlc/last_model_path", str(p))
+
         except Exception:
-            logger.debug("Failed to save last model path: %s", path)
-            pass
+            logger.debug("Failed to save model path: %s", path, exc_info=True)
 
     def save_last_dir(self, directory: str) -> None:
-        directory = self._norm(directory) or ""
-        if not directory:
+        d = self._norm_existing_dir(directory)
+        if not d:
             return
         try:
-            p = Path(directory)
-            if p.exists() and p.is_dir():
-                self._settings.setValue("dlc/last_model_dir", str(p))
+            self._settings.setValue("dlc/last_model_dir", d)
         except Exception:
-            pass
+            logger.debug("Failed to save last model dir: %s", d, exc_info=True)
 
+    # -------------------------
+    # Resolve
+    # -------------------------
     def resolve(self, config_path: str | None) -> str:
-        """Resolve the best model path to display in the UI."""
-        config_path = self._norm(config_path)
-        if config_path:
+        """
+        Resolve the best model path to display in the UI.
+        Preference:
+          1) config_path if valid/usable
+          2) persisted last model path if valid/usable
+          3) empty
+        """
+        cfg = self._norm_existing_path(config_path)
+        if cfg:
             try:
-                if is_model_file(config_path):
-                    return config_path
+                p = Path(cfg)
+                if p.is_file() and Engine.is_pytorch_model_path(p):
+                    return cfg
+                if p.is_dir() and Engine.is_tensorflow_model_dir_path(p):
+                    return cfg
             except Exception:
-                logger.debug("Config path is not a valid model file: %s", config_path)
-                pass
+                logger.debug("Config path not usable: %s", cfg)
 
         persisted = self.load_last()
         if persisted:
-            try:
-                if is_model_file(persisted):
-                    return persisted
-            except Exception:
-                pass
+            return persisted
 
         return ""
 
     def suggest_start_dir(self, fallback_dir: str | None = None) -> str:
-        """Pick the best directory to start the file dialog in."""
+        """
+        Pick the best directory to start file dialogs in.
+        Guarantees: returns an existing absolute directory (never '.').
+        """
         # 1) last dir
         last_dir = self.load_last_dir()
         if last_dir:
             return last_dir
 
-        # 2) directory of last valid model file
-        last_file = self.load_last()
-        if last_file:
+        # 2) directory of last valid model path
+        last = self.load_last()
+        if last:
             try:
-                parent = Path(last_file).parent
-                if parent.exists():
-                    return str(parent)
+                p = Path(last)
+                if p.is_file():
+                    parent = self._norm_existing_dir(str(p.parent))
+                    if parent:
+                        return parent
+                elif p.is_dir():
+                    d = self._norm_existing_dir(str(p))
+                    if d:
+                        return d
             except Exception:
-                logger.debug("Failed to get parent of last model file: %s", last_file)
-                pass
+                logger.debug("Failed to derive start dir from last model: %s", last)
 
-        # 3) fallback dir (config.model_directory) if valid
-        if fallback_dir:
-            try:
-                p = Path(fallback_dir).expanduser()
-                if p.exists() and p.is_dir():
-                    return str(p)
-            except Exception:
-                logger.debug("Fallback dir is not a valid directory: %s", fallback_dir)
-                pass
+        # 3) fallback dir (e.g. config.dlc.model_directory)
+        fb = self._norm_existing_dir(fallback_dir)
+        if fb:
+            return fb
 
-        # 4) last resort: home
-        return str(Path.home())
+        # 4) last resort: cwd if exists else home
+        cwd = self._norm_existing_dir(str(Path.cwd()))
+        return cwd or str(Path.home())
 
     def suggest_selected_file(self) -> str | None:
-        """Optional: return a file to preselect if it exists."""
-        last_file = self.load_last()
-        if not last_file:
+        """Return a file to preselect if it exists (only files, not directories)."""
+        last = self.load_last()
+        if not last:
             return None
         try:
-            p = Path(last_file)
+            p = Path(last)
             return str(p) if p.exists() and p.is_file() else None
         except Exception:
-            logger.debug("Failed to check existence of last model file: %s", last_file)
+            logger.debug("Failed to check existence of last model: %s", last)
             return None

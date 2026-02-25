@@ -82,8 +82,6 @@ from .misc.eliding_label import ElidingPathLabel
 from .recording_manager import RecordingManager
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 
-# logging.basicConfig(level=logging.INFO)
-logging.basicConfig(level=logging.DEBUG)  # FIXME @C-Achard set back to INFO for release
 logger = logging.getLogger("DLCLiveGUI")
 
 
@@ -196,11 +194,6 @@ class DLCLiveMainWindow(QMainWindow):
         self._display_timer.timeout.connect(self._update_display_from_pending)
         self._display_timer.start()
 
-        # Show status message if myconfig.json was loaded
-        # FIXME @C-Achard deprecated behavior, remove later
-        if self._config_path and self._config_path.name == "myconfig.json":
-            self.statusBar().showMessage(f"Auto-loaded configuration from {self._config_path}", 5000)
-
         # Validate cameras from loaded config (deferred to allow window to show first)
         # NOTE IMPORTANT (tests/CI): This is scheduled via a QTimer and may fire during pytest-qt teardown.
         QTimer.singleShot(100, self._validate_configured_cameras)
@@ -210,7 +203,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Mitigations for tests/CI:
         #   - Disable this timer by monkeypatching _validate_configured_cameras in GUI tests
         #   - OR monkeypatch/override _show_warning/_show_error to no-op in GUI tests (easiest)
-        #   - OR use a cancellable QTimer attribute and stop() it in closeEven
+        #   - OR use a cancellable QTimer attribute and stop() it in closeEvent
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -882,14 +875,29 @@ class DLCLiveMainWindow(QMainWindow):
         return json.loads(text)
 
     def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
+        model_path = self.model_path_edit.text().strip()
+        if Path(model_path).exists() and Path(model_path).suffix == ".pb":
+            # IMPORTANT NOTE: DLClive expects a directory for TensorFlow models,
+            # so if user selects a .pb file, we should pass the parent directory to DLCLive
+            model_path = str(Path(model_path).parent)
+        if model_path == "":
+            raise ValueError("Model path cannot be empty. Please enter a valid path to a DLCLive model file.")
+        try:
+            model_bknd = DLCLiveProcessor.get_model_backend(model_path)
+        except Exception as e:
+            raise RuntimeError(
+                "Could not determine model backend from path. "
+                "Please ensure the model file is valid and has an appropriate extension "
+                "(.pt, .pth for PyTorch or model directory for TensorFlow)."
+            ) from e
         return DLCProcessorSettings(
-            model_path=self.model_path_edit.text().strip(),
+            model_path=model_path,
             model_directory=self._config.dlc.model_directory,  # Preserve from config
             device=self._config.dlc.device,  # Preserve from config
             dynamic=self._config.dlc.dynamic,  # Preserve from config
             resize=self._config.dlc.resize,  # Preserve from config
             precision=self._config.dlc.precision,  # Preserve from config
-            model_type="pytorch",  # FIXME @C-Achard hardcoded for now, we should allow tf models too
+            model_type=model_bknd,
             # additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
         )
 
@@ -975,10 +983,9 @@ class DLCLiveMainWindow(QMainWindow):
         dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
         dlg.setNameFilters(
             [
-                "Model files (*.pt *.pth *.pb)",
+                "Model files (*.pt *.pth)",
                 "PyTorch models (*.pt *.pth)",
                 "TensorFlow models (*.pb)",
-                "All files (*.*)",
             ]
         )
         dlg.setDirectory(start_dir)
@@ -991,7 +998,25 @@ class DLCLiveMainWindow(QMainWindow):
             selected = dlg.selectedFiles()
             if not selected:
                 return
-            file_path = selected[0]
+            file_path = Path(selected[0]).expanduser()
+            if not file_path.exists():
+                QMessageBox.warning(self, "File not found", f"The selected file does not exist:\n{file_path}")
+                return
+
+            try:
+                if file_path.suffix == ".pb":
+                    # For TensorFlow, DLCLive expects a directory, so we pass the parent directory for validation
+                    model_check_path = file_path.parent
+                else:
+                    model_check_path = file_path
+                DLCLiveProcessor.get_model_backend(str(model_check_path))
+            except FileNotFoundError as e:
+                QMessageBox.warning(self, "Model selection error", str(e))
+                return
+            except ValueError as e:
+                QMessageBox.warning(self, "Model selection error", str(e))
+                return
+            file_path = str(file_path)
             self.model_path_edit.setText(file_path)
 
             # Persist model path + directory

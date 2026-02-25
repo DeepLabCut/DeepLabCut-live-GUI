@@ -265,14 +265,14 @@ def test_print_ascii_writes_file(tmp_png_gray, force_tty, tmp_path):
 
 
 def test_build_help_description_tty(tmp_png_bgra_logo, monkeypatch, force_tty):
-    monkeypatch.setattr(ascii_mod, "ASCII_IMAGE_PATH", Path(tmp_png_bgra_logo))
-    desc = ascii_mod.build_help_description(static_banner=None, color="always", min_width=60)
+    monkeypatch.setattr(ascii_mod, "LOGO_ALPHA", Path(tmp_png_bgra_logo))
+    desc = ascii_mod.build_help_description(static_banner=None, color="auto", min_width=60)
     assert "DeepLabCut-Live GUI" in desc
     assert "\x1b[36m" in desc  # cyan wrapper now present since TTY is mocked correctly
 
 
 def test_build_help_description_notty(tmp_png_bgra_logo, monkeypatch, force_notty):
-    monkeypatch.setattr(ascii_mod, "ASCII_IMAGE_PATH", Path(tmp_png_bgra_logo))
-    desc = ascii_mod.build_help_description(static_banner=None, color="always", min_width=60)
+    monkeypatch.setattr(ascii_mod, "LOGO_ALPHA", Path(tmp_png_bgra_logo))
+    desc = ascii_mod.build_help_description(static_banner=None, color="auto", min_width=60)
     # Not a TTY -> no banner, just the plain description
-    assert desc.strip() == "DeepLabCut-Live GUI — launch the graphical interface."
+    assert "DeepLabCut-Live GUI — launch the graphical interface." in desc

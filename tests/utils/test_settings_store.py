@@ -98,15 +98,29 @@ def test_qt_settings_store_full_config_snapshot_invalid_returns_none(monkeypatch
 # -----------------------------
 # ModelPathStore helpers
 # -----------------------------
-def test_model_path_store_norm_handles_none_and_invalid(monkeypatch):
+def test_model_path_store_norm_handles_none_and_invalid(tmp_path: Path):
     s = InMemoryQSettings()
     mps = store.ModelPathStore(settings=s)
 
-    assert mps._norm(None) is None  # type: ignore[arg-type]
+    # None should normalize to None
+    assert mps._norm_existing_path(None) is None  # type: ignore[arg-type]
+    assert mps._norm_existing_dir(None) is None  # type: ignore[arg-type]
 
-    # Force Path.expanduser() to raise by passing something weird? Hard to do reliably.
-    # Instead just assert normal path expands/returns str.
-    assert mps._norm("~/somewhere") is not None
+    # Existing dir should normalize to an absolute path
+    d = tmp_path / "models"
+    d.mkdir()
+    norm_dir = mps._norm_existing_dir(str(d))
+    assert norm_dir is not None
+    assert Path(norm_dir).exists()
+    assert Path(norm_dir).is_dir()
+
+    # Existing file should normalize as existing path
+    f = d / "net.pt"
+    f.write_text("x")
+    norm_file = mps._norm_existing_path(str(f))
+    assert norm_file is not None
+    assert Path(norm_file).exists()
+    assert Path(norm_file).is_file()
 
 
 # -----------------------------
@@ -221,19 +235,21 @@ def test_model_path_store_resolve_prefers_config_path_when_valid(tmp_path: Path)
     assert mps.resolve(str(model)) == str(model)
 
 
-def test_model_path_store_resolve_falls_back_to_persisted(tmp_path: Path):
+def test_model_path_store_resolve_falls_back_to_persisted_tf_dir(tmp_path: Path):
     settings = InMemoryQSettings()
     mps = store.ModelPathStore(settings=settings)
 
-    persisted = tmp_path / "persisted.pb"
-    persisted.write_text("x")
-    settings.setValue("dlc/last_model_path", str(persisted))
+    tf_dir = tmp_path / "tf_model"
+    tf_dir.mkdir()
+    (tf_dir / "pose_cfg.yaml").write_text("cfg: 1\n")
+    (tf_dir / "graph.pb").write_text("pb")
 
-    # invalid config path
+    settings.setValue("dlc/last_model_path", str(tf_dir / "graph.pb"))
+
     bad = tmp_path / "notamodel.onnx"
     bad.write_text("x")
 
-    assert mps.resolve(str(bad)) == str(persisted)
+    assert mps.resolve(str(bad)) == str(tf_dir / "graph.pb")
 
 
 def test_model_path_store_resolve_returns_empty_when_nothing_valid(tmp_path: Path):
@@ -289,7 +305,12 @@ def test_model_path_store_suggest_start_dir_falls_back_to_home(tmp_path: Path, m
     fake_home = tmp_path / "home"
     fake_home.mkdir()
 
+    # Make cwd "invalid" so suggest_start_dir can't use it
+    fake_cwd = tmp_path / "does_not_exist"
+    assert not fake_cwd.exists()
+
     monkeypatch.setattr(store.Path, "home", lambda: fake_home)
+    monkeypatch.setattr(store.Path, "cwd", lambda: fake_cwd)
 
     assert mps.suggest_start_dir(fallback_dir=None) == str(fake_home)
 

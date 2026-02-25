@@ -219,9 +219,14 @@ def test_add_camera_populates_working_settings(dialog_unit, qtbot):
     Add camera should append a new CameraSettings into _working_settings.
     We directly call _on_scan_result to populate available list deterministically.
     """
-    dialog_unit._on_scan_result([DetectedCamera(index=2, label="ExtraCam2")])
-    dialog_unit.available_cameras_list.setCurrentRow(0)
+    from dlclivegui.gui.camera_config.loaders import CameraScanState
 
+    dialog_unit._set_scan_state(CameraScanState.RUNNING, message="Test scan running")
+    dialog_unit._on_scan_result([DetectedCamera(label="ExtraCam2", index=2)])
+    with qtbot.waitSignal(dialog_unit.scan_finished, timeout=1000):
+        pass
+
+    dialog_unit.available_cameras_list.setCurrentRow(0)
     qtbot.mouseClick(dialog_unit.add_camera_btn, Qt.LeftButton)
 
     added = dialog_unit._working_settings.cameras[-1]
