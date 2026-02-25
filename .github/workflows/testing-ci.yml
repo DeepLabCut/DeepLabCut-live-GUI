@@ -68,9 +68,10 @@ jobs:
           python -m coverage report -m >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload coverage to Codecov
+      - name: Upload coverage to Codecov # NOTE : may need to disable this if token is not setup
         if: github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'master')
         uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
-          fail_ci_if_error: true
+          fail_ci_if_error: false
