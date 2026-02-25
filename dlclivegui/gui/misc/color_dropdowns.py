@@ -16,7 +16,7 @@ from typing import TypeVar
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtGui import QBrush, QColor, QIcon, QImage, QLinearGradient, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QSizePolicy,
@@ -26,6 +26,26 @@ from PySide6.QtWidgets import (
 
 BGR = tuple[int, int, int]
 TEnum = TypeVar("TEnum")
+
+
+def make_gradient_swatch_icon(*, width: int = 40, height: int = 16, border: int = 1) -> QIcon:
+    """Small gradient swatch icon for 'Gradient' mode."""
+    pix = QPixmap(width, height)
+    pix.fill(Qt.transparent)
+    p = QPainter(pix)
+
+    # border/background
+    p.fillRect(0, 0, width, height, Qt.black)
+    p.fillRect(border, border, width - 2 * border, height - 2 * border, Qt.white)
+
+    # inner gradient (blue -> red, arbitrary but clearly "gradient")
+    grad = QLinearGradient(border + 1, 0, width - (border + 1), 0)
+    grad.setColorAt(0.0, QColor(0, 140, 255))
+    grad.setColorAt(1.0, QColor(255, 80, 0))
+    p.fillRect(border + 1, border + 1, width - 2 * (border + 1), height - 2 * (border + 1), QBrush(grad))
+
+    p.end()
+    return QIcon(pix)
 
 
 # -----------------------------------------------------------------------------
@@ -413,3 +433,114 @@ def get_cmap_name_from_combo(combo: QComboBox, *, fallback: str = "viridis") -> 
         return data
     text = combo.currentText().strip()
     return text or fallback
+
+
+# -----------------------------------------------------------------------------
+# Skeleton color combo helpers (enum-based + gradient)
+# -----------------------------------------------------------------------------
+def get_skeleton_style_from_combo(
+    combo: QComboBox,
+    *,
+    fallback_mode: str = "solid",
+    fallback_color: BGR | None = None,
+) -> tuple[str, BGR | None]:
+    data = combo.currentData()
+    if isinstance(data, dict):
+        mode = data.get("mode", fallback_mode)
+        color = data.get("color", fallback_color)
+        return mode, color
+    return fallback_mode, fallback_color
+
+
+def make_skeleton_color_combo(
+    colors_enum: Iterable[TEnum],
+    *,
+    current_mode: str = "solid",
+    current_color: BGR | None = (0, 255, 255),
+    include_icons: bool = True,
+    tooltip: str = "Select skeleton line color or Gradient (from keypoints)",
+    sizing: ComboSizing | None = None,
+) -> QComboBox:
+    combo = ShrinkCurrentWidePopupComboBox(sizing=sizing) if sizing is not None else QComboBox()
+    combo.setToolTip(tooltip)
+    populate_skeleton_color_combo(
+        combo,
+        colors_enum,
+        current_mode=current_mode,
+        current_color=current_color,
+        include_icons=include_icons,
+    )
+    if isinstance(combo, ShrinkCurrentWidePopupComboBox):
+        combo.update_shrink_width()
+    return combo
+
+
+def set_skeleton_combo_from_style(combo: QComboBox, *, mode: str, color: BGR | None) -> None:
+    """Select the best matching item."""
+    # Gradient
+    if mode == "gradient_keypoints":
+        combo.findData({"mode": "gradient_keypoints"})  # may fail due to dict identity
+        # robust fallback: scan
+        for i in range(combo.count()):
+            d = combo.itemData(i)
+            if isinstance(d, dict) and d.get("mode") == "gradient_keypoints":
+                combo.setCurrentIndex(i)
+                return
+        return
+
+    # Solid with color
+    if color is not None:
+        for i in range(combo.count()):
+            d = combo.itemData(i)
+            if isinstance(d, dict) and d.get("mode") == "solid" and tuple(d.get("color")) == tuple(color):
+                combo.setCurrentIndex(i)
+                return
+
+    # Default: first solid entry
+    for i in range(combo.count()):
+        d = combo.itemData(i)
+        if isinstance(d, dict) and d.get("mode") == "solid":
+            combo.setCurrentIndex(i)
+            return
+
+
+def populate_skeleton_color_combo(
+    combo: QComboBox,
+    colors_enum: Iterable[TEnum],
+    *,
+    current_mode: str = "solid",
+    current_color: BGR | None = None,
+    include_icons: bool = True,
+    gradient_label: str = "Gradient (from keypoints)",
+) -> None:
+    """
+    Populate combo with:
+      - Gradient mode
+      - Solid colors (from enum values BGR)
+    ItemData is a dict with keys:
+      - mode: 'solid' or 'gradient_keypoints'
+      - color: optional BGR for solid
+    """
+    combo.blockSignals(True)
+    combo.clear()
+
+    # 1) Gradient option
+    if include_icons:
+        combo.addItem(make_gradient_swatch_icon(), gradient_label, {"mode": "gradient_keypoints"})
+    else:
+        combo.addItem(gradient_label, {"mode": "gradient_keypoints"})
+
+    # 2) Solid colors
+    for enum_item in colors_enum:
+        bgr: BGR = enum_item.value
+        name = getattr(enum_item, "name", str(enum_item)).title()
+        data = {"mode": "solid", "color": bgr}
+        if include_icons:
+            combo.addItem(make_bgr_swatch_icon(bgr), name, data)
+        else:
+            combo.addItem(name, data)
+
+    # Select current
+    set_skeleton_combo_from_style(combo, mode=current_mode, color=current_color)
+
+    combo.blockSignals(False)
