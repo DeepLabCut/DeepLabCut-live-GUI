@@ -708,7 +708,6 @@ def test_open_persists_cti_load_diagnostics_all_success(patch_gentl_sdk, gentl_s
     ns = settings.properties["gentl"]
     assert ns["cti_files"] == [str(c1), str(c2)]
     assert ns["cti_files_loaded"] == [str(c1), str(c2)]
-    # If dict:
     assert ns["cti_files_failed"] == []
 
     be.close()

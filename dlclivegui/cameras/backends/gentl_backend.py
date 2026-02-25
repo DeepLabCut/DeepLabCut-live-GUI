@@ -399,9 +399,9 @@ class GenTLCameraBackend(CameraBackend):
             harvester.update()
         except Exception as exc:
             LOG.error(
-                "Harvester.update() failed during discovery: %s "
-                "Device list not usable, treating as discovery failure."
-                "CTIs loaded before failure : %s",
+                "Harvester.update() failed during discovery: %s"
+                " Device list not usable, treating as discovery failure."
+                " CTIs loaded before failure : %s",
                 exc,
                 loaded,
             )
