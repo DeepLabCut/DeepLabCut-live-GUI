@@ -57,14 +57,18 @@ jobs:
         run: |
           tox -q | tee tox-output.log
 
+
       - name: Append Coverage Summary to Job
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         shell: bash
         run: |
           echo "## Coverage Summary" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          # Pull the coverage table from tox output:
-          sed -n '/^Name\s\+Stmts\s\+Miss\s\+Cover/,$p' tox-output.log >> "$GITHUB_STEP_SUMMARY" || true
+          awk '
+            /^Name[[:space:]]+Stmts[[:space:]]+Miss/ {p=1}
+            p==1 {print}
+            /^Coverage XML written to file/ {exit}
+          ' tox-output.log >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage to Codecov
