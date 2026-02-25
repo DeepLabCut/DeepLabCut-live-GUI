@@ -29,15 +29,18 @@ class CTIDiscoveryDiagnostics:
     candidates: list[str] = field(default_factory=list)
     rejected: list[tuple[str, str]] = field(default_factory=list)  # (path, reason)
 
-    def summarize(self) -> str:
+    def summarize(self, redact_env: bool = True) -> str:
         lines = []
         if self.explicit_files:
             lines.append(f"Explicit CTI file(s): {self.explicit_files}")
         if self.glob_patterns:
             lines.append(f"CTI glob pattern(s): {self.glob_patterns}")
         if self.env_vars_used:
-            # Keep raw env var values in summary; you can redact if needed
-            lines.append(f"Env vars: {self.env_vars_used}")
+            if redact_env:
+                redacted_env = {k: ("<redacted>" if v else "<empty>") for k, v in self.env_vars_used.items()}
+                lines.append(f"Env vars used: {redacted_env}")
+            else:
+                lines.append(f"Env vars used: {self.env_vars_used}")
         if self.env_paths_expanded:
             lines.append(f"Env-derived path entries: {self.env_paths_expanded}")
         if self.extra_dirs:
@@ -66,7 +69,7 @@ def _normalize_path(p: str) -> str:
     """
     pp = Path(os.path.expandvars(os.path.expanduser(p)))
     try:
-        # resolve(False) avoids raising if parts don't exist (py>=3.9)
+        # resolve(strict=False) will resolve as much as possible without raising if the path doesn't exist
         return str(pp.resolve(strict=False))
     except Exception:
         return str(pp.absolute())
@@ -98,6 +101,136 @@ def _split_env_paths(raw: str) -> list[str]:
     return out
 
 
+_GLOB_META_CHARS = set("*?[")
+
+
+def _pattern_has_glob(s: str) -> bool:
+    return any(ch in s for ch in _GLOB_META_CHARS)
+
+
+def _pattern_static_prefix(pattern: str) -> str:
+    """
+    Return the substring up to the first glob metacharacter (* ? [).
+    This is used as a "base path" to constrain globbing.
+    """
+    for i, ch in enumerate(pattern):
+        if ch in _GLOB_META_CHARS:
+            return pattern[:i]
+    return pattern
+
+
+def _is_path_within(child: Path, parent: Path) -> bool:
+    """
+    Cross-version safe "is_relative_to" implementation.
+    """
+    try:
+        child.relative_to(parent)
+        return True
+    except Exception:
+        return False
+
+
+def _validate_glob_pattern(
+    pattern: str,
+    *,
+    allowed_roots: Sequence[str] | None = None,
+    require_cti_suffix: bool = True,
+) -> tuple[bool, str | None]:
+    """
+    Validate user-supplied glob patterns to reduce filesystem probing risk.
+
+    Rules (conservative but practical):
+    - Must expand (~ and env vars) into an absolute-ish location (prefix must exist as a path parent)
+    - Must not include '..' path traversal segments
+    - Must have a non-trivial static prefix (not empty / not root-only like '/' or 'C:\\')
+    - Optionally restrict to allowed roots (directories)
+    - Optionally require that the pattern looks like it targets .cti files
+    """
+    if not pattern or not str(pattern).strip():
+        return False, "empty glob pattern"
+
+    expanded = os.path.expandvars(os.path.expanduser(pattern)).strip()
+
+    # Basic traversal guard
+    parts = Path(expanded).parts
+    if any(p == ".." for p in parts):
+        return False, "glob pattern contains '..' traversal"
+
+    if require_cti_suffix:
+        # Encourage patterns that clearly target CTIs, e.g. '*.cti' or 'foo*.cti'
+        lower = expanded.lower()
+        if ".cti" not in lower:
+            return False, "glob pattern does not target .cti files"
+
+    # Compute static prefix up to first glob meta-char
+    prefix = _pattern_static_prefix(expanded).strip()
+    if not prefix:
+        return False, "glob pattern has no static base path"
+
+    prefix_path = Path(prefix)
+
+    # If prefix is a file-like thing, use its parent as base; otherwise use itself.
+    # Example: "C:\\dir\\*.cti" -> base = "C:\\dir"
+    base = prefix_path.parent if prefix_path.suffix else prefix_path
+
+    # Prevent overly broad patterns like "/" or "C:\\"
+    try:
+        resolved_base = base.resolve(strict=False)
+    except Exception:
+        resolved_base = base
+
+    # If base is a drive root or filesystem root, reject
+    # - POSIX: "/" -> parent == itself
+    # - Windows: "C:\\" -> parent often == itself
+    try:
+        if resolved_base == resolved_base.parent:
+            return False, "glob pattern base is filesystem root (too broad)"
+    except Exception:
+        # If we can't determine, err on conservative side
+        return False, "glob pattern base could not be validated"
+
+    # Optional allowlist enforcement
+    if allowed_roots:
+        ok = False
+        for root in allowed_roots:
+            try:
+                r = Path(_normalize_path(root))
+            except Exception:
+                r = Path(root)
+            try:
+                r_resolved = r.resolve(strict=False)
+            except Exception:
+                r_resolved = r
+
+            try:
+                b_resolved = resolved_base.resolve(strict=False)
+            except Exception:
+                b_resolved = resolved_base
+
+            if _is_path_within(b_resolved, r_resolved):
+                ok = True
+                break
+        if not ok:
+            return False, "glob pattern base is outside allowed roots"
+
+    return True, None
+
+
+def _glob_limited(pattern: str, *, max_hits: int = 200) -> list[str]:
+    """
+    Iterate matches with an upper bound to prevent expensive scans.
+    Uses iglob to avoid materializing huge lists.
+    """
+    out: list[str] = []
+    # Note: recursive globbing via "**" typically requires recursive=True.
+    # We intentionally keep recursive off here to reduce scanning.
+    for hit in glob.iglob(pattern, recursive=False):
+        out.append(hit)
+        if len(out) >= max_hits:
+            break
+    return out
+
+
 def discover_cti_files(
     *,
     cti_file: str | None = None,
@@ -109,6 +242,9 @@ def discover_cti_files(
     recursive_env_search: bool = False,
     recursive_extra_search: bool = False,
     must_exist: bool = True,
+    allow_globs: bool = True,
+    root_globs_allowed: Sequence[str] | None = None,
+    max_glob_hits_per_pattern: int = 200,
 ) -> tuple[list[str], CTIDiscoveryDiagnostics]:
     """
     Discover candidate GenTL producer (.cti) files from multiple sources.
@@ -117,7 +253,11 @@ def discover_cti_files(
         (candidates, diagnostics)
 
     Notes:
-    - If must_exist=True (recommended), only existing files are returned.
+    - If must_exist=True (recommended), only existing files are returned at duscovery time.
+        - Best-effort checks, files may still be missing at load time (e.g. deleted after discovery).
+        - Callers should handle load-time errors gracefully regardless.
+        - Glob patterns can enumerate filesystem entries is user-controlled.
+          Use allow_globs=False to disable globbing and treat patterns as literal paths.
     - Env vars are parsed as path lists; each entry may be a directory OR a .cti file.
     """
     diag = CTIDiscoveryDiagnostics()
@@ -165,9 +305,22 @@ def discover_cti_files(
 
     # Process glob patterns
     for pat in patterns:
-        # Normalize only for readability; glob needs pattern semantics, so we expanduser/vars but keep globbing
         expanded_pat = os.path.expandvars(os.path.expanduser(pat))
-        for hit in glob.glob(expanded_pat):
+
+        if not allow_globs:
+            rejected.append((_normalize_path(expanded_pat), "glob patterns disabled"))
+            continue
+
+        ok, reason = _validate_glob_pattern(
+            expanded_pat,
+            allowed_roots=root_globs_allowed,
+            require_cti_suffix=True,
+        )
+        if not ok:
+            rejected.append((_normalize_path(expanded_pat), f"glob pattern rejected: {reason}"))
+            continue
+
+        for hit in _glob_limited(expanded_pat, max_hits=max_glob_hits_per_pattern):
             _add_candidate(hit, f"glob:{pat}")
 
     # Process env var entries

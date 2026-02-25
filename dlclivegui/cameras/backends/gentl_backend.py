@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import ClassVar
 
 import cv2
@@ -33,7 +34,7 @@ class GenTLCameraBackend(CameraBackend):
     """Capture frames from GenTL-compatible devices via Harvesters."""
 
     OPTIONS_KEY: ClassVar[str] = "gentl"
-    _DEFAULT_CTI_PATTERNS: tuple[str, ...] = (
+    _LEGACY_DEFAULT_CTI_PATTERNS: tuple[str, ...] = (  # Windows-only, ignored on other platforms
         r"C:\\Program Files\\The Imaging Source Europe GmbH\\IC4 GenTL Driver for USB3Vision Devices *\\bin\\*.cti",
         r"C:\\Program Files\\The Imaging Source Europe GmbH\\TIS Grabber\\bin\\win64_x64\\*.cti",
         r"C:\\Program Files\\The Imaging Source Europe GmbH\\TIS Camera SDK\\bin\\win64_x64\\*.cti",
@@ -194,11 +195,33 @@ class GenTLCameraBackend(CameraBackend):
                 except Exception:
                     pass
 
+    @staticmethod
+    def _cti_preflight(path: str) -> tuple[bool, str | None]:
+        """
+        Best-effort check right before calling Harvester.add_file().
+        Still subject to race conditions (e.g. file deleted after this check),
+        but helps diagnose common issues like missing files or permission errors more gracefully and early.
+        Returns (ok, reason_if_not_ok).
+        """
+        p = Path(str(path))
+        try:
+            if not p.exists():
+                return False, "missing at load time"
+            if not p.is_file():
+                return False, "not a file at load time"
+            # Optional: try opening for read to detect permission/locking issues early
+            with p.open("rb"):
+                pass
+            return True, None
+        except PermissionError:
+            return False, "permission denied at load time"
+        except OSError as e:
+            return False, f"os error at load time: {e}"
+
     def _resolve_cti_files_for_settings(self) -> list[str]:
         """
         Resolve CTI files to load.
 
-        Option B policy (source marker + fallback):
         - User override (properties.gentl.cti_file/cti_files OR legacy properties.cti_file/cti_files):
             * strict: must exist, otherwise raise
             * source = "user"
@@ -208,6 +231,8 @@ class GenTLCameraBackend(CameraBackend):
             * source = "auto"
         - Default: discovery (env + configured patterns/dirs) => source = "auto"
 
+        NOTE : legacy properties.cti_file(s) always take strict precedence as user override if present,
+        even if source marker says "auto".
         Never raise just because multiple CTIs exist.
         Raise only when none are found (after allowed fallback).
         """
@@ -328,7 +353,7 @@ class GenTLCameraBackend(CameraBackend):
 
         candidates, diag = cti_finder.discover_cti_files(
             include_env=True,
-            cti_search_paths=list(cls._DEFAULT_CTI_PATTERNS),
+            cti_search_paths=list(cls._LEGACY_DEFAULT_CTI_PATTERNS),
             must_exist=True,
         )
 
@@ -350,12 +375,18 @@ class GenTLCameraBackend(CameraBackend):
         failures: list[tuple[str, str]] = []
 
         for cti in cti_files:
+            ok, reason = cls._cti_preflight(cti)
+            if not ok:
+                failures.append((str(cti), reason or "Check failed"))
+                LOG.warning("Skipping CTI '%s' during discovery preflight: %s", cti, reason)
+                continue
+
             try:
                 harvester.add_file(cti)
                 loaded.append(cti)
             except Exception as exc:
-                failures.append((cti, str(exc)))
-                LOG.warning("Failed to load CTI '%s': %s", cti, exc)
+                failures.append((str(cti), str(exc)))
+                LOG.warning("Failed to load CTI '%s' during discovery: %s", cti, exc)
 
         if not loaded:
             try:
@@ -367,12 +398,19 @@ class GenTLCameraBackend(CameraBackend):
         try:
             harvester.update()
         except Exception as exc:
-            LOG.warning("Harvester.update() failed during discovery: %s", exc)
+            LOG.error(
+                "Harvester.update() failed during discovery: %s "
+                "Device list not usable, treating as discovery failure."
+                "CTIs loaded before failure : %s",
+                exc,
+                loaded,
+            )
             try:
                 harvester.reset()
             except Exception:
                 pass
-            return None, loaded, diag
+            # Update failure
+            return None, [], diag
 
         return harvester, loaded, diag
 
@@ -403,11 +441,17 @@ class GenTLCameraBackend(CameraBackend):
         failed: list[tuple[str, str]] = []
 
         for cti in cti_files:
+            ok, reason = self._cti_preflight(cti)
+            if not ok:
+                failed.append((str(cti), reason or "preflight failed"))
+                LOG.warning("Skipping CTI '%s': %s", cti, reason)
+                continue
+
             try:
                 self._harvester.add_file(cti)
                 loaded.append(cti)
             except Exception as exc:
-                failed.append((cti, str(exc)))
+                failed.append((str(cti), str(exc)))
                 LOG.warning("Failed to load CTI '%s': %s", cti, exc)
 
         # Persist diagnostics for UI / debugging
