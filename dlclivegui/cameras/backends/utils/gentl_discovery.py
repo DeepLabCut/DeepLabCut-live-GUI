@@ -61,15 +61,35 @@ def cti_files_as_list(value) -> list[str]:
     return [s] if s else []
 
 
+def _expand_user_and_env(value: str) -> str:
+    """
+    Expand environment variables and '~' in a string path/pattern.
+    pathlib does not expand env vars, so we use os.path.expandvars for that part.
+    """
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    # Expand env vars first (e.g., %VAR% / $VAR), then user home (~)
+    s = os.path.expandvars(s)
+    try:
+        s = str(Path(s).expanduser())
+    except Exception:
+        # If expanduser fails for some reason, keep the env-expanded string
+        pass
+    return s
+
+
 def _normalize_path(p: str) -> str:
     """
     Normalize a filesystem path in a cross-platform way:
     - expands ~ and environment variables
     - resolves to absolute where possible (without requiring existence)
     """
-    pp = Path(os.path.expandvars(os.path.expanduser(p)))
+    expanded = _expand_user_and_env(p)
+    pp = Path(expanded)
     try:
-        # resolve(strict=False) will resolve as much as possible without raising if the path doesn't exist
         return str(pp.resolve(strict=False))
     except Exception:
         return str(pp.absolute())
@@ -99,6 +119,11 @@ def _split_env_paths(raw: str) -> list[str]:
         if s:
             out.append(s)
     return out
+
+
+def _dedup_key(path_str: str) -> str:
+    # Windows filesystem is case-insensitive by default -> normalize key case
+    return path_str.casefold() if os.name == "nt" else path_str
 
 
 _GLOB_META_CHARS = set("*?[")
@@ -149,7 +174,7 @@ def _validate_glob_pattern(
     if not pattern or not str(pattern).strip():
         return False, "empty glob pattern"
 
-    expanded = os.path.expandvars(os.path.expanduser(pattern)).strip()
+    expanded = _expand_user_and_env(pattern).strip()
 
     # Basic traversal guard
     parts = Path(expanded).parts
@@ -291,7 +316,8 @@ def discover_cti_files(
 
     def _add_candidate(path: str, reason_ctx: str) -> None:
         norm = _normalize_path(path)
-        if must_exist and not Path(norm).is_file():
+        p = Path(norm)
+        if must_exist and not p.is_file():
             rejected.append((norm, f"not a file ({reason_ctx})"))
             return
         if not norm.lower().endswith(".cti"):
@@ -305,7 +331,7 @@ def discover_cti_files(
 
     # Process glob patterns
     for pat in patterns:
-        expanded_pat = os.path.expandvars(os.path.expanduser(pat))
+        expanded_pat = _expand_user_and_env(pat)
 
         if not allow_globs:
             rejected.append((_normalize_path(expanded_pat), "glob patterns disabled"))
@@ -350,7 +376,7 @@ def discover_cti_files(
     seen = set()
     unique: list[str] = []
     for c in candidates:
-        key = c.lower() if os.name == "nt" else c  # Windows case-insensitive
+        key = _dedup_key(c)
         if key in seen:
             continue
         seen.add(key)
