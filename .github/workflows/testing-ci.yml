@@ -64,7 +64,7 @@ jobs:
           echo "## Coverage Summary" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           # Pull the coverage table from tox output:
-          sed -n '/^Name\s\+Stmts\s\+Miss\s\+Cover/,$p' tox-output.txt >> "$GITHUB_STEP_SUMMARY" || true
+          sed -n '/^Name\s\+Stmts\s\+Miss\s\+Cover/,$p' tox-output.log >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage to Codecov
@@ -72,5 +72,5 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage.py312.xml
+          files: ./.coverage.py312.xml
           fail_ci_if_error: true
