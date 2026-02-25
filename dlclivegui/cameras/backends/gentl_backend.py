@@ -39,6 +39,11 @@ class GenTLCameraBackend(CameraBackend):
         r"C:\\Program Files\\The Imaging Source Europe GmbH\\TIS Camera SDK\\bin\\win64_x64\\*.cti",
         r"C:\\Program Files (x86)\\The Imaging Source Europe GmbH\\TIS Grabber\\bin\\win64_x64\\*.cti",
     )
+    # Source marker stored in properties["gentl"]["cti_files_source"]
+    # auto : persisted by auto-discovery (env vars, patterns, etc.). Cache, may be stale, re-discover if missing.
+    # user : explicitly set by user via properties.gentl.cti_file(s). Cache, strict raise if missing.
+    _CTI_FILES_SOURCE_AUTO: ClassVar[str] = "auto"
+    _CTI_FILES_SOURCE_USER: ClassVar[str] = "user"
 
     def __init__(self, settings):
         super().__init__(settings)
@@ -129,6 +134,8 @@ class GenTLCameraBackend(CameraBackend):
         self._acquirer = None
         self._device_label: str | None = None
 
+        self._cti_files_source_used: str | None = None
+
     @property
     def actual_resolution(self) -> tuple[int, int] | None:
         if self._actual_width and self._actual_height:
@@ -191,16 +198,27 @@ class GenTLCameraBackend(CameraBackend):
         """
         Resolve CTI files to load.
 
-        Policy:
-        - If the user explicitly provides ctis (cti_files / cti_file), use only those.
-        - Otherwise, discover all CTIs (env vars + configured patterns/dirs) and return all.
-        - Never raise just because multiple CTIs exist.
-        - Raise only when none are found.
+        Option B policy (source marker + fallback):
+        - User override (properties.gentl.cti_file/cti_files OR legacy properties.cti_file/cti_files):
+            * strict: must exist, otherwise raise
+            * source = "user"
+        - Auto-persisted cache (properties.gentl.cti_files_source == "auto"):
+            * try persisted ctis first
+            * if stale/missing, fall back to discovery
+            * source = "auto"
+        - Default: discovery (env + configured patterns/dirs) => source = "auto"
+
+        Never raise just because multiple CTIs exist.
+        Raise only when none are found (after allowed fallback).
         """
         props = self.settings.properties if isinstance(self.settings.properties, dict) else {}
         ns = props.get(self.OPTIONS_KEY, {})
         if not isinstance(ns, dict):
             ns = {}
+
+        # Read source marker
+        source = ns.get("cti_files_source")
+        source = str(source).strip().lower() if source is not None else None
 
         # Explicit CTIs (namespace first, then legacy top-level)
         ns_cti_files = ns.get("cti_files")
@@ -208,23 +226,12 @@ class GenTLCameraBackend(CameraBackend):
         legacy_cti_files = props.get("cti_files")
         legacy_cti_file = props.get("cti_file")
 
-        # 1) If user provided explicit list/file in namespace, use that only
-        if ns_cti_files or ns_cti_file:
-            candidates, diag = cti_finder.discover_cti_files(
-                cti_file=str(ns_cti_file) if ns_cti_file else None,
-                cti_files=cti_finder.cti_files_as_list(ns_cti_files) if ns_cti_files else None,
-                include_env=False,
-                must_exist=True,
-            )
-            if not candidates:
-                raise RuntimeError(
-                    "No valid GenTL producer (.cti) found from properties.gentl.cti_file/cti_files.\n\n"
-                    f"Discovery details:\n{diag.summarize()}"
-                )
-            return list(candidates)
-
-        # 2) If user provided explicit list/file in legacy top-level, use that only
+        # ------------------------------------------------------------
+        # 1) Legacy explicit CTIs: always treat as user override (strict)
+        # ------------------------------------------------------------
         if legacy_cti_files or legacy_cti_file:
+            self._cti_files_source_used = self._CTI_FILES_SOURCE_USER
+
             candidates, diag = cti_finder.discover_cti_files(
                 cti_file=str(legacy_cti_file) if legacy_cti_file else None,
                 cti_files=cti_finder.cti_files_as_list(legacy_cti_files) if legacy_cti_files else None,
@@ -238,7 +245,48 @@ class GenTLCameraBackend(CameraBackend):
                 )
             return list(candidates)
 
-        # 3) Discovery path: find all CTIs from env vars + configured patterns/dirs
+        # ------------------------------------------------------------------------
+        # 2) Namespace explicit CTIs: behavior depends on cti_files_source marker
+        #    - source=="auto": treat as cache, stale => fallback to discovery
+        #    - otherwise: strict user override
+        # ------------------------------------------------------------------------
+        if ns_cti_files or ns_cti_file:
+            is_auto_cache = source == self._CTI_FILES_SOURCE_AUTO
+
+            # Default to "user" if the marker is missing/unknown.
+            self._cti_files_source_used = self._CTI_FILES_SOURCE_AUTO if is_auto_cache else self._CTI_FILES_SOURCE_USER
+
+            candidates, diag = cti_finder.discover_cti_files(
+                cti_file=str(ns_cti_file) if ns_cti_file else None,
+                cti_files=cti_finder.cti_files_as_list(ns_cti_files) if ns_cti_files else None,
+                include_env=False,
+                must_exist=True,
+            )
+
+            if candidates:
+                return list(candidates)
+
+            # If auto cache is stale, fall back to discovery
+            if is_auto_cache:
+                LOG.info(
+                    "Auto-persisted GenTL CTIs appear stale/missing; falling back to discovery. "
+                    "Persisted cti_file=%s cti_files=%s",
+                    ns_cti_file,
+                    ns_cti_files,
+                )
+                # Fall through to discovery (below)
+            else:
+                # User override: strict failure
+                raise RuntimeError(
+                    "No valid GenTL producer (.cti) found from properties.gentl.cti_file/cti_files.\n\n"
+                    f"Discovery details:\n{diag.summarize()}"
+                )
+
+        # ------------------------------------------------------------
+        # 3) Discovery path: env vars + patterns/dirs (source = "auto")
+        # ------------------------------------------------------------
+        self._cti_files_source_used = self._CTI_FILES_SOURCE_AUTO
+
         search_paths = ns.get("cti_search_paths", props.get("cti_search_paths"))
         extra_dirs = ns.get("cti_dirs", props.get("cti_dirs"))
 
@@ -261,7 +309,6 @@ class GenTLCameraBackend(CameraBackend):
                 f"Discovery details:\n{diag.summarize()}"
             )
 
-        # Default: try to load ALL discovered producers
         return list(candidates)
 
     @classmethod
@@ -346,6 +393,9 @@ class GenTLCameraBackend(CameraBackend):
 
         # Resolve CTIs (may return many). This no longer raises just because there are multiple.
         cti_files = self._resolve_cti_files_for_settings()
+        ns["cti_files_source"] = (
+            self._cti_files_source_used or ns.get("cti_files_source") or self._CTI_FILES_SOURCE_AUTO
+        )
 
         self._harvester = Harvester()
 
@@ -377,7 +427,8 @@ class GenTLCameraBackend(CameraBackend):
                 "No GenTL producer (.cti) could be loaded.\n\n"
                 f"Resolved CTIs: {cti_files}\n"
                 f"Failures: {failed}\n"
-                "Fix: remove/repair incompatible producers or set properties.gentl.cti_file to a known working producer."
+                "Fix: remove/repair incompatible producers or "
+                "set properties.gentl.cti_file to a known working producer."
             )
 
         # Update device list after loading producers
@@ -755,7 +806,9 @@ class GenTLCameraBackend(CameraBackend):
         correct current index (and serial_number if available).
 
         Strategy:
-        - If ctis were previously persisted (cti_files/cti_file), prefer those.
+        - If CTIs were persisted:
+            * if source == "auto" and they are stale -> fall back to discovery
+            * otherwise use them (best stability)
         - Otherwise, fall back to env-var + pattern discovery (best-effort).
         """
         if Harvester is None:
@@ -770,38 +823,52 @@ class GenTLCameraBackend(CameraBackend):
         if not target_id:
             return settings
 
+        source = ns.get("cti_files_source")
+        source = str(source).strip().lower() if source is not None else None
+        is_auto_cache = source == cls._CTI_FILES_SOURCE_AUTO
+
         harvester = None
         try:
-            # Prefer persisted CTIs for stability if present
             explicit_files = ns.get("cti_files") or props.get("cti_files")
             explicit_file = ns.get("cti_file") or props.get("cti_file")
 
             if explicit_files or explicit_file:
-                candidates, diag = cti_finder.discover_cti_files(
+                candidates, _diag = cti_finder.discover_cti_files(
                     cti_file=explicit_file,
                     cti_files=cti_finder.cti_files_as_list(explicit_files),
                     include_env=False,
                     must_exist=True,
                 )
-                if not candidates:
+
+                if not candidates and is_auto_cache:
+                    # Auto cache stale -> fallback to discovery
+                    harvester, _loaded, _diag2 = cls._build_harvester_for_discovery(strict_single=False)
+                    if harvester is None:
+                        return settings
+                elif not candidates:
+                    # User override stale or unknown -> no rebind
                     return settings
-
-                harvester = Harvester()
-                loaded: list[str] = []
-                for cti in candidates:
-                    try:
-                        harvester.add_file(cti)
-                        loaded.append(cti)
-                    except Exception:
-                        continue
-
-                if not loaded:
-                    cls._reset_select_harvester(harvester)
-                    return settings
-
-                harvester.update()
+                else:
+                    harvester = Harvester()
+                    loaded: list[str] = []
+                    for cti in candidates:
+                        try:
+                            harvester.add_file(cti)
+                            loaded.append(cti)
+                        except Exception:
+                            continue
+                    if not loaded:
+                        cls._reset_select_harvester(harvester)
+                        if is_auto_cache:
+                            harvester, _loaded, _diag2 = cls._build_harvester_for_discovery(strict_single=False)
+                            if harvester is None:
+                                return settings
+                        else:
+                            return settings
+                    else:
+                        harvester.update()
             else:
-                harvester, loaded, diag = cls._build_harvester_for_discovery(strict_single=False)
+                harvester, _loaded, _diag = cls._build_harvester_for_discovery(strict_single=False)
                 if harvester is None:
                     return settings
 
@@ -810,7 +877,6 @@ class GenTLCameraBackend(CameraBackend):
                 return settings
 
             target_id_str = str(target_id).strip()
-
             match_index = None
             match_serial = None
 
