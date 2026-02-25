@@ -4,7 +4,8 @@ requires = [ "setuptools>=68" ]
 
 [project]
 name = "deeplabcut-live-gui"
-description = "PySide6-based GUI to run real time DeepLabCut experiments"
+version = "2.0.0rc1"
+description = "PySide6-based GUI to run real time pose estimation experiments with DeepLabCut"
 readme = "README.md"
 keywords = [ "deep learning", "deeplabcut", "gui", "pose estimation", "real-time" ]
 license-files = [ "LICENSE" ]
@@ -21,10 +22,9 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dynamic = [ "version" ]
 dependencies = [
   "cv2-enumerate-cameras",
-  "deeplabcut-live>=2",    # might be missing timm and scipy
+  "deeplabcut-live==1.1",
   "matplotlib",
   "numpy",
   "opencv-python",
@@ -34,8 +34,11 @@ dependencies = [
   "vidgear[core]",
 ]
 [[project.authors]]
-name = "A. & M. Mathis Labs"
-email = "adim@deeplabcut.org"
+name = "M-Lab of Adaptive Intelligence"
+email = "mackenzie@deeplabcut.org"
+[[project.authors]]
+name = "Mathis Group for Computational Neuroscience and AI"
+email = "alexander@deeplabcut.org"
 [project.optional-dependencies]
 all = [ "harvesters", "pypylon" ]
 basler = [ "pypylon" ]
@@ -49,7 +52,7 @@ dev = [
 ]
 gentl = [ "harvesters" ]
 pytorch = [
-  "deeplabcut-live[pytorch]>=2", # this includes timm and scipy
+  "deeplabcut-live[pytorch]==1.1", # includes timm and scipy
 ]
 test = [
   "hypothesis>=6",
@@ -57,21 +60,22 @@ test = [
   "pytest-cov>=4",
   "pytest-mock>=3.10",
   "pytest-qt>=4.2",
+  "tox",
+  "tox-gh-actions",
 ]
 tf = [
-  "deeplabcut-live[tf]>=2",
+  "deeplabcut-live[tf]==1.1",
 ]
 [project.scripts]
 dlclivegui = "dlclivegui:main"
 [project.urls]
 "Bug Tracker" = "https://github.com/DeepLabCut/DeepLabCut-live-GUI/issues"
-Documentation = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
+Documentation = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"  # FIXME @C-Achard replace once docs are up
 Homepage = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
 Repository = "https://github.com/DeepLabCut/DeepLabCut-live-GUI"
 
 # [tool.setuptools]
 # include-package-data = true
-
 [tool.setuptools.package-data]
 "dlclivegui.assets" = [ "*.png" ]
 [tool.setuptools.packages]

@@ -1,6 +1,7 @@
 # dlclivegui/gui/main.py
 from __future__ import annotations
 
+import argparse
 import logging
 import signal
 import sys
@@ -9,6 +10,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from dlclivegui.assets import ascii_art as art
 from dlclivegui.gui.main_window import DLCLiveMainWindow
 from dlclivegui.gui.misc.splash import SplashConfig, show_splash
 from dlclivegui.gui.theme import (
@@ -42,22 +44,54 @@ def _maybe_allow_keyboard_interrupt(app: QApplication) -> None:
     signal.signal(signal.SIGINT, _sigint_handler)
 
     # Keepalive timer to allow Python to handle signals while Qt is running.
-    sig_timer = QTimer(app)
+    sig_timer = QTimer()
     sig_timer.setInterval(100)  # 50–200ms typical; keep low overhead
     sig_timer.timeout.connect(lambda: None)
     sig_timer.start()
 
-    if not hasattr(app, "_sig_timer"):
-        app._sig_timer = sig_timer
+    if hasattr(app, "_sig_timer"):
+        app._sig_timer.stop()  # Stop any existing timer to avoid duplicates
+    app._sig_timer = sig_timer  # Store on app to keep it alive and allow cleanup on exit
+
+
+def parse_args(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+
+    default_desc = "Welcome to DeepLabCut-Live GUI!"
+    no_art_flag = "--no-art" in argv
+    wants_help = any(a in ("-h", "--help") for a in argv)
+
+    # Only build banner description if we're about to print help
+    if wants_help and not no_art_flag:
+        try:
+            desc = art.build_help_description()
+        except Exception as e:
+            logging.warning(f"Failed to build ASCII art for help description: {e}")
+            desc = default_desc
     else:
-        raise RuntimeError("QApplication already has _sig_timer attribute, which is reserved for SIGINT handling.")
+        desc = default_desc
+
+    parser = argparse.ArgumentParser(
+        description=desc,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--no-art", action="store_true", help="Disable ASCII art in help and when launching.")
+    return parser.parse_known_args(argv)
 
 
 def main() -> None:
-    # signal.signal(signal.SIGINT, signal.SIG_DFL)
+    args, _unknown = parse_args()
 
-    # HiDPI pixmaps - always enabled in Qt 6 so no need to set it explicitly
-    # QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
+    logging.info("Starting DeepLabCut-Live GUI...")
+
+    # If you want a startup banner, PRINT it (not log), and only in TTY contexts.
+    if not args.no_art and sys.stdout.isatty() and art.terminal_is_wide_enough():
+        try:
+            print(art.build_help_description(desc="Welcome to DeepLabCut-Live GUI!"))
+        except Exception:
+            # Keep startup robust; don't fail if banner fails
+            pass
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(LOGO))

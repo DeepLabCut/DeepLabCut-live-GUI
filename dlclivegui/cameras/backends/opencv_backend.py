@@ -25,7 +25,6 @@ from .utils.opencv_discovery import (
 )
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # FIXME @C-Achard remove before release
 
 if TYPE_CHECKING:
     from dlclivegui.config import CameraSettings
@@ -169,7 +168,7 @@ class OpenCVCameraBackend(CameraBackend):
                     ns["device_pid"] = int(chosen.pid)
                 if chosen.name:
                     ns["device_name"] = chosen.name
-                logger.info("Persisted OpenCV device_id=%s", chosen.stable_id)
+                logger.debug("Persisted OpenCV device_id=%s", chosen.stable_id)
 
         self._capture, spec = open_with_fallbacks(index, backend_flag)
 
@@ -399,7 +398,7 @@ class OpenCVCameraBackend(CameraBackend):
             self._actual_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
 
             # For clarity in logs
-            logger.info("Resolution requested=Auto, actual=%sx%s", self._actual_width, self._actual_height)
+            logger.debug("Resolution requested=Auto, actual=%sx%s", self._actual_width, self._actual_height)
 
         elif not self._fast_start:
             # Verified, robust path (tries candidates + verifies)
@@ -432,7 +431,7 @@ class OpenCVCameraBackend(CameraBackend):
         if (self._actual_width or 0) > 0 and (self._actual_height or 0) > 0:
             actual_res = (int(self._actual_width), int(self._actual_height))
 
-        logger.info(
+        logger.debug(
             "Resolution requested=%s, actual=%s",
             f"{req_w}x{req_h}" if (req_w > 0 and req_h > 0) else "Auto",
             f"{actual_res[0]}x{actual_res[1]}" if actual_res else "unknown",

@@ -17,7 +17,6 @@ import pandas as pd
 from dlclive import Processor  # type: ignore
 
 logger = logging.getLogger("dlc_processor_socket")
-logger.setLevel(logging.INFO)
 
 # Avoid duplicate handlers if module is imported multiple times
 if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):

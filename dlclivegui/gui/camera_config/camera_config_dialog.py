@@ -19,12 +19,11 @@ from PySide6.QtWidgets import (
 
 from ...cameras.factory import CameraFactory, DetectedCamera, apply_detected_identity, camera_identity_key
 from ...config import CameraSettings, MultiCameraSettings
-from .loaders import CameraLoadWorker, CameraProbeWorker, DetectCamerasWorker
+from .loaders import CameraLoadWorker, CameraProbeWorker, CameraScanState, DetectCamerasWorker
 from .preview import PreviewSession, PreviewState, apply_crop, apply_rotation, resize_to_fit, to_display_pixmap
 from .ui_blocks import setup_camera_config_dialog_ui
 
 LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(logging.DEBUG)  # TODO @C-Achard remove for release
 
 
 class CameraConfigDialog(QDialog):
@@ -65,6 +64,7 @@ class CameraConfigDialog(QDialog):
 
         # Camera detection worker
         self._scan_worker: DetectCamerasWorker | None = None
+        self._scan_state: CameraScanState = CameraScanState.IDLE
 
         # UI elements for eventFilter (assigned in _setup_ui)
         self._settings_scroll: QScrollArea | None = None
@@ -172,7 +172,8 @@ class CameraConfigDialog(QDialog):
                 pass
             # Keep this short to reduce UI freeze
             sw.wait(300)
-        self._scan_worker = None
+        self._set_scan_state(CameraScanState.IDLE)
+        self._cleanup_scan_worker()
 
         # Cancel probe worker
         pw = getattr(self, "_probe_worker", None)
@@ -261,7 +262,7 @@ class CameraConfigDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.scan_started.connect(lambda _: setattr(self, "_dialog_active", True))
         self.scan_finished.connect(lambda: setattr(self, "_dialog_active", False))
-        self.scan_cancel_btn.clicked.connect(self._on_scan_cancel)
+        self.scan_cancel_btn.clicked.connect(self.request_scan_cancel)
 
         def _mark_dirty(*_args):
             self.apply_settings_btn.setEnabled(True)
@@ -312,29 +313,6 @@ class CameraConfigDialog(QDialog):
         self.preview_btn.setEnabled(has_active_selection or self._preview.state == PreviewState.LOADING)
         available_row = self.available_cameras_list.currentRow()
         self.add_camera_btn.setEnabled(available_row >= 0 and not scan_running)
-
-    def _sync_scan_ui(self) -> None:
-        """
-        Sync *scan-related* UI controls based on scan state.
-
-        Conservative policy during scan:
-        - Allow editing/previewing already configured cameras (Active list)
-        - Disallow structural changes (add/remove/reorder) and available-list actions
-        """
-        scanning = self._is_scan_running()
-
-        # Discovery controls
-        self.backend_combo.setEnabled(not scanning)
-        self.refresh_btn.setEnabled(not scanning)
-
-        # Available camera list + add flow is blocked during scan
-        self.available_cameras_list.setEnabled(not scanning)
-        self.add_camera_btn.setEnabled(False if scanning else (self.available_cameras_list.currentRow() >= 0))
-
-        # Scan cancel button visibility is already managed in your scan start/finish,
-        # but keeping enabled state here makes it robust.
-        if hasattr(self, "scan_cancel_btn"):
-            self.scan_cancel_btn.setEnabled(scanning)
 
     def _sync_preview_ui(self) -> None:
         """Update buttons/overlays based on preview state only."""
@@ -479,93 +457,174 @@ class CameraConfigDialog(QDialog):
         self._refresh_available_cameras()
 
     def _is_scan_running(self) -> bool:
-        return bool(self._scan_worker and self._scan_worker.isRunning())
+        if self._scan_state in (CameraScanState.RUNNING, CameraScanState.CANCELING):
+            return True
+        w = self._scan_worker
+        return bool(w and w.isRunning())
+
+    def _set_scan_state(self, state: CameraScanState, message: str | None = None) -> None:
+        """Single source of truth for scan-related UI controls."""
+        self._scan_state = state
+
+        scanning = state in (CameraScanState.RUNNING, CameraScanState.CANCELING)
+
+        # Overlay message
+        if scanning:
+            self._show_scan_overlay(
+                message or ("Canceling discovery…" if state == CameraScanState.CANCELING else "Discovering cameras…")
+            )
+        else:
+            self._hide_scan_overlay()
+
+        # Progress + cancel controls
+        self.scan_progress.setVisible(scanning)
+        if scanning:
+            self.scan_progress.setRange(0, 0)  # indeterminate
+        self.scan_cancel_btn.setVisible(scanning)
+        self.scan_cancel_btn.setEnabled(state == CameraScanState.RUNNING)  # disabled while canceling
+
+        # Disable discovery inputs while scanning
+        self.backend_combo.setEnabled(not scanning)
+        self.refresh_btn.setEnabled(not scanning)
+
+        # Available list + add flow blocked while scanning (structure edits disallowed)
+        self.available_cameras_list.setEnabled(not scanning)
+        self.add_camera_btn.setEnabled(False if scanning else (self.available_cameras_list.currentRow() >= 0))
+
+        self._update_button_states()
+
+    def _cleanup_scan_worker(self) -> None:
+        # worker is truly finished now
+        w = self._scan_worker
+        self._scan_worker = None
+        if w is not None:
+            w.deleteLater()
+
+    def _finish_scan(self, reason: str) -> None:
+        """Mark scan UX complete (idempotent) and emit scan_finished queued."""
+        if self._scan_state in (CameraScanState.DONE, CameraScanState.IDLE):
+            return
+
+        # Transition scan UX to DONE (UI controls restored)
+        self._set_scan_state(CameraScanState.DONE)
+
+        QTimer.singleShot(0, self.scan_finished.emit)
+
+        LOGGER.debug("[Scan] finished reason=%s", reason)
 
     def _refresh_available_cameras(self) -> None:
         """Refresh the list of available cameras asynchronously."""
-        backend = self.backend_combo.currentData()
-        if not backend:
-            backend = self.backend_combo.currentText().split()[0]
+        backend = self.backend_combo.currentData() or self.backend_combo.currentText().split()[0]
 
-        # If already scanning, ignore new requests to avoid races
-        if getattr(self, "_scan_worker", None) and self._scan_worker.isRunning():
+        if self._is_scan_running():
             self._show_scan_overlay("Already discovering cameras…")
             return
 
-        # Reset list UI and show progress
+        # Reset UI/list
         self.available_cameras_list.clear()
         self._detected_cameras = []
-        msg = f"Discovering {backend} cameras…"
-        self._show_scan_overlay(msg)
-        self.scan_progress.setRange(0, 0)
-        self.scan_progress.setVisible(True)
-        self.scan_cancel_btn.setVisible(True)
-        self.available_cameras_list.setEnabled(False)
-        self.add_camera_btn.setEnabled(False)
-        self.refresh_btn.setEnabled(False)
-        self.backend_combo.setEnabled(False)
 
-        self._sync_scan_ui()
-        self._update_button_states()
+        self._set_scan_state(CameraScanState.RUNNING, message=f"Discovering {backend} cameras…")
 
         # Start worker
-        self._scan_worker = DetectCamerasWorker(backend, max_devices=10, parent=self)
-        self._scan_worker.progress.connect(self._on_scan_progress)
-        self._scan_worker.result.connect(self._on_scan_result)
-        self._scan_worker.error.connect(self._on_scan_error)
-        self._scan_worker.finished.connect(self._on_scan_finished)
+        w = DetectCamerasWorker(backend, max_devices=10, parent=self)
+        self._scan_worker = w
+
+        w.progress.connect(self._on_scan_progress)
+        w.result.connect(self._on_scan_result)
+        w.error.connect(self._on_scan_error)
+        w.canceled.connect(self._on_scan_canceled)
+
+        # Cleanup only
+        w.finished.connect(self._cleanup_scan_worker)
+
         self.scan_started.emit(f"Scanning {backend} cameras…")
-        self._scan_worker.start()
+        w.start()
 
     def _on_scan_progress(self, msg: str) -> None:
+        if self.sender() is not self._scan_worker:
+            LOGGER.debug("[Scan] Ignoring progress from old worker: %s", msg)
+            return
+        if self._scan_state not in (CameraScanState.RUNNING, CameraScanState.CANCELING):
+            return
         self._show_scan_overlay(msg or "Discovering cameras…")
 
     def _on_scan_result(self, cams: list) -> None:
+        if self.sender() is not self._scan_worker:
+            LOGGER.debug("[Scan] Ignoring result from old worker: %d cameras", len(cams) if cams else 0)
+            return
+        if self._scan_state not in (CameraScanState.RUNNING, CameraScanState.CANCELING):
+            return
+
+        # Apply results to UI first (stability guarantee)
         self._detected_cameras = cams or []
-        self.available_cameras_list.clear()  # replace list contents
+        self.available_cameras_list.clear()
 
         if not self._detected_cameras:
             placeholder = QListWidgetItem("No cameras detected.")
             placeholder.setFlags(Qt.ItemIsEnabled)
             self.available_cameras_list.addItem(placeholder)
-            return
+        else:
+            for cam in self._detected_cameras:
+                item = QListWidgetItem(f"{cam.label} (index {cam.index})")
+                item.setData(Qt.ItemDataRole.UserRole, cam)
+                self.available_cameras_list.addItem(item)
+            self.available_cameras_list.setCurrentRow(0)
 
-        for cam in self._detected_cameras:
-            item = QListWidgetItem(f"{cam.label} (index {cam.index})")
-            item.setData(Qt.ItemDataRole.UserRole, cam)
-            self.available_cameras_list.addItem(item)
-
-        self.available_cameras_list.setCurrentRow(0)
+        # Now UI is stable: finish scan UX and emit scan_finished queued
+        self._finish_scan("result")
 
     def _on_scan_error(self, msg: str) -> None:
+        if self.sender() is not self._scan_worker:
+            LOGGER.debug("[Scan] Ignoring error from old worker: %s", msg)
+            return
+        if self._scan_state not in (CameraScanState.RUNNING, CameraScanState.CANCELING):
+            return
+
         QMessageBox.warning(self, "Camera Scan", f"Failed to detect cameras:\n{msg}")
 
-    def _on_scan_finished(self) -> None:
-        self._hide_scan_overlay()
-        self.scan_progress.setVisible(False)
-        self._scan_worker = None
+        # Ensure UI is stable (list is stable even if empty) before finishing
+        if self.available_cameras_list.count() == 0:
+            placeholder = QListWidgetItem("Scan failed.")
+            placeholder.setFlags(Qt.ItemIsEnabled)
+            self.available_cameras_list.addItem(placeholder)
 
-        self.scan_cancel_btn.setVisible(False)
-        self.scan_cancel_btn.setEnabled(True)
-        self.available_cameras_list.setEnabled(True)
-        self.refresh_btn.setEnabled(True)
-        self.backend_combo.setEnabled(True)
+        self._finish_scan("error")
 
-        self._sync_scan_ui()
-        self._update_button_states()
-        self.scan_finished.emit()
+    def request_scan_cancel(self) -> None:
+        if not self._is_scan_running():
+            return
 
-    def _on_scan_cancel(self) -> None:
-        """User requested to cancel discovery."""
-        if self._scan_worker and self._scan_worker.isRunning():
+        self._set_scan_state(CameraScanState.CANCELING, message="Canceling discovery…")
+
+        w = self._scan_worker
+        if w is not None:
             try:
-                self._scan_worker.requestInterruption()
+                w.requestInterruption()
             except Exception:
                 pass
-            # Keep the busy bar, update texts
-            self._show_scan_overlay("Canceling discovery…")
-            self.scan_progress.setVisible(True)  # stay visible as indeterminate
-            self.scan_cancel_btn.setEnabled(False)
+
+        # Guarantee UI stability before scan_finished:
+        if self.available_cameras_list.count() == 0:
+            placeholder = QListWidgetItem("Scan canceled.")
+            placeholder.setFlags(Qt.ItemIsEnabled)
+            self.available_cameras_list.addItem(placeholder)
+
+        if w is None or not w.isRunning():
+            self._finish_scan("cancel")
+
+    def _on_scan_canceled(self) -> None:
+        if self.sender() is not self._scan_worker:
+            LOGGER.debug("[Scan] Ignoring canceled signal from old worker.")
+            return
+        self._set_scan_state(CameraScanState.CANCELING, message="Finalizing cancellation…")
+        # If cancel is requested without clicking cancel (e.g., dialog closing), ensure UI finishes
+        if self._scan_state in (CameraScanState.RUNNING, CameraScanState.CANCELING):
+            if self.available_cameras_list.count() == 0:
+                placeholder = QListWidgetItem("Scan canceled.")
+                placeholder.setFlags(Qt.ItemIsEnabled)
+                self.available_cameras_list.addItem(placeholder)
+            self._finish_scan("canceled")
 
     def _on_available_camera_selected(self, row: int) -> None:
         if self._scan_worker and self._scan_worker.isRunning():
@@ -1394,7 +1453,7 @@ class CameraConfigDialog(QDialog):
         if not cam:
             return
 
-        LOGGER.info("[Preview] executing restart reason=%s", reason)
+        LOGGER.debug("[Preview] executing restart reason=%s", reason)
         self._begin_preview_load(cam, reason="restart")
 
     def _cancel_loading(self) -> None:

@@ -16,8 +16,20 @@ def _import_fresh():
     return importlib.import_module(MODULE_UNDER_TEST)
 
 
+@pytest.fixture
+def set_use_splash_true(monkeypatch):
+    #  Ensure theme.py SHOW_SPLASH is True for tests that rely on it, without affecting other tests
+    monkeypatch.setattr("dlclivegui.gui.theme.SHOW_SPLASH", True)
+
+
+@pytest.fixture
+def set_use_splash_false(monkeypatch):
+    #  Ensure theme.py SHOW_SPLASH is False for tests that rely on it, without affecting other tests
+    monkeypatch.setattr("dlclivegui.gui.theme.SHOW_SPLASH", False)
+
+
 @pytest.mark.gui
-def test_main_with_splash(monkeypatch):
+def test_main_with_splash(monkeypatch, set_use_splash_true):
     appmod = _import_fresh()
 
     # --- Patch Qt app & icon in the entry module's namespace ---
@@ -87,7 +99,7 @@ def test_main_with_splash(monkeypatch):
 
 
 @pytest.mark.gui
-def test_main_without_splash(monkeypatch):
+def test_main_without_splash(monkeypatch, set_use_splash_false):
     appmod = _import_fresh()
 
     # Patch Qt app creation & window icon
@@ -96,9 +108,6 @@ def test_main_without_splash(monkeypatch):
     QApplication_cls.return_value = app_instance
     monkeypatch.setattr(appmod, "QApplication", QApplication_cls)
     monkeypatch.setattr(appmod, "QIcon", MagicMock(name="QIcon"))
-
-    # Force the no-splash branch
-    appmod.SHOW_SPLASH = False
 
     # show_splash should not be called
     show_splash_mock = MagicMock(name="show_splash")
