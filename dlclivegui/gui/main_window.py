@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -73,7 +75,12 @@ from ..processors.processor_utils import (
 from ..services.dlc_processor import DLCLiveProcessor, PoseResult
 from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
 from ..utils import skeleton as skel
+from ..services.poet_processor import POETProcessor
 from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose, keypoint_colors_bgr
+from ..utils.poet_weights import (
+    WeightsDownloadWorker,
+    poet_default_weights_dir,
+)
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import format_dlc_stats
 from ..utils.utils import FPSTracker
@@ -86,6 +93,8 @@ from .recording_manager import RecordingManager
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 
 logger = logging.getLogger("DLCLiveGUI")
+
+AUTORELOAD_CONFIG: bool = False  # Automatically reload config file
 
 
 class DLCLiveMainWindow(QMainWindow):
@@ -100,41 +109,48 @@ class DLCLiveMainWindow(QMainWindow):
         self._settings_store = DLCLiveGUISettingsStore(self.settings)
 
         if config is None:
-            # 1) snapshot
-            cfg = self._settings_store.load_full_config_snapshot()
-            if cfg is not None:
-                config = cfg
-                self._config_path = None
-                logger.info("Loaded configuration from QSettings snapshot.")
-            else:
-                # 2) last config file path
-                last_cfg_path = self._settings_store.get_last_config_path()
-                if last_cfg_path:
-                    try:
-                        p = Path(last_cfg_path)
-                        if p.exists() and p.is_file():
-                            config = ApplicationSettings.load(str(p))
-                            self._config_path = p
-                            logger.info(f"Loaded configuration from last config path: {p}")
-                        else:
+            if AUTORELOAD_CONFIG:
+                # 1) snapshot
+                cfg = self._settings_store.load_full_config_snapshot()
+                if cfg is not None:
+                    config = cfg
+                    self._config_path = None
+                    logger.info("Loaded configuration from QSettings snapshot.")
+                else:
+                    # 2) last config file path
+                    last_cfg_path = self._settings_store.get_last_config_path()
+                    if last_cfg_path:
+                        try:
+                            p = Path(last_cfg_path)
+                            if p.exists() and p.is_file():
+                                config = ApplicationSettings.load(str(p))
+                                self._config_path = p
+                                logger.info(f"Loaded configuration from last config path: {p}")
+                            else:
+                                config = DEFAULT_CONFIG
+                                self._config_path = None
+                        except Exception as exc:
+                            logger.warning(
+                                f"Failed to load last config path ({last_cfg_path}): {exc}. Using default config."
+                            )
                             config = DEFAULT_CONFIG
                             self._config_path = None
-                    except Exception as exc:
-                        logger.warning(
-                            f"Failed to load last config path ({last_cfg_path}): {exc}. Using default config."
-                        )
+                    else:
+                        # 3) default
                         config = DEFAULT_CONFIG
                         self._config_path = None
-                else:
-                    # 3) default
-                    config = DEFAULT_CONFIG
-                    self._config_path = None
+            else:
+                config = DEFAULT_CONFIG
+                self._config_path = None
         else:
             self._config_path = None
 
         self._fps_tracker = FPSTracker()
         self._rec_manager = RecordingManager()
         self._dlc = DLCLiveProcessor()
+        self._poet = POETProcessor()
+        self._pose_proc = self._dlc
+        self._backend_name = "dlc"
         self.multi_camera_controller = MultiCameraController()
 
         self._config = config
@@ -450,11 +466,40 @@ class DLCLiveMainWindow(QMainWindow):
         theme_group.addAction(self.action_light_mode)
         self.action_dark_mode.triggered.connect(lambda: self._apply_theme(AppStyle.DARK))
         self.action_light_mode.triggered.connect(lambda: self._apply_theme(AppStyle.SYS_DEFAULT))
-        # ----------------------
         appearance_menu.addAction(self.action_light_mode)
         appearance_menu.addAction(self.action_dark_mode)
         self._apply_theme(self._current_style)
         self._init_theme_actions()
+        # ----------------------
+        # Models menu
+        models_menu = self.menuBar().addMenu("&Models")
+
+        ## Backend selection
+        backend_menu = models_menu.addMenu("Backend")
+        self.action_backend_dlc = QAction("DLCLive", self, checkable=True)
+        self.action_backend_poet = QAction("POET", self, checkable=True)
+
+        backend_group = QActionGroup(self)
+        backend_group.setExclusive(True)
+        backend_group.addAction(self.action_backend_dlc)
+        backend_group.addAction(self.action_backend_poet)
+
+        self.action_backend_dlc.setChecked(True)
+        backend_menu.addAction(self.action_backend_dlc)
+        backend_menu.addAction(self.action_backend_poet)
+
+        self.action_backend_dlc.triggered.connect(lambda: self._set_backend("dlc"))
+        self.action_backend_poet.triggered.connect(lambda: self._set_backend("poet"))
+
+        # POET submenu
+        poet_menu = models_menu.addMenu("POET")
+        self.action_poet_download = QAction("Download weights…", self)
+        self.action_poet_download.triggered.connect(self._action_poet_download_weights)
+        poet_menu.addAction(self.action_poet_download)
+
+        self.action_poet_set_weights = QAction("Set weights path…", self)
+        self.action_poet_set_weights.triggered.connect(self._action_poet_browse_weights)
+        poet_menu.addAction(self.action_poet_set_weights)
 
     def _build_camera_group(self) -> QGroupBox:
         group = QGroupBox("Camera")
@@ -836,6 +881,19 @@ class DLCLiveMainWindow(QMainWindow):
         return group
 
     # ------------------------------------------------------------------ signals
+    def _connect_pose_processor_signals(self) -> None:
+        self._pose_proc.pose_ready.connect(self._on_pose_ready)
+        self._pose_proc.error.connect(self._on_dlc_error)  # reuse existing handler
+        self._pose_proc.initialized.connect(self._on_dlc_initialised)
+
+    def _disconnect_pose_processor_signals(self) -> None:
+        try:
+            self._pose_proc.pose_ready.disconnect(self._on_pose_ready)
+            self._pose_proc.error.disconnect(self._on_dlc_error)
+            self._pose_proc.initialized.disconnect(self._on_dlc_initialised)
+        except Exception:
+            pass
+
     def _connect_signals(self) -> None:
         self.preview_button.clicked.connect(self._start_preview)
         self.stop_preview_button.clicked.connect(self._stop_preview)
@@ -871,9 +929,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.multi_camera_controller.initialization_failed.connect(self._on_multi_camera_initialization_failed)
 
         # DLC processor signals
-        self._dlc.pose_ready.connect(self._on_pose_ready)
-        self._dlc.error.connect(self._on_dlc_error)
-        self._dlc.initialized.connect(self._on_dlc_initialised)
+        self._connect_pose_processor_signals()
         self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
         self.dlc_camera_combo.currentTextChanged.connect(self.dlc_camera_combo.update_shrink_width)
 
@@ -1202,6 +1258,55 @@ class DLCLiveMainWindow(QMainWindow):
         if directory:
             self.processor_folder_edit.setText(directory)
             self._refresh_processors()
+
+    def _action_poet_download_weights(self) -> None:
+        url = getattr(self, "POET_WEIGHTS_URL", "").strip()
+        if not url:
+            self._show_error("POET_WEIGHTS_URL is not set in the application.")
+            return
+
+        dest = poet_default_weights_dir() / getattr(self, "POET_WEIGHTS_FILENAME", "poet_weights.pth")
+
+        dlg = QProgressDialog("Downloading POET weights…", "Hide", 0, 100, self)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setAutoClose(True)
+        dlg.setAutoReset(True)
+        dlg.setValue(0)
+        dlg.show()
+
+        worker = WeightsDownloadWorker(url, dest)
+
+        worker.progress.connect(lambda p: dlg.setValue(p))
+
+        def on_done(path_str: str) -> None:
+            dlg.setValue(100)
+            # set model path and switch backend
+            self.model_path_edit.setText(path_str)
+            self._model_path_store.save_if_valid(path_str)
+            self.action_backend_poet.setChecked(True)
+            self._set_backend("poet")
+            self.statusBar().showMessage(f"POET weights downloaded to: {path_str}", 5000)
+
+        def on_err(msg: str) -> None:
+            dlg.cancel()
+            self._show_error(f"Failed to download POET weights:\n{msg}")
+
+        worker.finished.connect(on_done)
+        worker.error.connect(on_err)
+
+        t = threading.Thread(target=worker.run, daemon=True)
+        t.start()
+
+    def _action_poet_browse_weights(self) -> None:
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "Select POET weights", str(Path.home()), "Weights (*.pth *.pt)"
+        )
+        if not file_name:
+            return
+        self.model_path_edit.setText(file_name)
+        self._model_path_store.save_if_valid(file_name)
+        self.action_backend_poet.setChecked(True)
+        self._set_backend("poet")
 
     def _action_open_recording_folder(self) -> None:
         """
@@ -1587,7 +1692,7 @@ class DLCLiveMainWindow(QMainWindow):
         if self._dlc_active and is_dlc_camera_frame and dlc_cam_id in frame_data.frames:
             frame = frame_data.frames[dlc_cam_id]
             timestamp = frame_data.timestamps.get(dlc_cam_id, time.time())
-            self._dlc.enqueue_frame(frame, timestamp)
+            self._pose_proc.enqueue_frame(frame, timestamp)
 
         # PRIORITY 2: Recording (queued, non-blocking)
         if self._rec_manager.is_active and src_id in frame_data.frames:
@@ -1867,6 +1972,50 @@ class DLCLiveMainWindow(QMainWindow):
         # None found
         self.statusBar().showMessage("No skeleton definition available for this model.", 3000)
 
+    def _set_backend(self, name: str) -> None:
+        if self._dlc_active:
+            self._show_warning("Stop pose inference before switching models.")
+            # restore check state
+            if self._backend_name == "dlc":
+                self.action_backend_dlc.setChecked(True)
+            else:
+                self.action_backend_poet.setChecked(True)
+            return
+
+        self._disconnect_pose_processor_signals()
+
+        if name == "poet":
+            self._pose_proc = self._poet
+            self._backend_name = "poet"
+            self.model_path_edit.setPlaceholderText("/path/to/poet_weights.pth")
+            self.statusBar().showMessage("Backend set to POET", 2000)
+        else:
+            self._pose_proc = self._dlc
+            self._backend_name = "dlc"
+            self.model_path_edit.setPlaceholderText("/path/to/exported/model or .pt/.pth")
+            self.statusBar().showMessage("Backend set to DLCLive", 2000)
+
+        self._connect_pose_processor_signals()
+        self._update_metrics()
+
+    def _configure_pose_backend(self) -> bool:
+        if self._backend_name == "dlc":
+            return self._configure_dlc()
+
+        # POET config: model_path_edit must be a checkpoint file
+        ckpt = self.model_path_edit.text().strip()
+        p = Path(ckpt)
+        if not ckpt or not p.exists() or p.suffix.lower() not in (".pt", ".pth"):
+            self._show_error("Please select POET weights (.pt/.pth) or use Models → POET → Download weights…")
+            return False
+
+        # Reuse your existing device config if you want
+        device = self._config.dlc.device if self._config.dlc.device is not None else "cuda"
+
+        # Use p_cutoff OR introduce a POET threshold later
+        self._poet.configure(ckpt, device=device, threshold=self._p_cutoff, use_amp=True)
+        return True
+
     def _configure_dlc(self) -> bool:
         try:
             settings = self._dlc_settings_from_ui()
@@ -2007,7 +2156,7 @@ class DLCLiveMainWindow(QMainWindow):
         # --- DLC processor stats ---
         if hasattr(self, "dlc_stats_label"):
             if self._dlc_active and self._dlc_initialized:
-                stats = self._dlc.get_stats()
+                stats = self._pose_proc.get_stats()
                 summary = format_dlc_stats(stats)
                 self.dlc_stats_label.setText(summary)
             else:
@@ -2097,16 +2246,19 @@ class DLCLiveMainWindow(QMainWindow):
         if not self.multi_camera_controller.is_running():
             self._show_error("Start the camera preview before running pose inference.")
             return
-        if not self._configure_dlc():
+        if not self._configure_pose_backend():
             self._update_inference_buttons()
             return
-        self._dlc.reset()
+        self._pose_proc.reset()
         self._last_pose = None
         self._dlc_active = True
         self._dlc_initialized = False
 
         # Update button to show initializing state
-        self.start_inference_button.setText("Initializing DLCLive!")
+        if self._backend_name == "dlc":
+            self.start_inference_button.setText("Initializing DLCLive!")
+        else:
+            self.start_inference_button.setText("Initializing POET!")
         self.start_inference_button.setStyleSheet("background-color: #4A90E2; color: white;")
         self.start_inference_button.setEnabled(False)
         self.stop_inference_button.setEnabled(True)
@@ -2119,7 +2271,7 @@ class DLCLiveMainWindow(QMainWindow):
         was_active = self._dlc_active
         self._dlc_active = False
         self._dlc_initialized = False
-        self._dlc.reset()
+        self._pose_proc.reset()
         self._last_pose = None
         self._last_processor_vid_recording = False
         self._auto_record_session_name = None
@@ -2375,6 +2527,7 @@ class DLCLiveMainWindow(QMainWindow):
             self._cam_dialog = None
 
         self._dlc.shutdown()
+        self._poet.shutdown()
         if hasattr(self, "_metrics_timer"):
             self._metrics_timer.stop()
 
