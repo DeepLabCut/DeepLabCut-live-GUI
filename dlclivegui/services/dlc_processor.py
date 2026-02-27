@@ -37,7 +37,7 @@ except Exception as e:  # pragma: no cover - handled gracefully
 class PoseResult:
     pose: np.ndarray | None
     timestamp: float
-    packet: "PosePacketV0 | None" = None
+    packet: "PosePacket | None" = None
 
 
 @dataclass(slots=True, frozen=True)
