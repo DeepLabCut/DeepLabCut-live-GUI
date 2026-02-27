@@ -12,7 +12,7 @@ import pytest
 def _get_signature_params(callable_obj) -> tuple[set[str], bool]:
     """
     Return allowed keyword names for callable, allowing for **kwargs.
-    
+
     Example:
     >>> params, accepts_var_kw = _get_signature_params(lambda x, y, **kwargs: None, {"x", "y"})
     >>> params == {"x", "y"}
@@ -56,7 +56,7 @@ def test_dlclive_constructor_accepts_gui_expected_kwargs():
     params, accepts_var_kw = _get_signature_params(DLCLive.__init__)
     missing = {name for name in expected if name not in params}
     assert not missing, f"DLCLive.__init__ is missing expected kwargs called by GUI: {sorted(missing)}"
-    assert accepts_var_kw, "DLCLive.__init__ should accept **kwargs" # captures current behavior
+    assert accepts_var_kw, "DLCLive.__init__ should accept **kwargs"  # captures current behavior
 
 
 @pytest.mark.dlclive_compat
@@ -100,6 +100,7 @@ def test_dlclive_minimal_inference_smoke():
     model_type = os.getenv("DLCLIVE_TEST_MODEL_TYPE", "pytorch").strip() or "pytorch"
 
     from dlclive import DLCLive  # noqa: PLC0415
+
     from dlclivegui.services.dlc_processor import validate_pose_array  # noqa: PLC0415
 
     dlc = DLCLive(

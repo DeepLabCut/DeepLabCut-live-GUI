@@ -37,12 +37,12 @@ except Exception as e:  # pragma: no cover - handled gracefully
 class PoseResult:
     pose: np.ndarray | None
     timestamp: float
-    packet: "PosePacket | None" = None
+    packet: PosePacket | None = None
 
 
 @dataclass(slots=True, frozen=True)
 class PoseSource:
-    backend: str    # e.g. "DLCLive"
+    backend: str  # e.g. "DLCLive"
     model_type: ModelType | None = None
 
 
@@ -73,19 +73,22 @@ def validate_pose_array(pose: Any, *, source_backend: str = "DLCLive") -> np.nda
 
     if arr.ndim not in (2, 3):
         raise ValueError(
-            f"{source_backend} returned an invalid pose output format: expected a 2D or 3D array, got ndim={arr.ndim}, shape={arr.shape!r}"
+            f"{source_backend} returned an invalid pose output format:"
+            f" expected a 2D or 3D array, got ndim={arr.ndim}, shape={arr.shape!r}"
         )
 
     if arr.shape[-1] != 3:
         raise ValueError(
-            f"{source_backend} returned an invalid pose output format: expected last dimension size 3 (x, y, likelihood), got shape={arr.shape!r}"
+            f"{source_backend} returned an invalid pose output format:"
+            f" expected last dimension size 3 (x, y, likelihood), got shape={arr.shape!r}"
         )
 
     if arr.ndim == 2 and arr.shape[0] <= 0:
         raise ValueError(f"{source_backend} returned an invalid pose output format: expected at least one keypoint")
     if arr.ndim == 3 and (arr.shape[0] <= 0 or arr.shape[1] <= 0):
         raise ValueError(
-            f"{source_backend} returned an invalid pose output format: expected at least one individual and one keypoint, got shape={arr.shape!r}"
+            f"{source_backend} returned an invalid pose output format:"
+            f" expected at least one individual and one keypoint, got shape={arr.shape!r}"
         )
 
     if not np.issubdtype(arr.dtype, np.number):
