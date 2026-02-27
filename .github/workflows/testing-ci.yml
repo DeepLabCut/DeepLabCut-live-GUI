@@ -85,7 +85,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11']
+        python: ['3.12']
         include:
           - label: pypi-1.1
             dlclive_spec: deeplabcut-live==1.1
