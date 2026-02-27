@@ -139,6 +139,7 @@ omit = [
 branch = true
 omit = [
   "*/__pycache__/*",
-  "*/site-packages/*",
+  # "*/site-packages/*",
+  # breaks CI coverage reporting as it excludes our own installed package
 ]
 source = [ "dlclivegui", "tests" ]

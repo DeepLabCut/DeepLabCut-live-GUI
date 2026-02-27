@@ -55,23 +55,26 @@ jobs:
 
       - name: Run tests (exclude hardware) with coverage via tox
         run: |
-          tox -q
+          tox -q | tee tox-output.log
+
 
       - name: Append Coverage Summary to Job
-        if: always()
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         shell: bash
         run: |
-          python -m pip install -U coverage
           echo "## Coverage Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          python -m coverage report -m >> "$GITHUB_STEP_SUMMARY" || true
+          awk '
+            /^Name[[:space:]]+Stmts[[:space:]]+Miss/ {p=1}
+            p==1 {print}
+            /^Coverage XML written to file/ {exit}
+          ' tox-output.log >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload coverage to Codecov # NOTE : may need to disable this if token is not setup
-        if: github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'master')
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12' && github.event_name == 'pull_request' && (github.base_ref == 'main' || github.base_ref == 'master')
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage.xml
-          fail_ci_if_error: false
+          files: ./.coverage.py312.xml
+          fail_ci_if_error: true
