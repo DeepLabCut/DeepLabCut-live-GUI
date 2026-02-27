@@ -115,6 +115,7 @@ markers = [
   "unit: Unit tests for individual components",
   "integration: Integration tests for component interaction",
   "functional: Functional tests for end-to-end workflows",
+  "dlclive_compat: Package/API compatibility tests against supported dlclive versions",
   "hardware: Tests that require specific hardware, notable camera backends",
   # "slow: Tests that take a long time to run",
   "gui: Tests that require GUI interaction",
