@@ -47,7 +47,7 @@ class PoseSource:
 
 
 @dataclass(slots=True, frozen=True)
-class PosePacketV0:
+class PosePacket:
     schema_version: int = 0
     keypoints: np.ndarray | None = None
     keypoint_names: list[str] | None = None
