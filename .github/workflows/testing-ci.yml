@@ -77,4 +77,4 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./.coverage.py312.xml
-          fail_ci_if_error: true
+          fail_ci_if_error: false
