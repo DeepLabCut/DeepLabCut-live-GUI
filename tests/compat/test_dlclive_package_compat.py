@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import importlib.metadata
 import inspect
+import os
+from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -75,3 +78,44 @@ def test_dlclive_methods_match_gui_usage():
     get_pose_params, _ = _get_signature_params(DLCLive.get_pose)
     get_pose_missing = {name for name in {"frame", "frame_time"} if name not in get_pose_params}
     assert not get_pose_missing, f"DLCLive.get_pose signature mismatch, missing: {sorted(get_pose_missing)}"
+
+
+@pytest.mark.dlclive_compat
+def test_dlclive_minimal_inference_smoke():
+    """
+    Real runtime smoke test (init + pose call) using a tiny exported model.
+
+    Opt-in via env vars:
+    - DLCLIVE_TEST_MODEL_PATH: absolute/relative path to exported model folder/file
+    - DLCLIVE_TEST_MODEL_TYPE: optional model type (default: pytorch)
+    """
+    model_path_env = os.getenv("DLCLIVE_TEST_MODEL_PATH", "").strip()
+    if not model_path_env:
+        pytest.skip("Set DLCLIVE_TEST_MODEL_PATH to run real DLCLive inference smoke test.")
+
+    model_path = Path(model_path_env).expanduser()
+    if not model_path.exists():
+        pytest.skip(f"DLCLIVE_TEST_MODEL_PATH does not exist: {model_path}")
+
+    model_type = os.getenv("DLCLIVE_TEST_MODEL_TYPE", "pytorch").strip() or "pytorch"
+
+    from dlclive import DLCLive  # noqa: PLC0415
+    from dlclivegui.services.dlc_processor import validate_pose_array  # noqa: PLC0415
+
+    dlc = DLCLive(
+        model_path=str(model_path),
+        model_type=model_type,
+        dynamic=[False, 0.5, 10],
+        resize=1.0,
+        precision="FP32",
+        single_animal=True,
+    )
+
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    dlc.init_inference(frame)
+    pose = dlc.get_pose(frame, frame_time=0.0)
+    pose_arr = validate_pose_array(pose, source_backend="DLCLive.get_pose")
+
+    assert pose_arr.ndim in (2, 3)
+    assert pose_arr.shape[-1] == 3
+    assert np.isfinite(pose_arr).all()
