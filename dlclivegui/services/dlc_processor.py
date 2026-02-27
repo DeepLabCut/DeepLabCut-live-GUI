@@ -329,7 +329,7 @@ class DLCLiveProcessor(QObject):
             raw_pose: Any = self._dlc.get_pose(frame, frame_time=timestamp)
             inference_time = time.perf_counter() - inference_start
         pose_arr: np.ndarray = validate_pose_array(raw_pose, source_backend="DLCLive")
-        pose_packet = PosePacketV0(
+        pose_packet = PosePacket(
             schema_version=0,
             keypoints=pose_arr,
             keypoint_names=None,
