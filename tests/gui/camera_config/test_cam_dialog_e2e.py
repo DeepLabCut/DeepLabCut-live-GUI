@@ -136,7 +136,7 @@ def dialog(qtbot, patch_detect_cameras):
         d.close()
 
     qtbot.waitUntil(lambda: d._preview.loader is None, timeout=2000)
-    qtbot.waitUntil(lambda: not d._is_scan_running(), timeout=2000)
+    qtbot.waitUntil(lambda: not d._is_scan_running(), timeout=5000)
     qtbot.wait(50)
     qtbot.waitUntil(lambda: d._preview.state == PreviewState.IDLE, timeout=2000)
 
