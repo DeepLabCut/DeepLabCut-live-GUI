@@ -1192,10 +1192,7 @@ class DLCLiveMainWindow(QMainWindow):
             self._cam_dialog = CameraConfigDialog(self, self._config.multi_camera)
             self._cam_dialog.settings_changed.connect(self._on_multi_camera_settings_changed)
         else:
-            # Refresh its UI from current settings when reopened
-            # self._cam_dialog._populate_from_settings()
-            # ^ do not call here -let the dialog handle it via showEvent to avoid overwriting unsaved changes
-            self._cam_dialog.dlc_camera_id = self._inference_camera_id
+            self._cam_dialog.set_settings(self._config.multi_camera, dlc_camera_id=self._inference_camera_id)
 
         self._cam_dialog.show()
         self._cam_dialog.raise_()
