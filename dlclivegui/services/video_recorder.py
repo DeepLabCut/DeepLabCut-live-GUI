@@ -206,10 +206,6 @@ class VideoRecorder:
             except Exception:
                 logger.exception("Failed to close WriteGear cleanly")
 
-        if self._writer_thread is None:
-            # Save timestamps to JSON file
-            self._save_timestamps()
-
         self._writer = None
         self._writer_thread = None
         self._queue = None
@@ -271,35 +267,33 @@ class VideoRecorder:
                 try:
                     if item is _SENTINEL:
                         stop_now = True
-                        continue
+                    else:
+                        frame, timestamp = item
+                        start = time.perf_counter()
 
-                    frame, timestamp = item
-                    start = time.perf_counter()
+                        try:
+                            writer = self._writer
+                            if writer is None:
+                                raise RuntimeError("WriteGear writer is not initialized")
+                            writer.write(frame)
+                        except Exception as exc:
+                            with self._stats_lock:
+                                self._encode_error = exc
+                            logger.exception("Video encoding failed while writing frame", exc_info=exc)
+                            self._stop_event.set()
+                            stop_now = True
 
-                    try:
-                        writer = self._writer
-                        if writer is None:
-                            raise RuntimeError("WriteGear writer is not initialized")
-                        writer.write(frame)
-                    except Exception as exc:  # <- broader than OSError
+                        elapsed = time.perf_counter() - start
+                        now = time.perf_counter()
                         with self._stats_lock:
-                            self._encode_error = exc
-                        logger.exception("Video encoding failed while writing frame", exc_info=exc)
-                        self._stop_event.set()
-                        stop_now = True
-                        continue
-
-                    elapsed = time.perf_counter() - start
-                    now = time.perf_counter()
-                    with self._stats_lock:
-                        self._frames_written += 1
-                        self._total_latency += elapsed
-                        self._last_latency = elapsed
-                        self._written_times.append(now)
-                        self._frame_timestamps.append(timestamp)
-                        if now - self._last_log_time >= 1.0:
-                            self._compute_write_fps_locked()
-                            self._last_log_time = now
+                            self._frames_written += 1
+                            self._total_latency += elapsed
+                            self._last_latency = elapsed
+                            self._written_times.append(now)
+                            self._frame_timestamps.append(timestamp)
+                            if now - self._last_log_time >= 1.0:
+                                self._compute_write_fps_locked()
+                                self._last_log_time = now
 
                 finally:
                     # Ensure queue accounting is correct for every item pulled from q
