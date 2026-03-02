@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from functools import partial
 from threading import Event, Lock
 
 import cv2
@@ -19,6 +20,9 @@ from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.config import CameraSettings
 
 LOGGER = logging.getLogger(__name__)
+
+QUIT_WAIT_MS = 5000  # wait for cooperative quit (5s)
+TERMINATE_WAIT_MS = 1000  # wait after terminate (1s)
 
 
 @dataclass
@@ -188,7 +192,24 @@ class MultiCameraController(QObject):
 
         self._workers[cam_id] = worker
         self._threads[cam_id] = thread
+        thread.finished.connect(partial(self._cleanup_camera, cam_id))
+        worker.stopped.connect(thread.quit)
         thread.start()
+
+    def _cleanup_camera(self, camera_id: str) -> None:
+        # remove stored frame data
+        with self._frame_lock:
+            self._frames.pop(camera_id, None)
+            self._timestamps.pop(camera_id, None)
+
+        worker = self._workers.pop(camera_id, None)
+        thread = self._threads.pop(camera_id, None)
+        self._settings.pop(camera_id, None)
+
+        if worker is not None:
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
 
     def stop(self, wait: bool = True) -> None:
         """Stop all cameras."""
@@ -203,22 +224,47 @@ class MultiCameraController(QObject):
 
         # Wait for threads to finish
         if wait:
+            still_running: list[str] = []
             for cam_id, thread in list(self._threads.items()):
+                if thread is None:
+                    continue
                 if not thread.isRunning():
                     continue
 
                 thread.quit()
-                if not thread.wait(5000):
-                    LOGGER.error("Frozen camera thread %s; Forcing terminate()", cam_id)
-                    thread.terminate()
-                    thread.wait(1000)
+                if thread.wait(QUIT_WAIT_MS):
+                    continue  # Clean exit
 
-        self._workers.clear()
-        self._threads.clear()
-        self._settings.clear()
+                LOGGER.error(
+                    "Camera thread %s did not quit within %dms; forcing terminate()",
+                    cam_id,
+                    QUIT_WAIT_MS,
+                )
+
+                thread.terminate()
+                if thread.wait(TERMINATE_WAIT_MS):
+                    continue  # Terminated successfully
+
+                LOGGER.critical(
+                    "Camera thread %s refused to terminate after terminate()+wait(%dms). "
+                    "Keeping references to avoid use-after-free/segfaults. "
+                    "Application restart may be required.",
+                    cam_id,
+                    TERMINATE_WAIT_MS,
+                )
+                still_running.append(cam_id)
+
+            if still_running:
+                self._started_cameras.clear()
+                return
+
         self._started_cameras.clear()
         self._failed_cameras.clear()
+        with self._frame_lock:
+            self._frames.clear()
+            self._timestamps.clear()
         self._expected_cameras = 0
+
         self.all_stopped.emit()
 
     def _on_frame_captured(self, camera_id: str, frame: np.ndarray, timestamp: float) -> None:
@@ -437,14 +483,9 @@ class MultiCameraController(QObject):
 
         # Cleanup thread
         if camera_id in self._threads:
-            thread = self._threads[camera_id]
-            if thread.isRunning():
+            thread = self._threads.get(camera_id)
+            if thread is not None and thread.isRunning():
                 thread.quit()
-                thread.wait(1000)
-            del self._threads[camera_id]
-
-        if camera_id in self._workers:
-            del self._workers[camera_id]
 
         # Remove frame data
         with self._frame_lock:
@@ -463,7 +504,7 @@ class MultiCameraController(QObject):
                 return
 
         # Check if all running cameras have stopped (normal shutdown)
-        if not self._started_cameras and self._running and not self._workers:
+        if not self._started_cameras and all(not t.isRunning() for t in self._threads.values() if t is not None):
             self._running = False
             self.all_stopped.emit()
 

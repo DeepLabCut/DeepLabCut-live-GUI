@@ -309,11 +309,6 @@ class VideoRecorder:
             self._finalize_writer()
             self._save_timestamps()
 
-            # Safe cleanup only once the thread is actually exiting
-            self._queue = None
-            if self._writer_thread is threading.current_thread():
-                self._writer_thread = None
-
     def _finalize_writer(self) -> None:
         writer = self._writer
         self._writer = None
