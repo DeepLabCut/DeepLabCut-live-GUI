@@ -143,7 +143,7 @@ class MultiCameraController(QObject):
         return len(self._started_cameras)
 
     def start(self, camera_settings: list[CameraSettings]) -> None:
-        """Start multiple cameras; accepts dataclasses, pydantic models, or dicts."""
+        """Start multiple cameras."""
         if self._running:
             LOGGER.warning("Multi-camera controller already running")
             return
@@ -201,10 +201,15 @@ class MultiCameraController(QObject):
 
         # Wait for threads to finish
         if wait:
-            for thread in self._threads.values():
-                if thread.isRunning():
-                    thread.quit()
-                    thread.wait(5000)
+            for cam_id, thread in list(self._threads.items()):
+                if not thread.isRunning():
+                    continue
+
+                thread.quit()
+                if not thread.wait(5000):
+                    LOGGER.error("Frozen camera thread %s; Forcing terminate()", cam_id)
+                    thread.terminate()
+                    thread.wait(1000)
 
         self._workers.clear()
         self._threads.clear()
