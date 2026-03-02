@@ -211,7 +211,8 @@ class VideoRecorder:
 
     def stop(self) -> None:
         with self._lifecycle_lock:
-            if self._writer is None and not self.is_running:
+            already_stopped = (self._writer is None) and (not self.is_running)
+            if already_stopped:
                 # If the recorder was previously marked as abandoned because the
                 # writer thread did not stop in time, but the thread has since
                 # exited, perform cleanup so the recorder can become fully stopped
@@ -222,39 +223,43 @@ class VideoRecorder:
                     self._queue = None
                     self._stop_event.clear()
                     self._abandoned = False
+                return
 
             self._stop_event.set()
-
             q = self._queue
-            if q is not None:
-                try:
-                    q.put_nowait(_SENTINEL)
-                except queue.Full:
-                    pass
-
             t = self._writer_thread
-            if t is not None:
-                t.join(timeout=STOP_JOIN_TIMEOUT)
-                if t.is_alive():
-                    with self._stats_lock:
-                        self._encode_error = RuntimeError(
-                            "Failed to stop VideoRecorder within timeout; thread is still alive."
-                        )
+            writer = self._writer
+
+        if q is not None:
+            try:
+                q.put_nowait(_SENTINEL)
+            except queue.Full:
+                pass
+
+        if t is not None:
+            t.join(timeout=STOP_JOIN_TIMEOUT)
+            if t.is_alive():
+                with self._stats_lock:
+                    self._encode_error = RuntimeError(
+                        "Failed to stop VideoRecorder within timeout; thread is still alive."
+                    )
+                    with self._lifecycle_lock:
                         self._abandoned = True
-                        logger.critical(
-                            "Failed to stop VideoRecorder within timeout; thread is still alive. "
-                            "Marking recorder as abandoned to prevent restart."
-                        )
-                        return
+                    logger.critical(
+                        "Failed to stop VideoRecorder within timeout; thread is still alive. "
+                        "Marking recorder as abandoned to prevent restart."
+                    )
+                    return
 
-            if self._writer is not None:
-                try:
-                    self._writer.close()
-                except Exception:
-                    logger.exception("Failed to close WriteGear cleanly")
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:
+                logger.exception("Failed to close WriteGear cleanly")
 
-            self._save_timestamps()
+        self._save_timestamps()
 
+        with self._lifecycle_lock:
             self._writer = None
             self._writer_thread = None
             self._queue = None
