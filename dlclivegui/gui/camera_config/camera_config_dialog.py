@@ -689,7 +689,7 @@ class CameraConfigDialog(QDialog):
                 return
 
         # Stop any running preview when selection changes
-        if self.is_preview_live():
+        if self._is_preview_live():
             self._stop_preview()
 
         self._current_edit_index = row
@@ -1048,7 +1048,7 @@ class CameraConfigDialog(QDialog):
             return
 
         # Stop preview to avoid fighting an open capture
-        if self.is_preview_live():
+        if self._is_preview_live():
             self._stop_preview()
 
         cam = self._working_settings.cameras[row]
