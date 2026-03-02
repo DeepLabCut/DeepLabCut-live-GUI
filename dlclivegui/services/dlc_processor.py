@@ -452,6 +452,10 @@ class DLCLiveProcessor(QObject):
                 options["device"] = self._settings.device
 
             try:
+                if DLCLive is None:
+                    raise RuntimeError(
+                        "DLCLive class is not available. Ensure the dlclive package is installed and can be imported."
+                    )
                 self._dlc = DLCLive(**options)
             except Exception as exc:
                 with self._lifecycle_lock:
