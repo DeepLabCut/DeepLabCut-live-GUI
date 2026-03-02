@@ -158,7 +158,9 @@ class MultiCameraController(QObject):
         self._timestamps.clear()
         self._started_cameras.clear()
         self._failed_cameras.clear()
-        self._expected_cameras = len(active_settings)
+
+        unique_ids = {get_camera_id(s) for s in active_settings}
+        self._expected_cameras = len(unique_ids)
 
         for settings in active_settings:
             self._start_camera(settings)
