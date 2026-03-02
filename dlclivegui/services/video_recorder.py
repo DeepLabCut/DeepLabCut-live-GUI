@@ -118,11 +118,13 @@ class VideoRecorder:
         self._frame_rate = frame_rate
 
     def write(self, frame: np.ndarray, timestamp: float | None = None) -> bool:
-        if not self.is_running or self._queue is None:
-            return False
         error = self._current_error()
         if error is not None:
             raise RuntimeError(f"Video encoding failed: {error}") from error
+        if not self.is_running or self._queue is None:
+            return False
+        if self._stop_event.is_set():
+            return False
 
         # Capture timestamp now, but only record it if frame is successfully enqueued
         if timestamp is None:
@@ -181,25 +183,32 @@ class VideoRecorder:
     def stop(self) -> None:
         if self._writer is None and not self.is_running:
             return
+
         self._stop_event.set()
-        if self._queue is not None:
+
+        q = self._queue
+        if q is not None:
             try:
-                self._queue.put_nowait(_SENTINEL)
+                q.put_nowait(_SENTINEL)
             except queue.Full:
                 pass
-                # self._queue.put(_SENTINEL)
-        if self._writer_thread is not None:
-            self._writer_thread.join(timeout=5.0)
-            if self._writer_thread.is_alive():
+
+        t = self._writer_thread
+        if t is not None:
+            t.join(timeout=5.0)
+            if t.is_alive():
                 logger.warning("Video recorder thread did not terminate cleanly")
+                return
+
         if self._writer is not None:
             try:
                 self._writer.close()
             except Exception:
                 logger.exception("Failed to close WriteGear cleanly")
 
-        # Save timestamps to JSON file
-        self._save_timestamps()
+        if self._writer_thread is None:
+            # Save timestamps to JSON file
+            self._save_timestamps()
 
         self._writer = None
         self._writer_thread = None
@@ -236,45 +245,80 @@ class VideoRecorder:
         )
 
     def _writer_loop(self) -> None:
-        assert self._queue is not None
+        q = self._queue
+        if q is None:
+            with self._stats_lock:
+                self._encode_error = RuntimeError("Writer loop started without a queue")
+            logger.error("Writer loop started without a queue; exiting")
+            return
+
         try:
             while True:
                 try:
-                    item = self._queue.get(timeout=0.1)
+                    item = q.get(timeout=0.1)
                 except queue.Empty:
                     if self._stop_event.is_set():
                         break
                     continue
-                if item is _SENTINEL:
-                    self._queue.task_done()
-                    break
-                frame, timestamp = item
-                start = time.perf_counter()
-                try:
-                    assert self._writer is not None
-                    self._writer.write(frame)
-                except OSError as exc:
+                except Exception as exc:
                     with self._stats_lock:
                         self._encode_error = exc
-                    logger.exception("Video encoding failed while writing frame")
-                    self._queue.task_done()
+                    logger.exception("Could not retrieve item from queue", exc_info=exc)
                     self._stop_event.set()
                     break
-                elapsed = time.perf_counter() - start
-                now = time.perf_counter()
-                with self._stats_lock:
-                    self._frames_written += 1
-                    self._total_latency += elapsed
-                    self._last_latency = elapsed
-                    self._written_times.append(now)
-                    self._frame_timestamps.append(timestamp)
-                    if now - self._last_log_time >= 1.0:
-                        self._compute_write_fps_locked()
-                        self._queue.qsize()
-                        self._last_log_time = now
-                self._queue.task_done()
+
+                stop_now = False
+                try:
+                    if item is _SENTINEL:
+                        stop_now = True
+                        continue
+
+                    frame, timestamp = item
+                    start = time.perf_counter()
+
+                    try:
+                        writer = self._writer
+                        if writer is None:
+                            raise RuntimeError("WriteGear writer is not initialized")
+                        writer.write(frame)
+                    except Exception as exc:  # <- broader than OSError
+                        with self._stats_lock:
+                            self._encode_error = exc
+                        logger.exception("Video encoding failed while writing frame", exc_info=exc)
+                        self._stop_event.set()
+                        stop_now = True
+                        continue
+
+                    elapsed = time.perf_counter() - start
+                    now = time.perf_counter()
+                    with self._stats_lock:
+                        self._frames_written += 1
+                        self._total_latency += elapsed
+                        self._last_latency = elapsed
+                        self._written_times.append(now)
+                        self._frame_timestamps.append(timestamp)
+                        if now - self._last_log_time >= 1.0:
+                            self._compute_write_fps_locked()
+                            self._last_log_time = now
+
+                finally:
+                    # Ensure queue accounting is correct for every item pulled from q
+                    try:
+                        q.task_done()
+                    except ValueError:
+                        pass
+
+                if stop_now:
+                    break
+
         finally:
             self._finalize_writer()
+            self._save_timestamps()
+
+            # Safe cleanup only once the thread is actually exiting
+            self._queue = None
+            if self._writer_thread is threading.current_thread():
+                self._writer_thread = None
 
     def _finalize_writer(self) -> None:
         writer = self._writer
