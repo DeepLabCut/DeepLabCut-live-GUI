@@ -21,6 +21,7 @@ from dlclivegui.processors.processor_utils import instantiate_from_scan
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
 
 logger = logging.getLogger(__name__)
+STOP_WORKER_TIMEOUT = 10.0  # seconds to wait for worker thread to stop before marking as faulted
 
 try:  # pragma: no cover - optional dependency
     from dlclive import (
@@ -155,6 +156,9 @@ class DLCLiveProcessor(QObject):
         self._lifecycle_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._initialized = False
+        ## Worker cleanup
+        self._reaping = False
+        self._pending_reset = False
 
         # Statistics tracking
         self._frames_enqueued = 0
@@ -184,6 +188,8 @@ class DLCLiveProcessor(QObject):
         """Stop the worker thread and drop the current DLCLive instance."""
         stopped = self._stop_worker()
         if not stopped:
+            with self._lifecycle_lock:
+                self._pending_reset = True
             logger.warning(
                 "Reset requested but worker thread is still alive; skipping DLCLive reset to avoid potential issues."
             )
@@ -330,20 +336,49 @@ class DLCLiveProcessor(QObject):
             self._state = WorkerState.STOPPING
             self._stop_event.set()
 
-        t.join(timeout=2.0)
+        t.join(timeout=STOP_WORKER_TIMEOUT)
         if t.is_alive():
             qsize = self._queue.qsize() if self._queue is not None else -1
             logger.warning("DLC worker thread did not terminate cleanly (qsize=%s)", qsize)
-            with self._lifecycle_lock:
-                self._state = WorkerState.FAULTED
+            self._schedule_reap(t)
             return False
 
+        # Normal cleanup
         with self._lifecycle_lock:
             self._worker_thread = None
             self._queue = None
             self._state = WorkerState.STOPPED
             self._stop_event.clear()
         return True
+
+    def _schedule_reap(self, t: threading.Thread) -> None:
+        with self._lifecycle_lock:
+            if self._reaping:
+                return
+            self._reaping = True
+
+        # ensure only one reaper
+        def reap():
+            try:
+                t.join()  # wait without timeout in background
+                with self._lifecycle_lock:
+                    # only clean if we're still stopping this thread
+                    if self._worker_thread is t:
+                        self._worker_thread = None
+                        self._queue = None
+                        self._state = WorkerState.STOPPED
+                        self._stop_event.clear()
+
+                        if self._pending_reset:
+                            self._dlc = None
+                            self._initialized = False
+                            self._pending_reset = False
+            finally:
+                with self._lifecycle_lock:
+                    self._reaping = False
+            logger.debug("[Stop worker] DLC worker thread reaped; processor is STOPPED again")
+
+        threading.Thread(target=reap, name="DLCLiveReaper", daemon=True).start()
 
     @contextmanager
     def _timed_processor(self):
