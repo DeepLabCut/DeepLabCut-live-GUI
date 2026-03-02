@@ -93,9 +93,21 @@ class VideoRecorder:
             if self._abandoned:
                 raise RuntimeError("Cannot restart VideoRecorder, as a leftover thread is still running.")
             if self._writer is not None:
-                self._writer = None
-                self._queue = None
-                self._writer_thread = None
+                # Best-effort cleanup of a stale writer to avoid leaking resources.
+                logger.warning(
+                    "VideoRecorder.start() found an existing writer while not running; "
+                    "attempting to close the stale writer before restarting."
+                )
+                try:
+                    close_method = getattr(self._writer, "close", None)
+                    if callable(close_method):
+                        close_method()
+                except Exception:
+                    logger.exception("Error while closing stale video writer in start().")
+                finally:
+                    self._writer = None
+                    self._queue = None
+                    self._writer_thread = None
 
             fps_value = float(self._frame_rate) if self._frame_rate else 30.0
 
@@ -195,46 +207,47 @@ class VideoRecorder:
         return True
 
     def stop(self) -> None:
-        if self._writer is None and not self.is_running:
-            return
+        with self._lifecycle_lock:
+            if self._writer is None and not self.is_running:
+                return
 
-        self._stop_event.set()
+            self._stop_event.set()
 
-        q = self._queue
-        if q is not None:
-            try:
-                q.put_nowait(_SENTINEL)
-            except queue.Full:
-                pass
+            q = self._queue
+            if q is not None:
+                try:
+                    q.put_nowait(_SENTINEL)
+                except queue.Full:
+                    pass
 
-        t = self._writer_thread
-        if t is not None:
-            t.join(timeout=5.0)
-            if t.is_alive():
-                with self._stats_lock:
-                    self._encode_error = RuntimeError(
-                        "Failed to stop VideoRecorder within timeout; thread is still alive."
-                    )
-                    self._abandoned = True
-                    logger.critical(
-                        "Failed to stop VideoRecorder within timeout; thread is still alive. "
-                        "Marking recorder as abandoned to prevent restart."
-                    )
-                    return
+            t = self._writer_thread
+            if t is not None:
+                t.join(timeout=5.0)
+                if t.is_alive():
+                    with self._stats_lock:
+                        self._encode_error = RuntimeError(
+                            "Failed to stop VideoRecorder within timeout; thread is still alive."
+                        )
+                        self._abandoned = True
+                        logger.critical(
+                            "Failed to stop VideoRecorder within timeout; thread is still alive. "
+                            "Marking recorder as abandoned to prevent restart."
+                        )
+                        return
 
-        if self._writer is not None:
-            try:
-                self._writer.close()
-            except Exception:
-                logger.exception("Failed to close WriteGear cleanly")
+            if self._writer is not None:
+                try:
+                    self._writer.close()
+                except Exception:
+                    logger.exception("Failed to close WriteGear cleanly")
 
-        self._save_timestamps()
+            self._save_timestamps()
 
-        self._writer = None
-        self._writer_thread = None
-        self._queue = None
-        self._stop_event.clear()
-        self._abandoned = False
+            self._writer = None
+            self._writer_thread = None
+            self._queue = None
+            self._stop_event.clear()
+            self._abandoned = False
 
     def get_stats(self) -> RecorderStats | None:
         if (

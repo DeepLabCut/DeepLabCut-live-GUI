@@ -216,17 +216,15 @@ class DLCLiveProcessor(QObject):
         self._initialized = False
 
     def enqueue_frame(self, frame: np.ndarray, timestamp: float) -> None:
-        frame_c = frame.copy()
-        enq_time = time.perf_counter()
-
         with self._lifecycle_lock:
             if self._state in (WorkerState.STOPPING, WorkerState.FAULTED) or self._stop_event.is_set():
                 return
+            frame_c = frame.copy()
+            enq_time = time.perf_counter()
             t = self._worker_thread
             if t is None or not t.is_alive():
                 self._start_worker_locked(frame_c, timestamp)
                 return
-
             q = self._queue  # snapshot under lock
 
         if q is None:
@@ -492,6 +490,8 @@ class DLCLiveProcessor(QObject):
 
         except Exception as exc:
             logger.exception("Failed to initialize DLCLive", exc_info=exc)
+            with self._lifecycle_lock:
+                self._state = WorkerState.FAULTED
             self.error.emit(str(exc))
             self.initialized.emit(False)
             return
