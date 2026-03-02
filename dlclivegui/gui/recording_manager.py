@@ -139,7 +139,7 @@ class RecordingManager:
         if not rec or not rec.is_running:
             return
         try:
-            rec.write(frame, timestamp=timestamp or time.time())
+            rec.write(frame, timestamp=timestamp if timestamp is not None else time.time())
         except Exception as exc:
             log.warning("Failed to write frame for %s: %s", cam_id, exc)
             try:
