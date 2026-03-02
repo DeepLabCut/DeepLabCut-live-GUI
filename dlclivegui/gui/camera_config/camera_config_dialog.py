@@ -85,6 +85,19 @@ class CameraConfigDialog(QDialog):
         self._dlc_camera_id = value
         self._refresh_camera_labels()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            # Reset cleanup guard so close cleanup runs for each session
+            self._cleanup_done = False
+        except Exception:
+            pass
+
+        # Rebuild the working copy from the latest “accepted” settings
+        self._working_settings = self._multi_camera_settings.model_copy(deep=True)
+        self._current_edit_index = None
+        self._populate_from_settings()
+
     # Maintain overlay geometry when resizing
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -304,13 +317,14 @@ class CameraConfigDialog(QDialog):
 
         active_row = self.active_cameras_list.currentRow()
         has_active_selection = active_row >= 0
-        allow_structure_edits = has_active_selection and not scan_running
 
-        self.remove_camera_btn.setEnabled(allow_structure_edits)
-        self.move_up_btn.setEnabled(allow_structure_edits and active_row > 0)
-        self.move_down_btn.setEnabled(allow_structure_edits and active_row < self.active_cameras_list.count() - 1)
-        # During loading, preview button becomes "Cancel Loading"
+        # Allow removing/moving active cameras even during scanning
+        self.remove_camera_btn.setEnabled(has_active_selection)
+        self.move_up_btn.setEnabled(has_active_selection and active_row > 0)
+        self.move_down_btn.setEnabled(has_active_selection and active_row < self.active_cameras_list.count() - 1)
+
         self.preview_btn.setEnabled(has_active_selection or self._preview.state == PreviewState.LOADING)
+
         available_row = self.available_cameras_list.currentRow()
         self.add_camera_btn.setEnabled(available_row >= 0 and not scan_running)
 
@@ -1014,6 +1028,9 @@ class CameraConfigDialog(QDialog):
                 item.setForeground(Qt.GlobalColor.gray)
             self.active_cameras_list.addItem(item)
 
+        if self.active_cameras_list.count() > 0:
+            self.active_cameras_list.setCurrentRow(0)
+
         self._refresh_available_cameras()
         self._update_button_states()
 
@@ -1076,6 +1093,7 @@ class CameraConfigDialog(QDialog):
         if self._working_settings.cameras and not active:
             QMessageBox.warning(self, "No Active Cameras", "Please enable at least one camera or remove all cameras.")
             return
+        self._multi_camera_settings = self._working_settings.model_copy(deep=True)
         self.settings_changed.emit(copy.deepcopy(self._working_settings))
 
         self._on_close_cleanup()
