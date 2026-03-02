@@ -29,6 +29,12 @@ ENABLE_PROFILING = True
 
 class PoseBackends(Enum):
     DLC_LIVE = auto()
+class WorkerState(Enum):
+    STOPPED = auto()
+    STARTING = auto()
+    RUNNING = auto()
+    STOPPING = auto()
+    FAULTED = auto()
 
 
 @dataclass
