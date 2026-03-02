@@ -277,8 +277,8 @@ class CameraConfigDialog(QDialog):
                 le = sb.lineEdit()
                 if le is not None:
                     le.installEventFilter(self)
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError) as exc:
+                LOGGER.warning("Failed to install event filter on %s: %s", sb.objectName(), exc)
 
     def _position_scan_overlay(self) -> None:
         """Position scan overlay to cover the available_cameras_list area."""
@@ -624,9 +624,22 @@ class CameraConfigDialog(QDialog):
             return
         self._show_scan_overlay(msg or "Discovering cameras…")
 
-    def _on_scan_thread_finished(self):
+    def _on_scan_thread_finished(self) -> None:
+        sender = self.sender()
+        # Ignore finished signals from old workers; only clean up the active one.
+        if sender is not None and sender is not self._scan_worker:
+            LOGGER.debug("[Scan] Ignoring finished from old worker")
+            # Make sure the old worker can be cleaned up by Qt.
+            try:
+                sender.deleteLater()
+            except AttributeError:
+                pass
+            return
+
         self._cleanup_scan_worker()
-        self._set_scan_state(CameraScanState.IDLE)
+        # Only transition to IDLE for the worker that was actually active.
+        if self._scan_state not in (CameraScanState.DONE,):
+            self._set_scan_state(CameraScanState.IDLE)
 
     def _on_scan_result(self, cams: list) -> None:
         if self.sender() is not self._scan_worker:
