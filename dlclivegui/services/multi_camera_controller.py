@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from functools import partial
 from threading import Event, Lock
 
 import cv2
@@ -19,6 +20,9 @@ from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.config import CameraSettings
 
 LOGGER = logging.getLogger(__name__)
+
+QUIT_WAIT_MS = 5000  # wait for cooperative quit (5s)
+TERMINATE_WAIT_MS = 1000  # wait after terminate (1s)
 
 
 @dataclass
@@ -143,7 +147,7 @@ class MultiCameraController(QObject):
         return len(self._started_cameras)
 
     def start(self, camera_settings: list[CameraSettings]) -> None:
-        """Start multiple cameras; accepts dataclasses, pydantic models, or dicts."""
+        """Start multiple cameras."""
         if self._running:
             LOGGER.warning("Multi-camera controller already running")
             return
@@ -158,7 +162,9 @@ class MultiCameraController(QObject):
         self._timestamps.clear()
         self._started_cameras.clear()
         self._failed_cameras.clear()
-        self._expected_cameras = len(active_settings)
+
+        unique_ids = {get_camera_id(s) for s in active_settings}
+        self._expected_cameras = len(unique_ids)
 
         for settings in active_settings:
             self._start_camera(settings)
@@ -166,8 +172,12 @@ class MultiCameraController(QObject):
     def _start_camera(self, settings: CameraSettings) -> None:
         """Start a single camera."""
         cam_id = get_camera_id(settings)
+        existing_thread = self._threads.get(cam_id)
+        if cam_id in self._workers and (existing_thread is None or not existing_thread.isRunning()):
+            LOGGER.warning(f"Stale camera worker/thread found for {cam_id}, cleaning up")
+            self._cleanup_camera(cam_id)
         if cam_id in self._workers:
-            LOGGER.warning(f"Camera {cam_id} already has a worker")
+            LOGGER.warning(f"Camera {cam_id} is already running, skipping start")
             return
 
         # Normalize and store the dataclass once
@@ -186,7 +196,24 @@ class MultiCameraController(QObject):
 
         self._workers[cam_id] = worker
         self._threads[cam_id] = thread
+        thread.finished.connect(partial(self._cleanup_camera, cam_id))
+        worker.stopped.connect(thread.quit)
         thread.start()
+
+    def _cleanup_camera(self, camera_id: str) -> None:
+        # remove stored frame data
+        with self._frame_lock:
+            self._frames.pop(camera_id, None)
+            self._timestamps.pop(camera_id, None)
+
+        worker = self._workers.pop(camera_id, None)
+        thread = self._threads.pop(camera_id, None)
+        self._settings.pop(camera_id, None)
+
+        if worker is not None:
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
 
     def stop(self, wait: bool = True) -> None:
         """Stop all cameras."""
@@ -201,17 +228,51 @@ class MultiCameraController(QObject):
 
         # Wait for threads to finish
         if wait:
-            for thread in self._threads.values():
-                if thread.isRunning():
-                    thread.quit()
-                    thread.wait(5000)
+            still_running: list[str] = []
+            for cam_id, thread in list(self._threads.items()):
+                if thread is None:
+                    self._cleanup_camera(cam_id)
+                    continue
+                if not thread.isRunning():
+                    self._cleanup_camera(cam_id)
+                    continue
 
-        self._workers.clear()
-        self._threads.clear()
-        self._settings.clear()
+                thread.quit()
+                if thread.wait(QUIT_WAIT_MS):
+                    self._cleanup_camera(cam_id)
+                    continue  # Clean exit
+
+                LOGGER.error(
+                    "Camera thread %s did not quit within %dms; forcing terminate()",
+                    cam_id,
+                    QUIT_WAIT_MS,
+                )
+
+                thread.terminate()
+                if thread.wait(TERMINATE_WAIT_MS):
+                    self._cleanup_camera(cam_id)
+                    continue  # Terminated successfully
+
+                LOGGER.critical(
+                    "Camera thread %s refused to terminate after terminate()+wait(%dms). "
+                    "Keeping references to avoid use-after-free/segfaults. "
+                    "Application restart may be required.",
+                    cam_id,
+                    TERMINATE_WAIT_MS,
+                )
+                still_running.append(cam_id)
+
+            if still_running:
+                self._started_cameras.clear()
+                return
+
         self._started_cameras.clear()
         self._failed_cameras.clear()
+        with self._frame_lock:
+            self._frames.clear()
+            self._timestamps.clear()
         self._expected_cameras = 0
+
         self.all_stopped.emit()
 
     def _on_frame_captured(self, camera_id: str, frame: np.ndarray, timestamp: float) -> None:
@@ -430,14 +491,9 @@ class MultiCameraController(QObject):
 
         # Cleanup thread
         if camera_id in self._threads:
-            thread = self._threads[camera_id]
-            if thread.isRunning():
+            thread = self._threads.get(camera_id)
+            if thread is not None and thread.isRunning():
                 thread.quit()
-                thread.wait(1000)
-            del self._threads[camera_id]
-
-        if camera_id in self._workers:
-            del self._workers[camera_id]
 
         # Remove frame data
         with self._frame_lock:
@@ -456,7 +512,11 @@ class MultiCameraController(QObject):
                 return
 
         # Check if all running cameras have stopped (normal shutdown)
-        if not self._started_cameras and self._running and not self._workers:
+        if (
+            not self._started_cameras
+            and self._running
+            and all(not t.isRunning() for t in self._threads.values() if t is not None)
+        ):
             self._running = False
             self.all_stopped.emit()
 
