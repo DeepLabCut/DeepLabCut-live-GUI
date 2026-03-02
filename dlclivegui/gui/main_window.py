@@ -196,14 +196,17 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Validate cameras from loaded config (deferred to allow window to show first)
         # NOTE IMPORTANT (tests/CI): This is scheduled via a QTimer and may fire during pytest-qt teardown.
-        QTimer.singleShot(100, self._validate_configured_cameras)
+        # NOTE @C-Achard 2026-03-02: Handling this in closeEvent should help
+        self._camera_validation_timer = QTimer(self)
+        self._camera_validation_timer.setSingleShot(True)
+        self._camera_validation_timer.timeout.connect(self._validate_configured_cameras)
+        self._camera_validation_timer.start(100)
         # If validation triggers a modal QMessageBox (warning/error) while the parent window is closing,
         # it can cause errors with unpredictable timing (heap corruption / access violations).
         #
         # Mitigations for tests/CI:
         #   - Disable this timer by monkeypatching _validate_configured_cameras in GUI tests
         #   - OR monkeypatch/override _show_warning/_show_error to no-op in GUI tests (easiest)
-        #   - OR use a cancellable QTimer attribute and stop() it in closeEvent
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2023,6 +2026,8 @@ class DLCLiveMainWindow(QMainWindow):
         if self.multi_camera_controller.is_running():
             self.multi_camera_controller.stop(wait=True)
 
+        if hasattr(self, "_camera_validation_timer") and self._camera_validation_timer.isActive():
+            self._camera_validation_timer.stop()
         # Stop all multi-camera recorders
         self._rec_manager.stop_all()
 
