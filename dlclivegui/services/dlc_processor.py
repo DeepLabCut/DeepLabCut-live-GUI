@@ -14,8 +14,6 @@ from enum import Enum, auto
 from typing import Any
 
 import numpy as np
-
-# from dlclive import DLCLive
 from PySide6.QtCore import QObject, Signal
 
 from dlclivegui.config import DLCProcessorSettings, ModelType
@@ -216,16 +214,30 @@ class DLCLiveProcessor(QObject):
         self._initialized = False
 
     def enqueue_frame(self, frame: np.ndarray, timestamp: float) -> None:
+        # Keep lifecycle lock held only for quick state checks and snapshots.
         with self._lifecycle_lock:
             if self._state in (WorkerState.STOPPING, WorkerState.FAULTED) or self._stop_event.is_set():
                 return
-            frame_c = frame.copy()
-            enq_time = time.perf_counter()
             t = self._worker_thread
-            if t is None or not t.is_alive():
-                self._start_worker_locked(frame_c, timestamp)
-                return
-            q = self._queue  # snapshot under lock
+            q = self._queue
+            should_start = t is None or not t.is_alive()
+
+        frame_c = frame.copy()
+        enq_time = time.perf_counter()
+
+        if should_start:
+            # Re-acquire the lifecycle lock to safely (re)start the worker if needed.
+            with self._lifecycle_lock:
+                # Re-check state in case it changed while we were copying the frame.
+                if self._state in (WorkerState.STOPPING, WorkerState.FAULTED) or self._stop_event.is_set():
+                    return
+                t = self._worker_thread
+                if t is None or not t.is_alive():
+                    # _start_worker_locked expects the lifecycle lock to be held.
+                    self._start_worker_locked(frame_c, timestamp)
+                    return
+                # Worker is now running; refresh queue snapshot.
+                q = self._queue
 
         if q is None:
             return

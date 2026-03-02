@@ -340,15 +340,11 @@ class VideoRecorder:
                     try:
                         q.task_done()
                     except ValueError:
+                        logger.warning("Queue task_done() called too many times in writer loop")
                         pass
 
         finally:
-            writer = self._writer
-            if writer is not None:
-                try:
-                    writer.close()
-                except Exception:
-                    logger.exception("Failed to close WriteGear during writer loop finalization")
+            self._finalize_writer()
 
     def _finalize_writer(self) -> None:
         writer = self._writer
