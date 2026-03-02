@@ -181,6 +181,9 @@ class DLCLiveProcessor(QObject):
         return Engine.from_model_path(model_path)
 
     def configure(self, settings: DLCProcessorSettings, processor: Any | None = None) -> None:
+        with self._lifecycle_lock:
+            if self._state != WorkerState.STOPPED:
+                raise RuntimeError("Cannot configure DLCLiveProcessor while it is running. Please stop it first.")
         self._settings = settings
         self._processor = processor
 
