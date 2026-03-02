@@ -21,7 +21,7 @@ from dlclivegui.processors.processor_utils import instantiate_from_scan
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
 
 logger = logging.getLogger(__name__)
-STOP_WORKER_TIMEOUT = 10.0  # seconds to wait for worker thread to stop before marking as faulted
+STOP_WORKER_TIMEOUT = 10.0  # seconds to wait for worker thread to stop before STOPPING state and reaping
 
 try:  # pragma: no cover - optional dependency
     from dlclive import (
@@ -184,8 +184,8 @@ class DLCLiveProcessor(QObject):
         with self._lifecycle_lock:
             if self._state != WorkerState.STOPPED:
                 raise RuntimeError("Cannot configure DLCLiveProcessor while it is running. Please stop it first.")
-        self._settings = settings
-        self._processor = processor
+            self._settings = settings
+            self._processor = processor
 
     def reset(self) -> None:
         """Stop the worker thread and drop the current DLCLive instance."""
@@ -215,6 +215,8 @@ class DLCLiveProcessor(QObject):
     def shutdown(self) -> None:
         stopped = self._stop_worker()
         if not stopped:
+            with self._lifecycle_lock:
+                self._pending_reset = True
             logger.warning(
                 "Shutdown requested but worker thread is still alive; DLCLive instance may not be fully released."
             )
