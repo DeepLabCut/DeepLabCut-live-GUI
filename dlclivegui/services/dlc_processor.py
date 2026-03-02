@@ -14,7 +14,8 @@ from enum import Enum, auto
 from typing import Any
 
 import numpy as np
-from dlclive import DLCLive
+
+# from dlclive import DLCLive
 from PySide6.QtCore import QObject, Signal
 
 from dlclivegui.config import DLCProcessorSettings, ModelType
@@ -22,6 +23,15 @@ from dlclivegui.processors.processor_utils import instantiate_from_scan
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
 
 logger = logging.getLogger(__name__)
+
+try:  # pragma: no cover - optional dependency
+    from dlclive import (
+        DLCLive,  # type: ignore
+    )
+except Exception as e:  # pragma: no cover - handled gracefully
+    logger.error(f"dlclive package could not be imported: {e}")
+    DLCLive = None  # type: ignore[assignment]
+
 
 # Enable profiling to get more detailed timing metrics for debugging and optimization.
 ENABLE_PROFILING = True
