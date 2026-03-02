@@ -88,8 +88,15 @@ class CameraConfigDialog(QDialog):
 
     @dlc_camera_id.setter
     def dlc_camera_id(self, value: str | None) -> None:
-        """Set the currently selected DLC camera ID."""
-        self._dlc_camera_id = value
+        if not value:
+            self._dlc_camera_id = None
+        else:
+            try:
+                b, idx = value.split(":", 1)
+                self._dlc_camera_id = f"{b.lower()}:{idx}"
+            except ValueError:
+                # fallback: lowercase entire string
+                self._dlc_camera_id = value.lower()
         self._refresh_camera_labels()
 
     def showEvent(self, event):
@@ -197,8 +204,10 @@ class CameraConfigDialog(QDialog):
             except Exception:
                 pass
             # Keep this short to reduce UI freeze
+            self._set_scan_state(CameraScanState.CANCELING, message="Canceling discovery…")
             sw.wait(300)
-        self._set_scan_state(CameraScanState.IDLE)
+            if sw.isRunning():
+                return  # Let finished() handle cleanup
         if self._scan_worker and not self._scan_worker.isRunning():
             self._cleanup_scan_worker()
 
@@ -592,7 +601,7 @@ class CameraConfigDialog(QDialog):
         w.canceled.connect(self._on_scan_canceled)
 
         # Cleanup only
-        w.finished.connect(self._cleanup_scan_worker)
+        w.finished.connect(self._on_scan_thread_finished)
 
         self.scan_started.emit(f"Scanning {backend} cameras…")
         w.start()
@@ -604,6 +613,10 @@ class CameraConfigDialog(QDialog):
         if self._scan_state not in (CameraScanState.RUNNING, CameraScanState.CANCELING):
             return
         self._show_scan_overlay(msg or "Discovering cameras…")
+
+    def _on_scan_thread_finished(self):
+        self._cleanup_scan_worker()
+        self._set_scan_state(CameraScanState.IDLE)
 
     def _on_scan_result(self, cams: list) -> None:
         if self.sender() is not self._scan_worker:
