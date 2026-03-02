@@ -10,6 +10,7 @@ import time
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Any
 
 import numpy as np
@@ -33,6 +34,10 @@ except Exception as e:  # pragma: no cover - handled gracefully
     DLCLive = None  # type: ignore[assignment]
 
 
+class PoseBackends(Enum):
+    DLC_LIVE = auto()
+
+
 @dataclass
 class PoseResult:
     pose: np.ndarray | None
@@ -42,7 +47,7 @@ class PoseResult:
 
 @dataclass(slots=True, frozen=True)
 class PoseSource:
-    backend: str  # e.g. "DLCLive"
+    backend: PoseBackends  # e.g. "DLCLive"
     model_type: ModelType | None = None
 
 
@@ -52,11 +57,11 @@ class PosePacket:
     keypoints: np.ndarray | None = None
     keypoint_names: list[str] | None = None
     individual_ids: list[str] | None = None
-    source: PoseSource = PoseSource(backend="DLCLive")
+    source: PoseSource = PoseSource(backend=PoseBackends.DLC_LIVE)
     raw: Any | None = None
 
 
-def validate_pose_array(pose: Any, *, source_backend: str = "DLCLive") -> np.ndarray:
+def validate_pose_array(pose: Any, *, source_backend: PoseBackends = PoseBackends.DLC_LIVE) -> np.ndarray:
     """
     Validate pose output shape and dtype.
 
@@ -118,9 +123,6 @@ class ProcessorStats:
     # Separated timing for GPU vs socket processor
     avg_gpu_inference_time: float = 0.0  # Pure model inference
     avg_processor_overhead: float = 0.0  # Socket processor overhead
-
-
-# _SENTINEL = object()
 
 
 class DLCLiveProcessor(QObject):
@@ -337,7 +339,7 @@ class DLCLiveProcessor(QObject):
             keypoints=pose_arr,
             keypoint_names=None,
             individual_ids=None,
-            source=PoseSource(backend="DLCLive", model_type=self._settings.model_type),
+            source=PoseSource(backend=PoseBackends.DLC_LIVE, model_type=self._settings.model_type),
             raw=raw_pose,
         )
 
