@@ -14,6 +14,7 @@ from enum import Enum, auto
 from typing import Any
 
 import numpy as np
+from dlclive import DLCLive
 from PySide6.QtCore import QObject, Signal
 
 from dlclivegui.config import DLCProcessorSettings, ModelType
@@ -22,16 +23,8 @@ from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum 
 
 logger = logging.getLogger(__name__)
 
-# Enable profiling
+# Enable profiling to get more detailed timing metrics for debugging and optimization.
 ENABLE_PROFILING = True
-
-try:  # pragma: no cover - optional dependency
-    from dlclive import (
-        DLCLive,  # type: ignore
-    )
-except Exception as e:  # pragma: no cover - handled gracefully
-    logger.error(f"dlclive package could not be imported: {e}")
-    DLCLive = None  # type: ignore[assignment]
 
 
 class PoseBackends(Enum):
@@ -169,7 +162,12 @@ class DLCLiveProcessor(QObject):
 
     def reset(self) -> None:
         """Stop the worker thread and drop the current DLCLive instance."""
-        self._stop_worker()
+        stopped = self._stop_worker()
+        if not stopped:
+            logger.warning(
+                "Reset requested but worker thread is still alive; skipping DLCLive reset to avoid potential issues."
+            )
+            return
         self._dlc = None
         self._initialized = False
         with self._stats_lock:
@@ -275,17 +273,20 @@ class DLCLiveProcessor(QObject):
 
     def _stop_worker(self) -> None:
         if self._worker_thread is None:
-            return
+            return True
 
         self._stop_event.set()
 
-        # Just wait for the timed get() loop to observe the flag and drain
+        # Wait for timed get() loop to observe the flag and drain
         self._worker_thread.join(timeout=2.0)
         if self._worker_thread.is_alive():
             logger.warning("DLC worker thread did not terminate cleanly")
+            # IMPORTANT: do not clear references; thread may still be using them
+            return False
 
         self._worker_thread = None
         self._queue = None
+        return True
 
     @contextmanager
     def _timed_processor(self):

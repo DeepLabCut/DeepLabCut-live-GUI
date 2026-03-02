@@ -1378,7 +1378,7 @@ class DLCLiveMainWindow(QMainWindow):
             dlc_cam_id = selected_id
         else:
             dlc_cam_id = available_ids[0] if available_ids else ""
-            if dlc_cam_id is not None:
+            if dlc_cam_id:
                 self._inference_camera_id = dlc_cam_id
                 self._set_dlc_combo_to_id(dlc_cam_id)
                 self.statusBar().showMessage(
