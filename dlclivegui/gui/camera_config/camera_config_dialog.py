@@ -182,7 +182,8 @@ class CameraConfigDialog(QDialog):
             # Keep this short to reduce UI freeze
             sw.wait(300)
         self._set_scan_state(CameraScanState.IDLE)
-        self._cleanup_scan_worker()
+        if self._scan_worker and not self._scan_worker.isRunning():
+            self._cleanup_scan_worker()
 
         # Cancel probe worker
         pw = getattr(self, "_probe_worker", None)
@@ -643,7 +644,9 @@ class CameraConfigDialog(QDialog):
         if self._scan_worker and self._scan_worker.isRunning():
             self.add_camera_btn.setEnabled(False)
             return
-        self.add_camera_btn.setEnabled(row >= 0 and not self._is_scan_running())
+        item = self.available_cameras_list.item(row) if row >= 0 else None
+        detected = item.data(Qt.ItemDataRole.UserRole) if item else None
+        self.add_camera_btn.setEnabled(isinstance(detected, DetectedCamera))
 
     def _on_available_camera_double_clicked(self, item: QListWidgetItem) -> None:
         if self._is_scan_running():
@@ -927,6 +930,14 @@ class CameraConfigDialog(QDialog):
             )
             return False
 
+    def _enabled_count_with(self, row: int, new_enabled: bool) -> int:
+        count = 0
+        for i, cam in enumerate(self._working_settings.cameras):
+            enabled = new_enabled if i == row else bool(cam.enabled)
+            if enabled:
+                count += 1
+        return count
+
     def _apply_camera_settings(self) -> bool:
         try:
             for sb in (
@@ -953,6 +964,14 @@ class CameraConfigDialog(QDialog):
 
             current_model = self._working_settings.cameras[row]
             new_model = self._build_model_from_form(current_model)
+
+            if bool(new_model.enabled):
+                if self._enabled_count_with(row, True) > self.MAX_CAMERAS:
+                    QMessageBox.warning(
+                        self, "Maximum Cameras", f"Maximum of {self.MAX_CAMERAS} active cameras allowed."
+                    )
+                    self.cam_enabled_checkbox.setChecked(bool(current_model.enabled))
+                    return False
 
             diff = CameraSettings.check_diff(current_model, new_model)
 
@@ -1087,6 +1106,9 @@ class CameraConfigDialog(QDialog):
         # Auto-apply pending edits before saving
         if not self._commit_pending_edits(reason="before going back to the main window"):
             return
+        if len(self._working_settings.get_active_cameras()) > self.MAX_CAMERAS:
+            QMessageBox.warning(self, "Maximum Cameras", f"Maximum of {self.MAX_CAMERAS} active cameras allowed.")
+            return
         try:
             if self.apply_settings_btn.isEnabled():
                 self._append_status("[OK button] Auto-applying pending settings before closing dialog.")
@@ -1099,13 +1121,13 @@ class CameraConfigDialog(QDialog):
             QMessageBox.warning(self, "No Active Cameras", "Please enable at least one camera or remove all cameras.")
             return
         self._multi_camera_settings = self._working_settings.model_copy(deep=True)
-        self.settings_changed.emit(copy.deepcopy(self._working_settings))
+        self.settings_changed.emit(self._multi_camera_settings)
 
         self._on_close_cleanup()
         self.accept()
 
     # -------------------------------
-    # Probe (device telemetry) management
+    # Probe management
     # -------------------------------
 
     def _start_probe_for_camera(self, cam: CameraSettings, *, apply_to_requested: bool = False) -> None:
@@ -1117,6 +1139,15 @@ class CameraConfigDialog(QDialog):
         # Don’t probe if preview is active/loading
         if self._is_preview_live():
             return
+
+        pw = getattr(self, "_probe_worker", None)
+        if pw and pw.isRunning():
+            try:
+                pw.request_cancel()
+            except Exception:
+                pass
+            pw.wait(200)
+        self._probe_worker = None
 
         # Track probe intent
         self._probe_apply_to_requested = bool(apply_to_requested)
@@ -1610,13 +1641,21 @@ class CameraConfigDialog(QDialog):
             rotation = self.cam_rotation.currentData()
             frame = apply_rotation(frame, rotation)
 
-            # Apply crop if set in the form (real-time from UI)
+            # Compute crop with clamping
             h, w = frame.shape[:2]
-            x0 = self.cam_crop_x0.value()
-            y0 = self.cam_crop_y0.value()
-            x1 = self.cam_crop_x1.value() or w
-            y1 = self.cam_crop_y1.value() or h
-            frame = apply_crop(frame, x0, y0, x1, y1)
+            x0 = max(0, min(self.cam_crop_x0.value(), w))
+            y0 = max(0, min(self.cam_crop_y0.value(), h))
+            x1_val = self.cam_crop_x1.value()
+            y1_val = self.cam_crop_y1.value()
+            x1 = max(0, min(x1_val if x1_val > 0 else w, w))
+            y1 = max(0, min(y1_val if y1_val > 0 else h, h))
+
+            # Only apply if valid rectangle; otherwise skip crop
+            if x1 > x0 and y1 > y0:
+                frame = apply_crop(frame, x0, y0, x1, y1)
+            else:
+                # Optional: show a status once, not every frame
+                pass
 
             # Resize to fit preview label
             frame = resize_to_fit(frame, max_w=400, max_h=300)
