@@ -172,8 +172,12 @@ class MultiCameraController(QObject):
     def _start_camera(self, settings: CameraSettings) -> None:
         """Start a single camera."""
         cam_id = get_camera_id(settings)
+        existing_thread = self._threads.get(cam_id)
+        if cam_id in self._workers and (existing_thread is None or not existing_thread.isRunning()):
+            LOGGER.warning(f"Stale camera worker/thread found for {cam_id}, cleaning up")
+            self._cleanup_camera(cam_id)
         if cam_id in self._workers:
-            LOGGER.warning(f"Camera {cam_id} already has a worker")
+            LOGGER.warning(f"Camera {cam_id} is already running, skipping start")
             return
 
         # Normalize and store the dataclass once
@@ -227,12 +231,15 @@ class MultiCameraController(QObject):
             still_running: list[str] = []
             for cam_id, thread in list(self._threads.items()):
                 if thread is None:
+                    self._cleanup_camera(cam_id)
                     continue
                 if not thread.isRunning():
+                    self._cleanup_camera(cam_id)
                     continue
 
                 thread.quit()
                 if thread.wait(QUIT_WAIT_MS):
+                    self._cleanup_camera(cam_id)
                     continue  # Clean exit
 
                 LOGGER.error(
@@ -243,6 +250,7 @@ class MultiCameraController(QObject):
 
                 thread.terminate()
                 if thread.wait(TERMINATE_WAIT_MS):
+                    self._cleanup_camera(cam_id)
                     continue  # Terminated successfully
 
                 LOGGER.critical(
