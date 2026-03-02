@@ -23,6 +23,8 @@ except ImportError:  # pragma: no cover - handled at runtime
 
 logger = logging.getLogger(__name__)
 
+STOP_JOIN_TIMEOUT = 5.0  # seconds
+
 
 @dataclass
 class RecorderStats:
@@ -88,10 +90,10 @@ class VideoRecorder:
             raise RuntimeError("vidgear is required for video recording. Install it with 'pip install vidgear'.")
 
         with self._lifecycle_lock:
-            if self.is_running:
-                return
             if self._abandoned:
                 raise RuntimeError("Cannot restart VideoRecorder, as a leftover thread is still running.")
+            if self.is_running:
+                return
             if self._writer is not None:
                 # Best-effort cleanup of a stale writer to avoid leaking resources.
                 logger.warning(
@@ -222,7 +224,7 @@ class VideoRecorder:
 
             t = self._writer_thread
             if t is not None:
-                t.join(timeout=5.0)
+                t.join(timeout=STOP_JOIN_TIMEOUT)
                 if t.is_alive():
                     with self._stats_lock:
                         self._encode_error = RuntimeError(
