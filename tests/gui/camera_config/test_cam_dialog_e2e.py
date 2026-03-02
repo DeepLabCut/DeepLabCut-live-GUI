@@ -463,8 +463,7 @@ def test_remove_active_camera_works_while_scan_running(dialog, qtbot, monkeypatc
     qtbot.waitUntil(lambda: dialog._is_scan_running(), timeout=1000)
     qtbot.waitUntil(lambda: dialog.scan_cancel_btn.isVisible(), timeout=1000)
 
-    # EXPECTATION: remove button should be enabled even during scan
-    # (This will fail until _update_button_states is changed to not block remove/move during scan)
+    # Remove button should be enabled even during scan
     qtbot.waitUntil(lambda: dialog.remove_camera_btn.isEnabled(), timeout=1000)
 
     # Remove the selected active camera during scan
@@ -512,7 +511,6 @@ def test_ok_updates_internal_multicamera_settings(dialog, qtbot):
     assert len(emitted.cameras) == 2
 
     # Check: internal source-of-truth must match accepted state
-    # (This will fail until _on_ok_clicked updates self._multi_camera_settings)
     assert dialog._multi_camera_settings is not None
     assert len(dialog._multi_camera_settings.cameras) == 2
 
