@@ -486,8 +486,12 @@ class DLCLiveProcessor(QObject):
             self._queue
         )  # Assign to local to avoid issues if self._queue is set to None during shutdown while loop is still running.
         if q is None:
-            logger.warning("Worker loop exiting because queue was unexpectedly None")
+            logger.warning("Worker started without a queue; exiting")
+            with self._lifecycle_lock:
+                self._state = WorkerState.FAULTED
+            self.error.emit("Worker started without a queue")
             return
+
         # -------- Main processing loop: stop-flag + timed get + drain --------
         # NOTE: We never exit early unless _stop_event is set.
         while True:
@@ -520,6 +524,12 @@ class DLCLiveProcessor(QObject):
                 queue_wait_time = time.perf_counter() - wait_start
             except queue.Empty:
                 continue
+            except Exception as exc:
+                logger.exception("Error getting item from queue", exc_info=exc)
+                with self._lifecycle_lock:
+                    self._state = WorkerState.FAULTED
+                self.error.emit(str(exc))
+                break
 
             try:
                 frame, ts, enq = item
