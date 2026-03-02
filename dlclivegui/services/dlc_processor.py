@@ -29,6 +29,8 @@ ENABLE_PROFILING = True
 
 class PoseBackends(Enum):
     DLC_LIVE = auto()
+
+
 class WorkerState(Enum):
     STOPPED = auto()
     STARTING = auto()
@@ -134,11 +136,15 @@ class DLCLiveProcessor(QObject):
 
     def __init__(self) -> None:
         super().__init__()
+        # DLCLive instance and config
         self._settings = DLCProcessorSettings()
         self._dlc: Any | None = None
         self._processor: Any | None = None
+        # Worker thread and queue
         self._queue: queue.Queue[Any] | None = None
         self._worker_thread: threading.Thread | None = None
+        self._state = WorkerState.STOPPED
+        self._lifecycle_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._initialized = False
 
@@ -190,22 +196,29 @@ class DLCLiveProcessor(QObject):
             self._processor_overhead_times.clear()
 
     def shutdown(self) -> None:
-        self._stop_worker()
+        stopped = self._stop_worker()
+        if not stopped:
+            logger.warning(
+                "Shutdown requested but worker thread is still alive; DLCLive instance may not be fully released."
+            )
+            return
         self._dlc = None
         self._initialized = False
 
     def enqueue_frame(self, frame: np.ndarray, timestamp: float) -> None:
-        # Start worker on first frame
-        if self._worker_thread is None:
-            self._start_worker(frame.copy(), timestamp)
-            return
+        frame_c = frame.copy()
+        enq_time = time.perf_counter()
 
-        # As long as worker and queue are ready, ALWAYS enqueue
-        if self._queue is None:
+        with self._lifecycle_lock:
+            if self._state in (WorkerState.STOPPING, WorkerState.FAULTED) or self._stop_event.is_set():
+                return
+            q = self._queue  # snapshot under lock
+
+        if q is None:
             return
 
         try:
-            self._queue.put_nowait((frame.copy(), timestamp, time.perf_counter()))
+            q.put_nowait((frame_c, timestamp, enq_time))
             with self._stats_lock:
                 self._frames_enqueued += 1
         except queue.Full:
@@ -263,12 +276,13 @@ class DLCLiveProcessor(QObject):
                 avg_processor_overhead=avg_proc_overhead,
             )
 
-    def _start_worker(self, init_frame: np.ndarray, init_timestamp: float) -> None:
+    def _start_worker_locked(self, init_frame: np.ndarray, init_timestamp: float) -> None:
+        # lifecycle_lock must already be held
         if self._worker_thread is not None and self._worker_thread.is_alive():
             return
-
         self._queue = queue.Queue(maxsize=1)
         self._stop_event.clear()
+        self._state = WorkerState.STARTING
         self._worker_thread = threading.Thread(
             target=self._worker_loop,
             args=(init_frame, init_timestamp),
@@ -277,21 +291,31 @@ class DLCLiveProcessor(QObject):
         )
         self._worker_thread.start()
 
-    def _stop_worker(self) -> None:
-        if self._worker_thread is None:
-            return True
+    def _start_worker(self, init_frame: np.ndarray, init_timestamp: float) -> None:
+        with self._lifecycle_lock:
+            self._start_worker_locked(init_frame, init_timestamp)
 
-        self._stop_event.set()
+    def _stop_worker(self) -> bool:
+        with self._lifecycle_lock:
+            t = self._worker_thread
+            if t is None:
+                self._state = WorkerState.STOPPED
+                return True
+            self._state = WorkerState.STOPPING
+            self._stop_event.set()
 
-        # Wait for timed get() loop to observe the flag and drain
-        self._worker_thread.join(timeout=2.0)
-        if self._worker_thread.is_alive():
-            logger.warning("DLC worker thread did not terminate cleanly")
-            # IMPORTANT: do not clear references; thread may still be using them
+        t.join(timeout=2.0)
+        if t.is_alive():
+            qsize = self._queue.qsize() if self._queue is not None else -1
+            logger.warning("DLC worker thread did not terminate cleanly (qsize=%s)", qsize)
+            with self._lifecycle_lock:
+                self._state = WorkerState.FAULTED
             return False
 
-        self._worker_thread = None
-        self._queue = None
+        with self._lifecycle_lock:
+            self._worker_thread = None
+            self._queue = None
+            self._state = WorkerState.STOPPED
         return True
 
     @contextmanager
@@ -335,6 +359,8 @@ class DLCLiveProcessor(QObject):
         Single source of truth for: inference -> (optional) processor timing -> signal emit -> stats.
         Updates: frames_processed, latency, processing timeline, profiling metrics.
         """
+        if self._dlc is None:
+            raise RuntimeError("DLCLive instance is not initialized.")
         # Time GPU inference (and processor overhead when present)
         with self._timed_processor() as proc_holder:
             inference_start = time.perf_counter()
@@ -384,8 +410,6 @@ class DLCLiveProcessor(QObject):
     def _worker_loop(self, init_frame: np.ndarray, init_timestamp: float) -> None:
         try:
             # -------- Initialization (unchanged) --------
-            if DLCLive is None:
-                raise RuntimeError("The 'dlclive' package is required for pose estimation.")
             if not self._settings.model_path:
                 raise RuntimeError("No DLCLive model path configured.")
 
@@ -410,7 +434,14 @@ class DLCLiveProcessor(QObject):
             if self._settings.device is not None:
                 options["device"] = self._settings.device
 
-            self._dlc = DLCLive(**options)
+            try:
+                self._dlc = DLCLive(**options)
+            except Exception as exc:
+                with self._lifecycle_lock:
+                    self._state = WorkerState.FAULTED
+                raise RuntimeError(
+                    f"Failed to initialize DLCLive with model '{self._settings.model_path}': {exc}"
+                ) from exc
 
             # First inference to initialize
             init_inference_start = time.perf_counter()
@@ -423,6 +454,8 @@ class DLCLiveProcessor(QObject):
 
             self._initialized = True
             self.initialized.emit(True)
+            with self._lifecycle_lock:
+                self._state = WorkerState.RUNNING
 
             total_init_time = time.perf_counter() - init_start
             logger.info(
@@ -442,14 +475,20 @@ class DLCLiveProcessor(QObject):
             self.initialized.emit(False)
             return
 
+        q = (
+            self._queue
+        )  # Assign to local to avoid issues if self._queue is set to None during shutdown while loop is still running.
+        if q is None:
+            logger.warning("Worker loop exiting because queue was unexpectedly None")
+            return
         # -------- Main processing loop: stop-flag + timed get + drain --------
         # NOTE: We never exit early unless _stop_event is set.
         while True:
             # If stop requested, only exit when queue is empty
             if self._stop_event.is_set():
-                if self._queue is not None:
+                if q is not None:
                     try:
-                        frame, ts, enq = self._queue.get_nowait()
+                        frame, ts, enq = q.get_nowait()
                     except queue.Empty:
                         # NOW it is safe to exit
                         break
@@ -462,7 +501,7 @@ class DLCLiveProcessor(QObject):
                             self.error.emit(str(exc))
                         finally:
                             try:
-                                self._queue.task_done()
+                                q.task_done()
                             except ValueError:
                                 pass
                         continue  # check stop_event again WITHOUT breaking
@@ -470,7 +509,7 @@ class DLCLiveProcessor(QObject):
             # Normal operation: timed get
             try:
                 wait_start = time.perf_counter()
-                item = self._queue.get(timeout=0.05)
+                item = q.get(timeout=0.05)
                 queue_wait_time = time.perf_counter() - wait_start
             except queue.Empty:
                 continue
@@ -483,7 +522,7 @@ class DLCLiveProcessor(QObject):
                 self.error.emit(str(exc))
             finally:
                 try:
-                    self._queue.task_done()
+                    q.task_done()
                 except ValueError:
                     pass
 
@@ -520,6 +559,10 @@ class DLCService:
         self._proc.enqueue_frame(frame, ts)
 
     def configure(self, settings: DLCProcessorSettings, scanned_processors: dict, selected_key) -> bool:
+        with self._proc._lifecycle_lock:
+            if self._proc._state != WorkerState.STOPPED:
+                raise RuntimeError("Cannot configure DLCLiveProcessor while it is running. Please stop it first.")
+
         processor = None
         if selected_key is not None and scanned_processors:
             try:
@@ -533,11 +576,9 @@ class DLCService:
     def start(self):
         self._proc.reset()
         self.active = True
-        self.initialized = False
 
     def stop(self):
         self.active = False
-        self.initialized = False
         self._proc.reset()
         self._last_pose = None
 
