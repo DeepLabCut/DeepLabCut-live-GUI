@@ -71,8 +71,15 @@ class CameraConfigDialog(QDialog):
         self._settings_scroll_contents: QWidget | None = None
 
         self._setup_ui()
-        self._populate_from_settings()
         self._connect_signals()
+        self._populate_from_settings()
+        self._post_init_sync_selection()
+
+    def _post_init_sync_selection(self) -> None:
+        """Ensure current selection state is reflected in _current_edit_index."""
+        row = self.active_cameras_list.currentRow()
+        if row >= 0:
+            self._on_active_camera_selected(row)
 
     @property
     def dlc_camera_id(self) -> str | None:
@@ -93,6 +100,9 @@ class CameraConfigDialog(QDialog):
         # Rebuild the working copy from the latest “accepted” settings
         self._working_settings = self._multi_camera_settings.model_copy(deep=True)
         self._current_edit_index = None
+
+        self._populate_from_settings()
+        self._post_init_sync_selection()
 
     # Maintain overlay geometry when resizing
     def resizeEvent(self, event):
@@ -126,7 +136,7 @@ class CameraConfigDialog(QDialog):
         # Intercept Enter in FPS and crop spinboxes
         if event.type() == QEvent.KeyPress and isinstance(event, QKeyEvent):
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                if obj in (
+                spinboxes = (
                     self.cam_fps,
                     self.cam_width,
                     self.cam_height,
@@ -136,15 +146,22 @@ class CameraConfigDialog(QDialog):
                     self.cam_crop_y0,
                     self.cam_crop_x1,
                     self.cam_crop_y1,
-                ):
-                    # Commit any pending text → value
+                )
+
+                def _matches(sb):
+                    return obj is sb or obj is getattr(sb, "lineEdit", lambda: None)()
+
+                if any(_matches(sb) for sb in spinboxes):
                     try:
-                        obj.interpretText()
+                        # If event came from lineEdit, interpretText still belongs to the spinbox
+                        for sb in spinboxes:
+                            if _matches(sb):
+                                sb.interpretText()
+                                break
                     except Exception:
                         pass
-                    # Apply settings to persist crop/FPS to CameraSettings
+
                     self._apply_camera_settings()
-                    # Consume so OK isn't triggered
                     return True
 
         return super().eventFilter(obj, event)
@@ -226,6 +243,24 @@ class CameraConfigDialog(QDialog):
     # -------------------------------
     def _setup_ui(self) -> None:
         setup_camera_config_dialog_ui(self)
+        for sb in (
+            self.cam_fps,
+            self.cam_width,
+            self.cam_height,
+            self.cam_exposure,
+            self.cam_gain,
+            self.cam_crop_x0,
+            self.cam_crop_y0,
+            self.cam_crop_x1,
+            self.cam_crop_y1,
+        ):
+            try:
+                sb.installEventFilter(self)
+                le = sb.lineEdit()
+                if le is not None:
+                    le.installEventFilter(self)
+            except Exception:
+                pass
 
     def _position_scan_overlay(self) -> None:
         """Position scan overlay to cover the available_cameras_list area."""
@@ -325,8 +360,8 @@ class CameraConfigDialog(QDialog):
 
         self.preview_btn.setEnabled(has_active_selection or self._preview.state == PreviewState.LOADING)
 
-        available_row = self.available_cameras_list.currentRow()
-        self.add_camera_btn.setEnabled(available_row >= 0 and not scan_running)
+        self.available_cameras_list.currentRow()
+        self.add_camera_btn.setEnabled((self._selected_detected_camera() is not None) and not scan_running)
 
     def _sync_preview_ui(self) -> None:
         """Update buttons/overlays based on preview state only."""
@@ -394,6 +429,16 @@ class CameraConfigDialog(QDialog):
         this_id = f"{(cam.backend or '').lower()}:{cam.index}"
         dlc_indicator = " [DLC]" if this_id == self._dlc_camera_id and cam.enabled else ""
         return f"{status} {cam.name} [{cam.backend}:{cam.index}]{dlc_indicator}"
+
+    def _selected_detected_camera(self) -> DetectedCamera | None:
+        row = self.available_cameras_list.currentRow()
+        if row < 0:
+            return None
+        item = self.available_cameras_list.item(row)
+        if not item:
+            return None
+        detected = item.data(Qt.ItemDataRole.UserRole)
+        return detected if isinstance(detected, DetectedCamera) else None
 
     def _update_active_list_item(self, row: int, cam: CameraSettings) -> None:
         """Refresh the active camera list row text and color."""
@@ -479,7 +524,6 @@ class CameraConfigDialog(QDialog):
     def _set_scan_state(self, state: CameraScanState, message: str | None = None) -> None:
         """Single source of truth for scan-related UI controls."""
         self._scan_state = state
-
         scanning = state in (CameraScanState.RUNNING, CameraScanState.CANCELING)
 
         # Overlay message
@@ -500,10 +544,8 @@ class CameraConfigDialog(QDialog):
         # Disable discovery inputs while scanning
         self.backend_combo.setEnabled(not scanning)
         self.refresh_btn.setEnabled(not scanning)
-
         # Available list + add flow blocked while scanning (structure edits disallowed)
         self.available_cameras_list.setEnabled(not scanning)
-        self.add_camera_btn.setEnabled(False if scanning else (self.available_cameras_list.currentRow() >= 0))
 
         self._update_button_states()
 
@@ -644,8 +686,7 @@ class CameraConfigDialog(QDialog):
         if self._scan_worker and self._scan_worker.isRunning():
             self.add_camera_btn.setEnabled(False)
             return
-        item = self.available_cameras_list.item(row) if row >= 0 else None
-        detected = item.data(Qt.ItemDataRole.UserRole) if item else None
+        detected = self._selected_detected_camera()
         self.add_camera_btn.setEnabled(isinstance(detected, DetectedCamera))
 
     def _on_available_camera_double_clicked(self, item: QListWidgetItem) -> None:
