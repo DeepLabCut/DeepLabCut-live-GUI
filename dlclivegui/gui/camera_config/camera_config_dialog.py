@@ -87,16 +87,12 @@ class CameraConfigDialog(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
-        try:
-            # Reset cleanup guard so close cleanup runs for each session
-            self._cleanup_done = False
-        except Exception:
-            pass
+        # Reset cleanup guard so close cleanup runs for each session
+        self._cleanup_done = False
 
         # Rebuild the working copy from the latest “accepted” settings
         self._working_settings = self._multi_camera_settings.model_copy(deep=True)
         self._current_edit_index = None
-        self._populate_from_settings()
 
     # Maintain overlay geometry when resizing
     def resizeEvent(self, event):
@@ -301,6 +297,9 @@ class CameraConfigDialog(QDialog):
     # -------------------------------
     # UI state updates
     # -------------------------------
+    def _is_preview_live(self) -> bool:
+        return self._preview.state in (PreviewState.ACTIVE, PreviewState.LOADING)
+
     def _set_apply_dirty(self, dirty: bool) -> None:
         """Visually mark Apply Settings button as 'dirty' (pending edits)."""
         if dirty:
@@ -391,7 +390,7 @@ class CameraConfigDialog(QDialog):
 
     def _format_camera_label(self, cam: CameraSettings, index: int = -1) -> str:
         status = "✓" if cam.enabled else "○"
-        this_id = f"{cam.backend}:{cam.index}"
+        this_id = f"{(cam.backend or '').lower()}:{cam.index}"
         dlc_indicator = " [DLC]" if this_id == self._dlc_camera_id and cam.enabled else ""
         return f"{status} {cam.name} [{cam.backend}:{cam.index}]{dlc_indicator}"
 
@@ -690,7 +689,7 @@ class CameraConfigDialog(QDialog):
                 return
 
         # Stop any running preview when selection changes
-        if self._preview.state in (PreviewState.ACTIVE, PreviewState.LOADING):
+        if self.is_preview_live():
             self._stop_preview()
 
         self._current_edit_index = row
@@ -726,6 +725,9 @@ class CameraConfigDialog(QDialog):
             return
         item = self.available_cameras_list.item(row)
         detected = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(detected, DetectedCamera):
+            QMessageBox.warning(self, "Invalid Selection", "Selected item is not a valid camera.")
+            return
         # make sure this is to lower for comparison against camera_identity_key
         backend = (self.backend_combo.currentData() or "opencv").lower()
 
@@ -765,6 +767,8 @@ class CameraConfigDialog(QDialog):
         self._start_probe_for_camera(new_cam)
 
     def _remove_selected_camera(self) -> None:
+        if self._is_preview_live():
+            self._stop_preview()
         if not self._commit_pending_edits(reason="before removing a camera"):
             return
         row = self.active_cameras_list.currentRow()
@@ -779,6 +783,8 @@ class CameraConfigDialog(QDialog):
         self._update_button_states()
 
     def _move_camera_up(self) -> None:
+        if self._is_preview_live():
+            self._stop_preview()
         if not self._commit_pending_edits(reason="before reordering cameras"):
             return
         row = self.active_cameras_list.currentRow()
@@ -792,6 +798,8 @@ class CameraConfigDialog(QDialog):
         self._refresh_camera_labels()
 
     def _move_camera_down(self) -> None:
+        if self._is_preview_live():
+            self._stop_preview()
         if not self._commit_pending_edits(reason="before reordering cameras"):
             return
         row = self.active_cameras_list.currentRow()
@@ -948,9 +956,6 @@ class CameraConfigDialog(QDialog):
 
             diff = CameraSettings.check_diff(current_model, new_model)
 
-            self._working_settings.cameras[row] = new_model
-            self._update_active_list_item(row, new_model)
-
             LOGGER.debug(
                 "[Apply] backend=%s idx=%s changes=%s",
                 getattr(new_model, "backend", None),
@@ -1043,7 +1048,7 @@ class CameraConfigDialog(QDialog):
             return
 
         # Stop preview to avoid fighting an open capture
-        if self._preview.state in (PreviewState.ACTIVE, PreviewState.LOADING):
+        if self.is_preview_live():
             self._stop_preview()
 
         cam = self._working_settings.cameras[row]
@@ -1110,7 +1115,7 @@ class CameraConfigDialog(QDialog):
         requested width/height/fps with detected device values.
         """
         # Don’t probe if preview is active/loading
-        if self._preview.state in (PreviewState.ACTIVE, PreviewState.LOADING):
+        if self._is_preview_live():
             return
 
         # Track probe intent
@@ -1357,7 +1362,7 @@ class CameraConfigDialog(QDialog):
         """Start camera preview asynchronously (no UI freeze)."""
         if not self._commit_pending_edits(reason="before starting preview"):
             return
-        if self._preview.state in (PreviewState.ACTIVE, PreviewState.LOADING):
+        if self._is_preview_live():
             return
 
         row = self._current_edit_index
