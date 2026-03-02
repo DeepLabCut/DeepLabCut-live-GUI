@@ -149,7 +149,9 @@ class VideoRecorder:
         error = self._current_error()
         if error is not None:
             raise RuntimeError(f"Video encoding failed: {error}") from error
-        if not self.is_running or self._queue is None:
+
+        q = self._queue
+        if not self.is_running or q is None:
             return False
         if self._stop_event.is_set():
             return False
@@ -192,12 +194,11 @@ class VideoRecorder:
                 return False
 
         try:
-            assert self._queue is not None
-            self._queue.put((frame, timestamp), block=False)
+            q.put((frame, timestamp), block=False)
         except queue.Full:
             with self._stats_lock:
                 self._dropped_frames += 1
-            queue_size = self._queue.qsize() if self._queue is not None else -1
+            queue_size = q.qsize()
             logger.warning(
                 "Video recorder queue full; dropping frame. queue=%d buffer=%d",
                 queue_size,
