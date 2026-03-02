@@ -48,6 +48,9 @@ class CameraConfigDialog(QDialog):
         self.setWindowTitle("Configure Cameras")
         self.setMinimumSize(960, 720)
 
+        self._cleanp_requested = False
+        self._cleanup_completed = False
+
         self._dlc_camera_id: str | None = None
         # self.dlc_camera_id: str | None = None
         # Actual/working camera settings
@@ -106,7 +109,7 @@ class CameraConfigDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         # Reset cleanup guard so close cleanup runs for each session
-        self._cleanup_done = False
+        self._cleanup_completed = False
 
         # Rebuild the working copy from the latest “accepted” settings
         self._working_settings = self._multi_camera_settings.model_copy(deep=True)
@@ -192,9 +195,9 @@ class CameraConfigDialog(QDialog):
     def _on_close_cleanup(self) -> None:
         """Stop preview, cancel workers, and reset scan UI. Safe to call multiple times."""
         # Guard to avoid running twice if closeEvent + reject/accept both run
-        if getattr(self, "_cleanup_done", False):
+        if getattr(self, "_cleanup_completed", False):
             return
-        self._cleanup_done = True
+        self._cleanp_requested = True
 
         # Stop preview (loader + backend + timer)
         try:
@@ -255,6 +258,13 @@ class CameraConfigDialog(QDialog):
             self._sync_scan_ui()
         except Exception:
             pass
+
+        if (
+            not self._is_scan_running()
+            and not self._is_preview_live()
+            and not (self._probe_worker and self._probe_worker.isRunning())
+        ):
+            self._cleanup_completed = True
 
     # -------------------------------
     # UI setup
@@ -637,9 +647,7 @@ class CameraConfigDialog(QDialog):
             return
 
         self._cleanup_scan_worker()
-        # Only transition to IDLE for the worker that was actually active.
-        if self._scan_state not in (CameraScanState.DONE,):
-            self._set_scan_state(CameraScanState.IDLE)
+        self._set_scan_state(CameraScanState.IDLE)
 
     def _on_scan_result(self, cams: list) -> None:
         if self.sender() is not self._scan_worker:
