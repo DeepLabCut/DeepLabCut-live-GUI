@@ -217,6 +217,11 @@ class DLCLiveProcessor(QObject):
         with self._lifecycle_lock:
             if self._state in (WorkerState.STOPPING, WorkerState.FAULTED) or self._stop_event.is_set():
                 return
+            t = self._worker_thread
+            if t is None or not t.is_alive():
+                self._start_worker_locked(frame_c, timestamp)
+                return
+
             q = self._queue  # snapshot under lock
 
         if q is None:
@@ -305,6 +310,7 @@ class DLCLiveProcessor(QObject):
             t = self._worker_thread
             if t is None:
                 self._state = WorkerState.STOPPED
+                self._stop_event.clear()
                 return True
             self._state = WorkerState.STOPPING
             self._stop_event.set()
@@ -321,6 +327,7 @@ class DLCLiveProcessor(QObject):
             self._worker_thread = None
             self._queue = None
             self._state = WorkerState.STOPPED
+            self._stop_event.clear()
         return True
 
     @contextmanager
