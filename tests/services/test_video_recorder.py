@@ -367,3 +367,8 @@ def test_stop_timeout_marks_abandoned_and_prevents_restart(
 
     # Call stop again to clear resources / reset flags (now it can join cleanly)
     rec.stop()
+    # After the writer thread has exited, a second stop() should fully reset state
+    # so that the recorder is no longer marked as abandoned and can be restarted.
+    assert rec._abandoned is False
+    rec.start()
+    rec.stop()

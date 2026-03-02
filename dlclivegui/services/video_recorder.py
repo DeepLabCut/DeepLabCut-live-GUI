@@ -212,7 +212,16 @@ class VideoRecorder:
     def stop(self) -> None:
         with self._lifecycle_lock:
             if self._writer is None and not self.is_running:
-                return
+                # If the recorder was previously marked as abandoned because the
+                # writer thread did not stop in time, but the thread has since
+                # exited, perform cleanup so the recorder can become fully stopped
+                # and restartable.
+                t = self._writer_thread
+                if self._abandoned and (t is None or not t.is_alive()):
+                    self._writer_thread = None
+                    self._queue = None
+                    self._stop_event.clear()
+                    self._abandoned = False
 
             self._stop_event.set()
 
