@@ -504,7 +504,11 @@ class MultiCameraController(QObject):
                 return
 
         # Check if all running cameras have stopped (normal shutdown)
-        if not self._started_cameras and all(not t.isRunning() for t in self._threads.values() if t is not None):
+        if (
+            not self._started_cameras
+            and not self._started_cameras
+            and all(not t.isRunning() for t in self._threads.values() if t is not None)
+        ):
             self._running = False
             self.all_stopped.emit()
 
