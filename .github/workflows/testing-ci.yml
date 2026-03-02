@@ -54,8 +54,9 @@ jobs:
             libxcb-cursor0
 
       - name: Run tests (exclude hardware) with coverage via tox
+        shell: bash -eo pipefail {0}
         run: |
-          tox -q | tee tox-output.log
+          tox -q 2>&1 | tee tox-output.log
 
 
       - name: Append Coverage Summary to Job
