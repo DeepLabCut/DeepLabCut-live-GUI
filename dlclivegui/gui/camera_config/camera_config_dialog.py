@@ -48,7 +48,7 @@ class CameraConfigDialog(QDialog):
         self.setWindowTitle("Configure Cameras")
         self.setMinimumSize(960, 720)
 
-        self._cleanp_requested = False
+        self._cleanup_requested = False
         self._cleanup_completed = False
 
         self._dlc_camera_id: str | None = None
@@ -197,7 +197,7 @@ class CameraConfigDialog(QDialog):
         # Guard to avoid running twice if closeEvent + reject/accept both run
         if getattr(self, "_cleanup_completed", False):
             return
-        self._cleanp_requested = True
+        self._cleanup_requested = True
 
         # Stop preview (loader + backend + timer)
         try:
