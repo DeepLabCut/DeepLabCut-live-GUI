@@ -16,7 +16,9 @@ GUI to run [DeepLabCut-Live](https://github.com/DeepLabCut/DeepLabCut-live) on a
 
 ## Update
 
-> The GUI has been modernized and is now built with **PySide6 (Qt)** (replacing tkinter). The new interface supports **multi-camera preview** with a **tiled display**, PyTorch models, and features improved interactive workflows for experimental use.
+The GUI has been modernized and is now built with **PySide6 (Qt)** (replacing tkinter).
+
+The new interface supports **multi-camera preview** with a **tiled display**, PyTorch models, and features improved interactive workflows for experimental use.
 
 ---
 
@@ -38,7 +40,7 @@ GUI to run [DeepLabCut-Live](https://github.com/DeepLabCut/DeepLabCut-live) on a
 
 ## Installation
 
-While `deeplabcut-live-gui` is available on **PyPI**, the newest PySide6-based GUI and features are currently best obtained by installing from source.
+While the previous `deeplabcut-live-gui` is available on PyPI, the newest PySide6-based GUI and features **must be obtained by installing from source**.
 
 To get the **latest version**, please follow the **instructions below**.
 
@@ -112,7 +114,7 @@ pip install -e .[tf]
 ## Run the application
 
 > [!TIP]
-> For GPU/CUDA support specifics and framework compatibility, please follow the official PyTorch/TensorFlow install guidance for your OS and drivers.
+> For GPU/CUDA support specifics and framework compatibility, please follow the **official PyTorch/TensorFlow install guidance** for your OS and drivers.
 
 After installation, start the application with:
 
@@ -164,7 +166,7 @@ Typical workflow:
 
 ## References
 
-If you use this code we kindly ask you to please cite:
+If you use this code, we kindly ask you to please cite:
 
 - **[Kane et al., eLife 2020](https://elifesciences.org/articles/61909)**
   - If preferred, see the **[Preprint](https://www.biorxiv.org/content/10.1101/2020.08.04.236422v2)**
