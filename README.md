@@ -1,7 +1,6 @@
 # DeepLabCut-Live-GUI <img src="https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/1596193544929-NHMVMXPVEYZ6R4I45DSR/ke17ZwdGBToddI8pDm48kOHwsIwndRGCkvek0XAcW4ZZw-zPPgdn4jUwVcJE1ZvWEtT5uBSRWt4vQZAgTJucoTqqXjS3CfNDSuuf31e0tVH0wqgmu6zkAOZ3crWCtkmLcPIuzHaxU8QRzZwtrVtHupu3E9Ef3XsXP1C_826c-iU/DLCLIVEGUI_LOGO.png?format=750w" width="350" title="DLC-live GUI" alt="DLC LIVE! GUI" align="right" vspace="100"/>
 
 
-[![Code style:Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 ![PyPI - Package Version](https://img.shields.io/pypi/v/deeplabcut-live-gui)
 ![PyPI - Downloads](https://img.shields.io/pypi/dm/deeplabcut-live-gui?color=purple)
 ![Python versions](https://img.shields.io/pypi/pyversions/deeplabcut-live-gui)
@@ -11,6 +10,7 @@
 [![Image.sc forum](https://img.shields.io/badge/dynamic/json.svg?label=forum&url=https%3A%2F%2Fforum.image.sc%2Ftags%2Fdeeplabcut.json&query=%24.topic_list.tags.0.topic_count&colorB=brightgreen&&suffix=%20topics&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAABPklEQVR42m3SyyqFURTA8Y2BER0TDyExZ+aSPIKUlPIITFzKeQWXwhBlQrmFgUzMMFLKZeguBu5y+//17dP3nc5vuPdee6299gohUYYaDGOyyACq4JmQVoFujOMR77hNfOAGM+hBOQqB9TjHD36xhAa04RCuuXeKOvwHVWIKL9jCK2bRiV284QgL8MwEjAneeo9VNOEaBhzALGtoRy02cIcWhE34jj5YxgW+E5Z4iTPkMYpPLCNY3hdOYEfNbKYdmNngZ1jyEzw7h7AIb3fRTQ95OAZ6yQpGYHMMtOTgouktYwxuXsHgWLLl+4x++Kx1FJrjLTagA77bTPvYgw1rRqY56e+w7GNYsqX6JfPwi7aR+Y5SA+BXtKIRfkfJAYgj14tpOF6+I46c4/cAM3UhM3JxyKsxiOIhH0IO6SH/A1Kb1WBeUjbkAAAAAElFTkSuQmCC)](https://forum.image.sc/tags/deeplabcut)
 [![Gitter](https://badges.gitter.im/DeepLabCut/community.svg)](https://gitter.im/DeepLabCut/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 [![Twitter Follow](https://img.shields.io/twitter/follow/DeepLabCut.svg?label=DeepLabCut&style=social)](https://twitter.com/DeepLabCut)
+[![Code style:Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 GUI to run [DeepLabCut-Live](https://github.com/DeepLabCut/DeepLabCut-live) on a video feed, **preview and record from one or multiple cameras**, and optionally record external timestamps and processor outputs.
 
