@@ -12,6 +12,7 @@ Rotation = Literal[0, 90, 180, 270]
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
 Precision = Literal["FP32", "FP16"]
 ModelType = Literal["pytorch", "tensorflow"]
+ModelBackendType = Literal["dlc", "poet"]
 BGR = tuple[int, int, int]  # (B, G, R) color format
 
 
@@ -380,42 +381,14 @@ class ApplicationSettings(BaseModel):
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
     bbox: BoundingBoxSettings = Field(default_factory=BoundingBoxSettings)
     visualization: VisualizationSettings = Field(default_factory=VisualizationSettings)
+    model_backend: ModelBackendType = "dlc"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ApplicationSettings:
-        camera_data = data.get("camera", {})
-        multi_camera_data = data.get("multi_camera", {})
-        dlc_data = data.get("dlc", {})
-        recording_data = data.get("recording", {})
-        bbox_data = data.get("bbox", {})
-        visualization_data = data.get("visualization", {})
-
-        camera = CameraSettings(**camera_data)
-        multi_camera = MultiCameraSettings.from_dict(multi_camera_data)
-        dlc = DLCProcessorSettings(**dlc_data)
-        recording = RecordingSettings(**recording_data)
-        bbox = BoundingBoxSettings(**bbox_data)
-        visualization = VisualizationSettings(**visualization_data)
-
-        return cls(
-            camera=camera,
-            multi_camera=multi_camera,
-            dlc=dlc,
-            recording=recording,
-            bbox=bbox,
-            visualization=visualization,
-        )
+        return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "version": self.version,
-            "camera": self.camera.model_dump(),
-            "multi_camera": self.multi_camera.to_dict(),
-            "dlc": self.dlc.model_dump(),
-            "recording": self.recording.model_dump(),
-            "bbox": self.bbox.model_dump(),
-            "visualization": self.visualization.model_dump(),
-        }
+        return self.model_dump()
 
     @classmethod
     def load(cls, path: Path | str) -> ApplicationSettings:

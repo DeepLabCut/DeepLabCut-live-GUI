@@ -93,7 +93,7 @@ from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 
 logger = logging.getLogger("DLCLiveGUI")
 
-AUTORELOAD_CONFIG: bool = False  # Automatically reload config file
+AUTORELOAD_CONFIG: bool = True  # Automatically reload config file
 
 
 class DLCLiveMainWindow(QMainWindow):
@@ -150,8 +150,8 @@ class DLCLiveMainWindow(QMainWindow):
         self._rec_manager = RecordingManager()
         self._dlc = DLCLiveProcessor()
         self._poet = POETProcessor()
-        self._pose_proc = self._dlc
         self._backend_name = "dlc"
+        self._pose_proc = self._dlc
         self.multi_camera_controller = MultiCameraController()
 
         self._config = config
@@ -201,8 +201,10 @@ class DLCLiveMainWindow(QMainWindow):
         self._load_icons()
         self._preview_pixmap = QPixmap(LOGO_ALPHA)
         self._setup_ui()
+        self._set_backend(config.model_backend)
         self._connect_signals()
         self._apply_config(self._config)
+        self._restore_backend_and_model_from_last_state()
         self._refresh_processors()  # Scan and populate processor dropdown
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
@@ -950,6 +952,21 @@ class DLCLiveMainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Config
     # ------------------------------------------------------------------
+    def _restore_backend_and_model_from_last_state(self) -> None:
+        backend = (
+            getattr(self._config, "model_backend", None)
+            or getattr(self._config, "backend", None)
+            or self.settings.value("app/backend", "dlc", type=str)
+        )
+
+        self._set_backend(backend)  # single source of truth
+
+        if backend == "poet":
+            last_poet = self._get_last_poet_weights_path()
+            if last_poet and Path(last_poet).exists():
+                self.model_path_edit.setText(last_poet)
+                self._configure_poet()
+
     def _apply_viz_settings_to_ui(self, viz: VisualizationSettings) -> None:
         """Set UI state from VisualizationSettings (does not require skeleton to exist)."""
         # Pose toggle
@@ -1064,6 +1081,7 @@ class DLCLiveMainWindow(QMainWindow):
             recording=self._recording_settings_from_ui(),
             bbox=self._bbox_settings_from_ui(),
             visualization=self._visualization_settings_from_ui(),
+            model_backend=self._backend_name,
         )
 
     def _parse_json(self, value: str) -> dict:
@@ -2040,6 +2058,7 @@ class DLCLiveMainWindow(QMainWindow):
             self.model_path_edit.setPlaceholderText("/path/to/exported/model or .pt/.pth")
             self.statusBar().showMessage("Backend set to DLCLive", 2000)
 
+        self.settings.setValue("app/backend", self._backend_name)
         self._connect_pose_processor_signals()
         self._update_metrics()
 
