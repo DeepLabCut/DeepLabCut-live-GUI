@@ -28,6 +28,44 @@ except ImportError as e:
 logger = logging.getLogger(__name__)
 ENABLE_PROFILING = True
 
+POET_KEYPOINT_NAMES = (
+    "nose",
+    "left_eye",
+    "right_eye",
+    "left_ear",
+    "right_ear",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+)
+
+
+POET_SKELETON = [
+    ("left_ear", "left_eye"),
+    ("right_ear", "right_eye"),
+    ("left_eye", "nose"),
+    ("nose", "right_eye"),
+    ("left_shoulder", "right_shoulder"),
+    ("left_shoulder", "left_elbow"),
+    ("right_shoulder", "right_elbow"),
+    ("left_elbow", "left_wrist"),
+    ("right_elbow", "right_wrist"),
+    ("left_hip", "right_hip"),
+    ("left_hip", "left_knee"),
+    ("right_hip", "right_knee"),
+    ("left_knee", "left_ankle"),
+    ("right_knee", "right_ankle"),
+]
+
 
 # FIMXE @C-Achard Duplicated code - refactor to a shared module
 @dataclass
