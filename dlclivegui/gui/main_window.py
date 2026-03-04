@@ -885,9 +885,9 @@ class DLCLiveMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ signals
     def _connect_pose_processor_signals(self) -> None:
-        self._pose_proc.pose_ready.connect(self._on_pose_ready)
-        self._pose_proc.error.connect(self._on_dlc_error)  # reuse existing handler
-        self._pose_proc.initialized.connect(self._on_dlc_initialised)
+        self._pose_proc.pose_ready.connect(self._on_pose_ready, Qt.ConnectionType.UniqueConnection)
+        self._pose_proc.error.connect(self._on_dlc_error, Qt.ConnectionType.UniqueConnection)  # reuse existing handler
+        self._pose_proc.initialized.connect(self._on_dlc_initialised, Qt.ConnectionType.UniqueConnection)
 
     def _disconnect_pose_processor_signals(self) -> None:
         try:
@@ -953,13 +953,20 @@ class DLCLiveMainWindow(QMainWindow):
     # Config
     # ------------------------------------------------------------------
     def _restore_backend_and_model_from_last_state(self) -> None:
-        backend = (
-            getattr(self._config, "model_backend", None)
-            or getattr(self._config, "backend", None)
-            or self.settings.value("app/backend", "dlc", type=str)
-        )
+        backend = getattr(self._config, "model_backend", None) or self.settings.value("app/backend", "dlc", type=str)
 
-        self._set_backend(backend)  # single source of truth
+        # Block signals while setting checked state
+        for a in (self.action_backend_dlc, self.action_backend_poet):
+            a.blockSignals(True)
+        try:
+            self.action_backend_poet.setChecked(backend == "poet")
+            self.action_backend_dlc.setChecked(backend != "poet")
+        finally:
+            for a in (self.action_backend_dlc, self.action_backend_poet):
+                a.blockSignals(False)
+
+        # Now do the real switch exactly once
+        self._set_backend(backend)
 
         if backend == "poet":
             last_poet = self._get_last_poet_weights_path()
@@ -2036,6 +2043,9 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage("No skeleton definition available for this model.", 3000)
 
     def _set_backend(self, name: str) -> None:
+        name = (name or "dlc").lower()
+        if name == self._backend_name:
+            return  # idempotent
         if self._dlc_active:
             self._show_warning("Stop pose inference before switching models.")
             # restore check state
