@@ -74,8 +74,8 @@ from ..processors.processor_utils import (
 )
 from ..services.dlc_processor import DLCLiveProcessor, PoseResult
 from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
-from ..utils import skeleton as skel
 from ..services.poet_processor import POETProcessor
+from ..utils import skeleton as skel
 from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose, keypoint_colors_bgr
 from ..utils.poet_weights import (
     WeightsDownloadWorker,
@@ -99,6 +99,8 @@ AUTORELOAD_CONFIG: bool = False  # Automatically reload config file
 
 class DLCLiveMainWindow(QMainWindow):
     """Main application window."""
+
+    _POET_WEIGHTS_SETTINGS_KEY = "poet/weights_path"
 
     def __init__(self, config: ApplicationSettings | None = None):
         super().__init__()
@@ -1260,12 +1262,16 @@ class DLCLiveMainWindow(QMainWindow):
             self._refresh_processors()
 
     def _action_poet_download_weights(self) -> None:
-        url = getattr(self, "POET_WEIGHTS_URL", "").strip()
+        from dlclivegui.utils.poet_weights import POET_WEIGHTS_FILENAME, POET_WEIGHTS_URL, poet_default_weights_dir
+
+        url = POET_WEIGHTS_URL
         if not url:
             self._show_error("POET_WEIGHTS_URL is not set in the application.")
             return
 
-        dest = poet_default_weights_dir() / getattr(self, "POET_WEIGHTS_FILENAME", "poet_weights.pth")
+        dest_dir = poet_default_weights_dir()
+        dest_dir.mkdir(parents=True, exist_ok=True)  # <-- NEW: ensure default dir exists
+        dest = dest_dir / POET_WEIGHTS_FILENAME
 
         dlg = QProgressDialog("Downloading POET weights…", "Hide", 0, 100, self)
         dlg.setWindowModality(Qt.WindowModal)
@@ -1275,14 +1281,21 @@ class DLCLiveMainWindow(QMainWindow):
         dlg.show()
 
         worker = WeightsDownloadWorker(url, dest)
-
         worker.progress.connect(lambda p: dlg.setValue(p))
 
         def on_done(path_str: str) -> None:
             dlg.setValue(100)
-            # set model path and switch backend
+
+            # Auto-set model path to downloaded weights
             self.model_path_edit.setText(path_str)
-            self._model_path_store.save_if_valid(path_str)
+
+            # Persist POET weights path for future "Browse…" start dir / preselect
+            self._set_last_poet_weights_path(path_str)  # <-- NEW
+
+            # Optional: If you *don’t* want to overwrite DLC “last model”, remove this line:
+            # self._model_path_store.save_if_valid(path_str)
+
+            # Switch backend to POET (already in your code)
             self.action_backend_poet.setChecked(True)
             self._set_backend("poet")
             self.statusBar().showMessage(f"POET weights downloaded to: {path_str}", 5000)
@@ -1298,13 +1311,33 @@ class DLCLiveMainWindow(QMainWindow):
         t.start()
 
     def _action_poet_browse_weights(self) -> None:
-        file_name, _ = QFileDialog.getOpenFileName(
-            self, "Select POET weights", str(Path.home()), "Weights (*.pth *.pt)"
-        )
-        if not file_name:
+        # Prefer last saved POET weights path, else default POET weights dir, else home
+        last = self._get_last_poet_weights_path()
+        if last and Path(last).exists():
+            start_dir = str(Path(last).parent)
+            preselect = last
+        else:
+            start_dir = str(poet_default_weights_dir())
+            preselect = ""
+
+        dlg = QFileDialog(self, "Select POET weights")
+        dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
+        dlg.setNameFilter("Weights (*.pth *.pt)")
+        dlg.setDirectory(start_dir)
+        if preselect:
+            dlg.selectFile(preselect)
+
+        if not dlg.exec():
             return
+
+        selected = dlg.selectedFiles()
+        if not selected:
+            return
+
+        file_name = selected[0]
         self.model_path_edit.setText(file_name)
-        self._model_path_store.save_if_valid(file_name)
+        self._set_last_poet_weights_path(file_name)  # <-- NEW
+
         self.action_backend_poet.setChecked(True)
         self._set_backend("poet")
 
@@ -2001,20 +2034,40 @@ class DLCLiveMainWindow(QMainWindow):
     def _configure_pose_backend(self) -> bool:
         if self._backend_name == "dlc":
             return self._configure_dlc()
+        elif self._backend_name == "poet":
+            return self._configure_poet()
 
-        # POET config: model_path_edit must be a checkpoint file
+    def _configure_poet(self) -> bool:
         ckpt = self.model_path_edit.text().strip()
         p = Path(ckpt)
         if not ckpt or not p.exists() or p.suffix.lower() not in (".pt", ".pth"):
             self._show_error("Please select POET weights (.pt/.pth) or use Models → POET → Download weights…")
             return False
 
-        # Reuse your existing device config if you want
         device = self._config.dlc.device if self._config.dlc.device is not None else "cuda"
-
-        # Use p_cutoff OR introduce a POET threshold later
         self._poet.configure(ckpt, device=device, threshold=self._p_cutoff, use_amp=True)
+
+        try:
+            self._skeleton = self._poet.get_skeleton()
+            self._skeleton_auto_disabled = False
+            self._last_skeleton_disable_msg = None
+            self._sync_skeleton_controls_from_model()
+            self.show_skeleton_checkbox.setEnabled(True)
+            self.statusBar().showMessage("Skeleton available: POET (COCO17)", 3000)
+        except Exception as e:
+            logger.warning(f"Failed to configure POET skeleton: {e}")
+            self._skeleton = None
+            self.show_skeleton_checkbox.setEnabled(False)
+            self.skeleton_color_combo.setEnabled(False)
+            self.skeleton_thickness_spin.setEnabled(False)
+
         return True
+
+    def _set_last_poet_weights_path(self, path: str) -> None:
+        self.settings.setValue(self._POET_WEIGHTS_SETTINGS_KEY, path)
+
+    def _get_last_poet_weights_path(self) -> str:
+        return self.settings.value(self._POET_WEIGHTS_SETTINGS_KEY, "", type=str) or ""
 
     def _configure_dlc(self) -> bool:
         try:

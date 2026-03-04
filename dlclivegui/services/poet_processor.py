@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from PySide6.QtCore import QObject, Signal
 
+from ..utils import skeleton as skel
 from .dlc_processor import PoseResult
 
 try:
@@ -57,6 +58,12 @@ POET_SKELETON = [
     ("left_shoulder", "right_shoulder"),
     ("left_shoulder", "left_elbow"),
     ("right_shoulder", "right_elbow"),
+    ### Custom additions
+    ("nose", "left_shoulder"),
+    ("nose", "right_shoulder"),
+    ("left_shoulder", "left_hip"),
+    ("right_shoulder", "right_hip"),
+    ###
     ("left_elbow", "left_wrist"),
     ("right_elbow", "right_wrist"),
     ("left_hip", "right_hip"),
@@ -65,6 +72,57 @@ POET_SKELETON = [
     ("left_knee", "left_ankle"),
     ("right_knee", "right_ankle"),
 ]
+
+
+_POET_SKELETON_CACHE: skel.Skeleton | None = None
+
+
+def _build_poet_skeleton() -> skel.Skeleton:
+    """
+    Build a Skeleton instance for POET using the COCO_PERSON_KEYPOINT_NAMES order.
+    Colors are ignored on purpose: GUI controls colors (solid/gradient).
+    """
+    keypoints = list(POET_KEYPOINT_NAMES)
+    name_to_idx = {k: i for i, k in enumerate(keypoints)}
+
+    edges: list[tuple[int, int]] = []
+    missing: set[str] = set()
+
+    for a, b in POET_SKELETON:
+        ia = name_to_idx.get(a)
+        ib = name_to_idx.get(b)
+        if ia is None:
+            missing.add(a)
+            continue
+        if ib is None:
+            missing.add(b)
+            continue
+        edges.append((ia, ib))
+
+    if missing:
+        # This should never happen if names are consistent, but it's safer.
+        raise RuntimeError(f"POET skeleton references unknown keypoints: {sorted(missing)}")
+
+    model = skel.SkeletonModel(
+        name="POET (COCO17)",
+        keypoints=keypoints,
+        edges=edges,
+        # Style/color are intentionally not “baked in” here:
+        # GUI will set skel.style.mode/color/thickness at runtime.
+        edge_colors={},  # IMPORTANT: ignore per-edge colors entirely
+        default_color=(0, 255, 255),
+    )
+    return skel.Skeleton(model)
+
+
+def get_poet_skeleton() -> skel.Skeleton:
+    """
+    Cached accessor so we build the skeleton once.
+    """
+    global _POET_SKELETON_CACHE
+    if _POET_SKELETON_CACHE is None:
+        _POET_SKELETON_CACHE = _build_poet_skeleton()
+    return _POET_SKELETON_CACHE
 
 
 # FIMXE @C-Achard Duplicated code - refactor to a shared module
@@ -149,6 +207,12 @@ class POETProcessor(QObject):
 
         # Otherwise let torch parse it (cpu, cuda:0, mps, etc.)
         return torch.device(device_str)
+
+    def get_skeleton(self) -> skel.Skeleton:
+        return get_poet_skeleton()
+
+    def get_keypoint_names(self) -> tuple[str, ...]:
+        return POET_KEYPOINT_NAMES
 
     def configure(self, checkpoint_path: str, *, device: str = "cuda", threshold: float = 0.7, use_amp: bool = True):
         self._checkpoint_path = checkpoint_path
