@@ -29,6 +29,10 @@ class WeightsDownloadWorker(QObject):
     def run(self) -> None:
         try:
             self.dest.parent.mkdir(parents=True, exist_ok=True)
+            if self.dest.is_file():
+                self.progress.emit(100)
+                self.finished.emit(str(self.dest))
+                return
             tmp = self.dest.with_suffix(self.dest.suffix + ".part")
 
             req = urllib.request.Request(self.url, headers={"User-Agent": "DLCLiveGUI"})

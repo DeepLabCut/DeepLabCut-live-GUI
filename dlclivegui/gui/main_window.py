@@ -6,7 +6,6 @@ import importlib.metadata
 import json
 import logging
 import os
-import threading
 import time
 from pathlib import Path
 
@@ -16,7 +15,7 @@ from pathlib import Path
 # os.environ["PYLON_CAMEMU"] = "2"
 import cv2
 import numpy as np
-from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import QRect, QSettings, Qt, QThread, QTimer, QUrl, Slot
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -1261,54 +1260,67 @@ class DLCLiveMainWindow(QMainWindow):
             self.processor_folder_edit.setText(directory)
             self._refresh_processors()
 
-    def _action_poet_download_weights(self) -> None:
-        from dlclivegui.utils.poet_weights import POET_WEIGHTS_FILENAME, POET_WEIGHTS_URL, poet_default_weights_dir
+    @Slot(str)
+    def _on_poet_weights_downloaded(self, path_str: str) -> None:
+        self._poet_progress_dialog.setValue(100)
 
-        url = POET_WEIGHTS_URL
-        if not url:
+        self.model_path_edit.setText(path_str)
+        self._set_last_poet_weights_path(path_str)
+
+        self.action_backend_poet.setChecked(True)
+        self._set_backend("poet")
+        self._configure_poet()
+
+        self.statusBar().showMessage(f"POET weights ready: {path_str}", 5000)
+
+        self._poet_download_thread.quit()
+
+    @Slot(str)
+    def _on_poet_weights_error(self, msg: str) -> None:
+        self._poet_progress_dialog.cancel()
+        self._show_error(f"Failed to download POET weights:\n{msg}")
+        self._poet_download_thread.quit()
+
+    def _action_poet_download_weights(self) -> None:
+        from dlclivegui.utils.poet_weights import (
+            POET_WEIGHTS_FILENAME,
+            POET_WEIGHTS_URL,
+            poet_default_weights_dir,
+        )
+
+        if not POET_WEIGHTS_URL:
             self._show_error("POET_WEIGHTS_URL is not set in the application.")
             return
 
         dest_dir = poet_default_weights_dir()
-        dest_dir.mkdir(parents=True, exist_ok=True)  # <-- NEW: ensure default dir exists
+        dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / POET_WEIGHTS_FILENAME
 
-        dlg = QProgressDialog("Downloading POET weights…", "Hide", 0, 100, self)
+        self._poet_progress_dialog = QProgressDialog("Downloading POET weights…", "Hide", 0, 100, self)
+        dlg = self._poet_progress_dialog
         dlg.setWindowModality(Qt.WindowModal)
         dlg.setAutoClose(True)
         dlg.setAutoReset(True)
         dlg.setValue(0)
         dlg.show()
 
-        worker = WeightsDownloadWorker(url, dest)
-        worker.progress.connect(lambda p: dlg.setValue(p))
+        # --- Create Qt thread ---
+        self._poet_download_thread = QThread(self)
+        thread = self._poet_download_thread
+        self._poet_download_worker = WeightsDownloadWorker(POET_WEIGHTS_URL, dest)
+        worker = self._poet_download_worker
+        worker.moveToThread(thread)
 
-        def on_done(path_str: str) -> None:
-            dlg.setValue(100)
+        # --- Wire signals ---
+        worker.progress.connect(dlg.setValue)
+        worker.finished.connect(self._on_poet_weights_downloaded)
+        worker.error.connect(self._on_poet_weights_error)
 
-            # Auto-set model path to downloaded weights
-            self.model_path_edit.setText(path_str)
+        thread.started.connect(self._poet_download_worker.run)
+        thread.finished.connect(self._poet_download_worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
 
-            # Persist POET weights path for future "Browse…" start dir / preselect
-            self._set_last_poet_weights_path(path_str)  # <-- NEW
-
-            # Optional: If you *don’t* want to overwrite DLC “last model”, remove this line:
-            # self._model_path_store.save_if_valid(path_str)
-
-            # Switch backend to POET (already in your code)
-            self.action_backend_poet.setChecked(True)
-            self._set_backend("poet")
-            self.statusBar().showMessage(f"POET weights downloaded to: {path_str}", 5000)
-
-        def on_err(msg: str) -> None:
-            dlg.cancel()
-            self._show_error(f"Failed to download POET weights:\n{msg}")
-
-        worker.finished.connect(on_done)
-        worker.error.connect(on_err)
-
-        t = threading.Thread(target=worker.run, daemon=True)
-        t.start()
+        thread.start()
 
     def _action_poet_browse_weights(self) -> None:
         # Prefer last saved POET weights path, else default POET weights dir, else home
