@@ -5,10 +5,15 @@ name: Build, validate & Release
 # - For releases: when you push a tag like v1.2.3, this workflow runs the full matrix validation, then builds the release artifacts, and finally publishes to PyPI if all checks pass.
 
 on:
+  workflow_dispatch:
   # Release pipeline: run only when pushing a version-like tag (e.g. v1.2.3)
+  # Test pipeline: run tests on main/master pushes & pull requests AND tags.
   push:
     tags:
       - "v*.*.*"
+    branches:
+      - main
+      - master
 
   # Validation pipeline: run on PRs targeting main/master (no publishing)
   pull_request:
