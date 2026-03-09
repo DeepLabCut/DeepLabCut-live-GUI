@@ -1,0 +1,148 @@
+name: Build, validate & Release
+
+# Usage:
+# - For PRs: this workflow runs automatically to validate the package builds and installs correctly on multiple Python versions. No artifacts are published for PRs.
+# - For releases: when you push a tag like v1.2.3, this workflow runs the full matrix validation, then builds the release artifacts, and finally publishes to PyPI if all checks pass.
+
+on:
+  # Release pipeline: run only when pushing a version-like tag (e.g. v1.2.3)
+  push:
+    tags:
+      - "v*.*.*"
+
+  # Validation pipeline: run on PRs targeting main/master (no publishing)
+  pull_request:
+    branches: [main, master]
+    types: [opened, edited, synchronize, reopened]
+
+# This workflow only needs to read repo contents
+permissions:
+  contents: read
+
+jobs:
+  test_matrix:
+    # PR + tag validation: ensure the project builds and installs on multiple Pythons
+    name: Test install & smoke (Py ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Run all versions even if one fails (helps spot version-specific issues)
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      # Fetch repository sources so we can build/test
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Qt/OpenGL runtime deps (Ubuntu)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libopengl0 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0
+
+      # Install packaging toolchain:
+      # - build: creates wheel + sdist
+      # - twine: validates metadata and can upload (upload only happens in publish job)
+      - name: Install build tools
+        run: python -m pip install -U pip build twine
+
+      # Build distributions just to verify packaging config works on this Python
+      - name: Build (for validation only)
+        run: python -m build
+
+      # Validate dist metadata (README rendering, required fields, etc.)
+      - name: Twine check
+        run: python -m twine check dist/*
+
+      # Smoke test: install the built wheel and verify the package imports
+      - name: Install from wheel & smoke test
+        run: |
+          WHEEL=$(ls -1 dist/*.whl | head -n 1)
+          echo "Using wheel: $WHEEL"
+          python -m pip install \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            "deeplabcut-live-gui[pytorch] @ file://$(pwd)/${WHEEL}"
+          python -c "import dlclivegui; print('Imported dlclivegui OK')"
+          QT_QPA_PLATFORM=offscreen dlclivegui --help
+
+  build_release:
+    # Tag-only build: produce the "official" release artifacts once matrix passed
+    name: Build release artifacts
+    runs-on: ubuntu-latest
+    needs: test_matrix
+    # Safety gate: only run for version tags, never for PRs/branches
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      # Fetch sources for the tagged revision
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      # Use a single, modern Python for the canonical release build
+      - name: Set up Python (release build)
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Install build + validation tooling
+      - name: Install build tools
+        run: python -m pip install -U pip build twine
+
+      # Produce both sdist and wheel in dist/
+      - name: Build distributions
+        run: python -m build
+
+      # Re-check metadata on the final artifacts we intend to publish
+      - name: Twine check
+        run: python -m twine check dist/*
+
+      # Store dist/ outputs so the publish job uploads exactly what we built here
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish:
+    # Tag-only publish: download built artifacts and upload them to PyPI
+    name: Publish to PyPI (API token)
+    runs-on: ubuntu-latest
+    needs: build_release
+    # Safety gate: only run for version tags
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      # Retrieve the exact distributions produced in build_release
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # Set up Python (only needed to run Twine)
+      - name: Set up Python (publish)
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      # Install twine for uploading
+      - name: Install Twine
+        run: python -m pip install -U twine
+
+      # Upload to PyPI using an API token stored in repo secrets.
+      # --skip-existing avoids failing if you re-run a workflow for the same version.
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.TWINE_API_KEY }}
+        run: python -m twine upload --non-interactive --verbose --skip-existing dist/*

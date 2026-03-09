@@ -1,0 +1,660 @@
+"""OpenCV-based camera backend (platform-optimized, fast startup, robust read)."""
+
+# dlclivegui/cameras/backends/opencv_backend.py
+from __future__ import annotations
+
+import logging
+import os
+import platform
+import time
+from typing import TYPE_CHECKING, Literal
+
+import cv2
+import numpy as np
+from pydantic import BaseModel, Field, model_validator
+
+from ..base import CameraBackend, SupportLevel, register_backend
+from ..factory import DetectedCamera
+from .utils.opencv_discovery import (
+    ModeRequest,
+    apply_mode_with_verification,
+    list_cameras,
+    open_with_fallbacks,
+    preferred_backend_for_platform,
+    select_camera,
+)
+
+logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from dlclivegui.config import CameraSettings
+
+
+AspectPolicy = Literal["strict", "prefer", "ignore"]
+FourCC = Literal["MJPG", "YUY2", "NV12", "H264", "XRGB", "BGR3"]  # expand as needed
+ResolutionPolicy = Literal["warn", "strict", "accept"]
+
+
+class OpenCVOptions(BaseModel):
+    # --- device selection ---
+    device_id: str | None = None  # stable_id from cv2-enumerate-cameras
+    device_name: str | None = None  # substring match
+    device_vid: int | None = None
+    device_pid: int | None = None
+
+    # --- backend/open behavior ---
+    api: str | None = None  # "DSHOW", "MSMF", "V4L2", "AVFOUNDATION", "ANY"
+    fast_start: bool = False
+    alt_index_probe: bool = False
+
+    # --- format negotiation policy ---
+    resolution_policy: ResolutionPolicy = "warn"
+    persist_last_applied_resolution: bool = False
+    enforce_aspect: AspectPolicy = "strict"
+    aspect_tol: float = Field(default=0.01, ge=0.0, le=0.2)  # 1% default
+    area_tol: float = Field(default=0.05, ge=0.0, le=1.0)  # 5% default
+
+    # --- codec policy ---
+    prefer_mjpg: bool = False  # opt-in MJPG attempt on Windows
+    fourcc: FourCC | None = None  # explicit request overrides prefer_mjpg
+
+    @model_validator(mode="after")
+    def _codec_consistency(self):
+        # If user explicitly sets fourcc, we don't need prefer_mjpg
+        if self.fourcc is not None and self.prefer_mjpg:
+            self.prefer_mjpg = False
+        return self
+
+
+@register_backend("opencv")
+class OpenCVCameraBackend(CameraBackend):
+    """
+    Platform-aware OpenCV backend:
+
+    - Windows: prefer DSHOW, fall back to MSMF/ANY.
+      Order: FOURCC -> resolution -> FPS. Try standard UVC modes if request fails.
+      Optional alt-index probe (index+1) for Logitech-like endpoints: properties["alt_index_probe"]=True
+      Optional fast-start: properties["fast_start"]=True
+
+    - macOS: prefer AVFOUNDATION, fall back to ANY.
+
+    - Linux: prefer V4L2, fall back to GStreamer (if explicitly requested) or ANY.
+      Discovery can use /dev/video* to avoid blind opens (via quick_ping()).
+
+    Robust read(): returns (None, ts) on transient failures (never raises).
+    """
+
+    OPTIONS_KEY = "opencv"
+    SAFE_PROP_IDS = {
+        int(getattr(cv2, "CAP_PROP_EXPOSURE", 15)),
+        int(getattr(cv2, "CAP_PROP_AUTO_EXPOSURE", 21)),
+        int(getattr(cv2, "CAP_PROP_GAIN", 14)),
+        int(getattr(cv2, "CAP_PROP_FPS", 5)),
+        int(getattr(cv2, "CAP_PROP_BRIGHTNESS", 10)),
+        int(getattr(cv2, "CAP_PROP_CONTRAST", 11)),
+        int(getattr(cv2, "CAP_PROP_SATURATION", 12)),
+        int(getattr(cv2, "CAP_PROP_HUE", 13)),
+        int(getattr(cv2, "CAP_PROP_CONVERT_RGB", 17)),
+    }
+
+    def __init__(self, settings):
+        super().__init__(settings)
+        self._capture: cv2.VideoCapture | None = None
+
+        # do not overwrite based on actual resolution
+        self._requested_resolution: tuple[int, int] = self._get_requested_resolution()
+
+        opt = self.parse_options(settings)
+        self._fast_start: bool = opt.fast_start
+        self._alt_index_probe: bool = opt.alt_index_probe
+        self._actual_width: int | None = None
+        self._actual_height: int | None = None
+        self._actual_fps: float | None = None
+        self._codec_str: str = ""
+        self._mjpg_attempted: bool = False
+
+    @classmethod
+    def parse_options(cls, settings: CameraSettings) -> OpenCVOptions:
+        raw = (settings.properties or {}).get(cls.OPTIONS_KEY, {})
+        # no flat keys supported — clean ground
+        return OpenCVOptions.model_validate(raw)
+
+    @classmethod
+    def options_schema(cls) -> dict:
+        return OpenCVOptions.model_json_schema()
+
+    @classmethod
+    def static_capabilities(cls) -> dict[str, SupportLevel]:
+        caps = super().static_capabilities()
+        caps.update(
+            {
+                "set_resolution": SupportLevel.BEST_EFFORT,  # see tolerance values in OpenCVOptions
+                "set_fps": SupportLevel.BEST_EFFORT,  # ditto
+                "set_exposure": SupportLevel.UNSUPPORTED,
+                "set_gain": SupportLevel.UNSUPPORTED,
+                "device_discovery": SupportLevel.SUPPORTED,  # uses opencv2-enumerate-cameras
+                "stable_identity": SupportLevel.SUPPORTED,  # to get VID/PID/path
+            }
+        )
+        return caps
+
+    # ----------------------------
+    # Public API
+    # ----------------------------
+    def open(self) -> None:
+        opt = self.parse_options(self.settings)  # typed + validated
+        backend_flag = self._preferred_backend_flag(opt.api)
+        index = int(self.settings.index)
+
+        cams = list_cameras(backend_flag)
+        chosen = select_camera(
+            cams,
+            prefer_stable_id=opt.device_id,
+            prefer_name_substr=opt.device_name,
+            prefer_vid_pid=(opt.device_vid, opt.device_pid) if opt.device_vid and opt.device_pid else None,
+            fallback_index=index,
+        )
+
+        if chosen:
+            index = chosen.index
+            backend_flag = chosen.backend
+
+            if opt.device_id is None:
+                ns = self.settings.properties.setdefault(self.OPTIONS_KEY, {})
+                ns["device_id"] = chosen.stable_id
+                if chosen.vid is not None:
+                    ns["device_vid"] = int(chosen.vid)
+                if chosen.pid is not None:
+                    ns["device_pid"] = int(chosen.pid)
+                if chosen.name:
+                    ns["device_name"] = chosen.name
+                logger.debug("Persisted OpenCV device_id=%s", chosen.stable_id)
+
+        self._capture, spec = open_with_fallbacks(index, backend_flag)
+
+        # 2) Optional Logitech endpoint trick (Windows only)
+        # if (
+        #     (not self._capture or not self._capture.isOpened())
+        #     and platform.system() == "Windows"
+        #     and self._alt_index_probe
+        # ):
+        #     logger.debug("Primary index failed; trying alternate endpoint (index+1) with same backend.")
+        #     self._capture = self._try_open(index + 1, backend_flag)
+
+        if not self._capture or not self._capture.isOpened():
+            raise RuntimeError(
+                f"Unable to open camera index {self.settings.index} with OpenCV (backend {backend_flag})"
+            )
+
+        # MSMF hint for slow systems
+        if platform.system() == "Windows" and backend_flag == getattr(cv2, "CAP_MSMF", cv2.CAP_ANY):
+            if os.environ.get("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS") is None:
+                logger.debug(
+                    "MSMF selected. If open is slow, consider setting "
+                    "OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS=0 before importing cv2."
+                )
+
+        if platform.system() == "Windows" and opt.prefer_mjpg and not self._mjpg_attempted:
+            self._maybe_enable_mjpg()
+
+        self._configure_capture()
+
+    def read(self) -> tuple[np.ndarray | None, float]:
+        """Robust frame read: return (None, ts) on transient failures; never raises."""
+        if self._capture is None:
+            logger.warning("OpenCVCameraBackend.read() called before open()")
+            return None, time.time()
+        try:
+            if not self._capture.grab():
+                return None, time.time()
+            success, frame = self._capture.retrieve()
+            if not success or frame is None or frame.size == 0:
+                return None, time.time()
+            return frame, time.time()
+        except Exception as exc:
+            logger.debug(f"OpenCV read transient error: {exc}")
+            return None, time.time()
+
+    def close(self) -> None:
+        self._release_capture()
+
+    def stop(self) -> None:
+        self._release_capture()
+
+    def device_name(self) -> str:
+        base_name = "OpenCV"
+        if self._capture and hasattr(self._capture, "getBackendName"):
+            try:
+                backend_name = self._capture.getBackendName()
+            except Exception:
+                backend_name = ""
+            if backend_name:
+                base_name = backend_name
+        return f"{base_name} camera #{self.settings.index}"
+
+    @property
+    def actual_fps(self) -> float | None:
+        """Return the actual configured FPS, if known."""
+        return self._actual_fps
+
+    @property
+    def actual_resolution(self) -> tuple[int, int] | None:
+        """Return the actual configured resolution, if known."""
+        if self._actual_width and self._actual_height:
+            return (self._actual_width, self._actual_height)
+        return None
+
+    @property
+    def actual_exposure(self) -> None:
+        """Not supported by OpenCV backend."""
+        return None
+
+    @property
+    def actual_gain(self) -> None:
+        """Not supported by OpenCV backend."""
+        return None
+
+    # ----------------------------
+    # Internal helpers
+    # ----------------------------
+
+    def _release_capture(self) -> None:
+        if self._capture:
+            try:
+                self._capture.release()
+            except Exception:
+                pass
+            finally:
+                self._capture = None
+            time.sleep(0.02 if platform.system() == "Windows" else 0.0)
+
+    def _get_requested_resolution(self) -> tuple[int, int]:
+        """Return (w, h) requested by settings with precedence."""
+        # 1) legacy / explicit property
+        props = self.settings.properties or {}
+        res = props.get("resolution", None)
+        if isinstance(res, (list, tuple)) and len(res) == 2:
+            try:
+                w, h = int(res[0]), int(res[1])
+                if w > 0 and h > 0:
+                    return (w, h)
+            except Exception:
+                pass
+
+        # 2) canonical GUI fields
+        try:
+            w, h = int(getattr(self.settings, "width", 0)), int(getattr(self.settings, "height", 0))
+            if w > 0 and h > 0:
+                return (w, h)
+        except Exception:
+            pass
+
+        # 3) default -> auto (0,0)
+        return (0, 0)
+
+    def _apply_resolution_policy(
+        self,
+        *,
+        requested: tuple[int, int],
+        actual: tuple[int, int] | None,
+        policy: ResolutionPolicy,
+    ) -> None:
+        """Enforce mismatch policy (warn/strict/accept)."""
+        if not actual:
+            if policy == "strict":
+                logger.warning("Cannot verify resolution; proceeding in strict mode")
+            return
+
+        req_w, req_h = requested
+        act_w, act_h = actual
+
+        if req_w <= 0 or req_h <= 0:
+            return  # no request
+
+        if (act_w, act_h) == (req_w, req_h):
+            return
+
+        msg = f"Resolution mismatch: requested {req_w}x{req_h}, got {act_w}x{act_h}"
+
+        if policy == "strict":
+            raise RuntimeError(msg)
+        elif policy == "warn":
+            logger.warning(msg)
+        else:  # "accept"
+            logger.info(msg)
+
+    def _preferred_backend_flag(self, backend: str | None) -> int:
+        """Resolve preferred backend by platform."""
+        if backend:  # user override
+            return self._resolve_backend(backend)
+
+        sys = platform.system()
+        if sys == "Windows":
+            # Prefer DSHOW (faster on many Logitech cams), then MSMF, then ANY.
+            return getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY)
+        if sys == "Darwin":
+            return getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)
+        # Linux and others
+        return getattr(cv2, "CAP_V4L2", cv2.CAP_ANY)
+
+    def _try_open(self, index: int, preferred_flag: int) -> cv2.VideoCapture | None:
+        """Try opening with preferred backend, then platform-appropriate fallbacks."""
+        # 1) preferred
+        cap = cv2.VideoCapture(index, preferred_flag)
+        if cap.isOpened():
+            return cap
+
+        sys = platform.system()
+
+        # Windows: try MSMF then ANY
+        if sys == "Windows":
+            ms = getattr(cv2, "CAP_MSMF", cv2.CAP_ANY)
+            if preferred_flag != ms:
+                cap = cv2.VideoCapture(index, ms)
+                if cap.isOpened():
+                    return cap
+
+        # macOS: ANY fallback
+        if sys == "Darwin":
+            cap = cv2.VideoCapture(index, cv2.CAP_ANY)
+            if cap.isOpened():
+                return cap
+
+        # Linux: try ANY as final fallback
+        cap = cv2.VideoCapture(index, cv2.CAP_ANY)
+        if cap.isOpened():
+            return cap
+        return None
+
+    def _configure_capture(self) -> None:
+        if not self._capture:
+            return
+
+        opt = self.parse_options(self.settings)
+
+        # --- FOURCC ---
+        self._codec_str = self._read_codec_string()
+        logger.info(f"Camera using codec: {self._codec_str}")
+
+        # Requested values
+        req_w, req_h = self._requested_resolution
+        enforce_aspect = opt.enforce_aspect
+        requested_fps = float(self.settings.fps or 0.0)
+
+        # -------------------------
+        # Resolution
+        # -------------------------
+        # If Auto (0,0), do NOT set resolution. Just read device defaults.
+        if req_w <= 0 or req_h <= 0:
+            # Some backends only populate width/height after a few grabs.
+            try:
+                # for _ in range(3):
+                self._capture.grab()
+            except Exception:
+                pass
+
+            self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            self._actual_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
+
+            # For clarity in logs
+            logger.debug("Resolution requested=Auto, actual=%sx%s", self._actual_width, self._actual_height)
+
+        elif not self._fast_start:
+            # Verified, robust path (tries candidates + verifies)
+            result = apply_mode_with_verification(
+                self._capture,
+                ModeRequest(
+                    width=req_w,
+                    height=req_h,
+                    fps=requested_fps,
+                    enforce_aspect=enforce_aspect,
+                    aspect_tol=float(opt.aspect_tol),
+                    area_tol=float(opt.area_tol),
+                ),
+            )
+            self._actual_width, self._actual_height, self._actual_fps = result.width, result.height, result.fps
+
+        else:
+            # fast-start: best-effort set (no heavy negotiation)
+            try:
+                self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(req_w))
+                self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(req_h))
+            except Exception as exc:
+                logger.debug(f"Fast-start resolution set failed: {exc}")
+
+            self._actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            self._actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+
+        # Compute actual_res tuple if known
+        actual_res = None
+        if (self._actual_width or 0) > 0 and (self._actual_height or 0) > 0:
+            actual_res = (int(self._actual_width), int(self._actual_height))
+
+        logger.debug(
+            "Resolution requested=%s, actual=%s",
+            f"{req_w}x{req_h}" if (req_w > 0 and req_h > 0) else "Auto",
+            f"{actual_res[0]}x{actual_res[1]}" if actual_res else "unknown",
+        )
+
+        # Enforce mismatch policy only if a real request was made
+        if req_w > 0 and req_h > 0:
+            self._apply_resolution_policy(
+                requested=(req_w, req_h),
+                actual=actual_res,
+                policy=opt.resolution_policy,
+            )
+
+        # Optional persistence of "what worked"
+        if opt.persist_last_applied_resolution and actual_res:
+            ns = self.settings.properties.setdefault(self.OPTIONS_KEY, {})
+            ns["last_applied_resolution"] = [actual_res[0], actual_res[1]]
+
+        # -------------------------
+        # FPS (best-effort always)
+        # -------------------------
+        # IMPORTANT CHANGE:
+        # Try to set FPS even in fast_start (best-effort). Many drivers ignore it,
+        # and CAP_PROP_FPS often reads back 0, but at least we attempt consistently.
+        if requested_fps > 0.0:
+            try:
+                current_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
+            except Exception:
+                current_fps = 0.0
+
+            # Only attempt if clearly different or unknown
+            if current_fps <= 0.0 or abs(current_fps - requested_fps) > 0.1:
+                try:
+                    ok = self._capture.set(cv2.CAP_PROP_FPS, float(requested_fps))
+                    if not ok:
+                        logger.debug(f"Device ignored FPS set to {requested_fps:.2f}")
+                except Exception as exc:
+                    logger.debug(f"FPS set raised: {exc}")
+
+        # Read back (may be 0.0 on many backends)
+        try:
+            self._actual_fps = float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        except Exception:
+            self._actual_fps = 0.0
+
+        if self._actual_fps and requested_fps and abs(self._actual_fps - requested_fps) > 0.1:
+            logger.warning(f"FPS mismatch: requested {requested_fps:.2f}, got {self._actual_fps:.2f}")
+
+        logger.info(f"Camera configured with FPS: {self._actual_fps:.2f}")
+
+        # -------------------------
+        # Extra properties (safe whitelist)
+        # -------------------------
+        for prop, value in self.settings.properties.items():
+            if prop in ("api", "resolution", "fast_start", "alt_index_probe"):
+                continue
+            try:
+                prop_id = int(prop)
+            except (TypeError, ValueError):
+                logger.debug(f"Ignoring non-numeric property ID: {prop}")
+                continue
+            if prop_id not in self.SAFE_PROP_IDS:
+                logger.debug(f"Skipping unsupported/unsafe property {prop_id}")
+                continue
+            try:
+                if not self._capture.set(prop_id, float(value)):
+                    logger.debug(f"Device ignored property {prop_id} -> {value}")
+            except Exception as exc:
+                logger.debug(f"Failed to set property {prop_id} -> {value}: {exc}")
+
+    # ----------------------------
+    # Lower-level helpers
+    # ----------------------------
+
+    def _read_codec_string(self) -> str:
+        try:
+            fourcc = int(self._capture.get(cv2.CAP_PROP_FOURCC) or 0)
+        except Exception:
+            fourcc = 0
+        if fourcc <= 0:
+            return ""
+        return "".join([chr((fourcc >> (8 * i)) & 0xFF) for i in range(4)])
+
+    def _maybe_enable_mjpg(self) -> None:
+        """Attempt to enable MJPG on Windows devices; verify once."""
+        if platform.system() != "Windows":
+            return
+        try:
+            fourcc_mjpg = cv2.VideoWriter_fourcc(*"MJPG")
+            if self._capture.set(cv2.CAP_PROP_FOURCC, fourcc_mjpg):
+                verify = self._read_codec_string()
+                if verify and verify.upper().startswith("MJPG"):
+                    logger.info("MJPG enabled successfully.")
+                else:
+                    logger.debug(f"MJPG set reported success, but codec is '{verify}'")
+            else:
+                logger.debug("Device rejected MJPG FourCC set.")
+        except Exception as exc:
+            logger.debug(f"MJPG enable attempt raised: {exc}")
+
+    @classmethod
+    def discover_devices(
+        cls,
+        *,
+        max_devices: int = 10,
+        should_cancel: callable[[], bool] | None = None,
+        progress_cb: callable[[str], None] | None = None,
+    ) -> list[DetectedCamera] | None:
+        """
+        Use cv2-enumerate-cameras if available to return rich identity info.
+        Returns None if enumeration is not available (factory will fallback to probing).
+        """
+
+        def canceled() -> bool:
+            return bool(should_cancel and should_cancel())
+
+        if canceled():
+            return []
+
+        # Prefer platform backend, but enumeration supports CAP_ANY too
+        api_pref = preferred_backend_for_platform()
+
+        cams = list_cameras(api_pref)
+        if not cams:
+            # Enumeration unavailable -> tell factory to probe
+            return None
+
+        out: list[DetectedCamera] = []
+        for c in cams:
+            if canceled():
+                break
+            label = c.name or f"OpenCV camera #{c.index}"
+            if progress_cb:
+                progress_cb(f"Found {label}")
+
+            out.append(
+                DetectedCamera(
+                    index=int(c.index),
+                    label=label,
+                    device_id=c.stable_id,
+                    vid=c.vid,
+                    pid=c.pid,
+                    path=c.path or None,
+                    backend_hint=c.backend,
+                )
+            )
+        return out
+
+    def _resolve_backend(self, backend: str | None) -> int:
+        if backend is None:
+            return cv2.CAP_ANY
+        key = backend.upper()
+        return getattr(cv2, f"CAP_{key}", cv2.CAP_ANY)
+
+    @classmethod
+    def rebind_settings(cls, settings: CameraSettings) -> CameraSettings:
+        """
+        If stable identity exists in settings.properties['opencv'], update settings.index
+        (and keep identity fields fresh).
+        """
+        props = settings.properties or {}
+        opt = props.get(cls.OPTIONS_KEY, {}) if isinstance(props, dict) else {}
+
+        device_id = opt.get("device_id")
+        device_name = opt.get("device_name")
+        vid = opt.get("device_vid")
+        pid = opt.get("device_pid")
+
+        # Nothing to rebind with
+        if not (device_id or (vid and pid) or device_name):
+            return settings
+
+        api_pref = preferred_backend_for_platform()
+        cams = list_cameras(api_pref)
+        if not cams:
+            return settings
+
+        chosen = select_camera(
+            cams,
+            prefer_stable_id=device_id,
+            prefer_name_substr=device_name,
+            prefer_vid_pid=(int(vid), int(pid)) if vid and pid else None,
+            fallback_index=int(settings.index),
+        )
+        if not chosen:
+            return settings
+
+        # Update the index to current mapping
+        settings.index = int(chosen.index)
+
+        # Refresh persisted identity (max robustness)
+        ns = settings.properties.setdefault(cls.OPTIONS_KEY, {})
+        ns["device_id"] = chosen.stable_id
+        if chosen.name:
+            ns["device_name"] = chosen.name
+        if chosen.vid is not None:
+            ns["device_vid"] = int(chosen.vid)
+        if chosen.pid is not None:
+            ns["device_pid"] = int(chosen.pid)
+
+        return settings
+
+    # ----------------------------
+    # Discovery helper (optional use by factory)
+    # ----------------------------
+    @staticmethod
+    def quick_ping(index: int, backend_flag: int | None = None) -> bool:
+        """Cheap 'is-present' check to avoid expensive blind opens during discovery."""
+        sys = platform.system()
+        if sys == "Linux":
+            # /dev/videoN present? That's a cheap, reliable hint.
+            return os.path.exists(f"/dev/video{index}")
+        if backend_flag is None:
+            if sys == "Windows":
+                backend_flag = getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY)
+            elif sys == "Darwin":
+                backend_flag = getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)
+            else:
+                backend_flag = getattr(cv2, "CAP_V4L2", cv2.CAP_ANY)
+        cap = cv2.VideoCapture(index, backend_flag)
+        ok = cap.isOpened()
+        try:
+            cap.release()
+        except Exception:
+            pass
+        return ok
