@@ -1,6 +1,0 @@
-
-# .coveragerc
-[run]
-branch = True
-source = dlclivegui
-# omit =
