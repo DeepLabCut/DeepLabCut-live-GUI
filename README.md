@@ -24,7 +24,7 @@ The new interface supports **multi-camera preview** with a **tiled display**, Py
 
 ## Documentation
 
-> Full documentation is a work in progress and will be posted to DeepLabCut's official docs site when ready.
+> Find the full documentation at the [DeepLabCut docs website](https://deeplabcut.github.io/DeepLabCut/docs/dlc-live/dlc-live-gui/index.html)
 
 ---
 
