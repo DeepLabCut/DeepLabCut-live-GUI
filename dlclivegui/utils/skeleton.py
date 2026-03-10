@@ -165,12 +165,13 @@ def load_skeleton(path: Path) -> Skeleton:
 
 
 def save_skeleton(path: Path, model: SkeletonModel) -> None:
-    data = model.model_dump()
-
     if path.suffix in {".yaml", ".yml"}:
+        data = model.model_dump()
         path.write_text(yaml.safe_dump(data, sort_keys=False))
     elif path.suffix == ".json":
-        path.write_text(json.dumps(data, indent=2))
+        # Use Pydantic's JSON serialization to ensure Enums and other types
+        # are converted to JSON-friendly values.
+        path.write_text(model.model_dump_json(indent=2))
     else:
         raise SkeletonLoadError(f"Unsupported skeleton file type: {path.suffix}")
 

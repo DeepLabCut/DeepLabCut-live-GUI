@@ -1834,8 +1834,8 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Default: disable until we find a compatible skeleton
         if hasattr(self, "show_skeleton_checkbox"):
-            self.show_skeleton_checkbox.setEnabled(False)
-            # keep checked state but it won't be used unless enabled
+            # This will disable all skeleton controls when self._skeleton is None
+            self._sync_skeleton_controls_from_model()
 
         p = Path(model_path).expanduser()
 
