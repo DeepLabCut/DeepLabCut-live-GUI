@@ -20,13 +20,9 @@ The GUI has been modernized and is now built with **PySide6 (Qt)** (replacing tk
 
 The new interface supports **multi-camera preview** with a **tiled display**, PyTorch models, and features improved interactive workflows for experimental use.
 
----
-
 ## Documentation
 
-> Full documentation is a work in progress and will be posted to DeepLabCut's official docs site when ready.
-
----
+> Find the full documentation at the [DeepLabCut docs website](https://deeplabcut.github.io/DeepLabCut/docs/dlc-live/dlc-live-gui/index.html)
 
 ## System requirements (quick summary)
 
@@ -35,8 +31,6 @@ The new interface supports **multi-camera preview** with a **tiled display**, Py
   - **PyTorch** *(recommended for best performance & compatibility)*
   - **TensorFlow** *(for backwards compatibility with existing models; Windows installs are no longer available for Python > 3.10)*
 - A supported camera backend (OpenCV webcams by default; additional backends supported)
-
----
 
 ## Installation
 
@@ -109,8 +103,6 @@ pip install -e .[pytorch]
 pip install -e .[tf]
 ```
 
----
-
 ## Run the application
 
 > [!TIP]
@@ -127,8 +119,6 @@ uv run dlclivegui
 
 > [!IMPORTANT]
 > Activate your venv/conda environment before launching so the GUI can access installed dependencies.
-
----
 
 ## Typical workflow
 
@@ -151,8 +141,6 @@ Typical workflow:
 > OpenCV-compatible cameras (USB webcams, OBS virtual camera) work out of the box.
 > For additional camera ecosystems (Basler, GenTL, Aravis, etc.), see the relevant documentation.
 <!-- TODO @C-Achard add link to docs website once available -->
-
----
 
 ## Current limitations
 
@@ -177,4 +165,4 @@ If you use this code, we kindly ask you to please cite:
 
 This project is under active development — feedback from real experimental use is highly valued.
 
-Please report issues, suggest features, or contribute on [GitHub](https://github.com/DeepLabCut/DeepLabCut-live-GUI).
+Please report issues, suggest features, or contribute here on [GitHub](https://github.com/DeepLabCut/DeepLabCut-live-GUI/issues).
