@@ -63,13 +63,13 @@ You may install **PyTorch** or **TensorFlow** extras (or both), but you must cho
 - **PyTorch (recommended):**
 
 ```bash
-uv pip install deeplabcut-live-gui[pytorch]
+uv pip install --pre deeplabcut-live-gui[pytorch]
 ```
 
 - **TensorFlow (backwards compatibility):**
 
 ```bash
-uv pip install deeplabcut-live-gui[tf]
+uv pip install --pre deeplabcut-live-gui[tf]
 ```
 
 ---
@@ -88,13 +88,13 @@ conda activate dlclivegui
 - **PyTorch (recommended):**
 
 ```bash
-pip install deeplabcut-live-gui[pytorch]
+pip install --pre deeplabcut-live-gui[pytorch]
 ```
 
 - **TensorFlow:**
 
 ```bash
-pip install deeplabcut-live-gui[tf]
+pip install --pre deeplabcut-live-gui[tf]
 ```
 
 ## Run the application
