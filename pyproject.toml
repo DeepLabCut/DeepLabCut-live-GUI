@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
   "cv2-enumerate-cameras",
-  "deeplabcut-live==1.1",
+  "deeplabcut-live>=1.1",
   "matplotlib",
   "numpy",
   "opencv-python",
@@ -52,7 +52,7 @@ dev = [
 ]
 gentl = [ "harvesters" ]
 pytorch = [
-  "deeplabcut-live[pytorch]==1.1", # includes timm and scipy
+  "deeplabcut-live[pytorch]>=1.1", # includes timm and scipy
 ]
 test = [
   "hypothesis>=6",
@@ -64,7 +64,7 @@ test = [
   "tox-gh-actions",
 ]
 tf = [
-  "deeplabcut-live[tf]==1.1",
+  "deeplabcut-live[tf]>=1.1",
 ]
 [project.scripts]
 dlclivegui = "dlclivegui:main"
