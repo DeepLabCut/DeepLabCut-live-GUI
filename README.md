@@ -34,23 +34,17 @@ The new interface supports **multi-camera preview** with a **tiled display**, Py
 
 ## Installation
 
-While the previous `deeplabcut-live-gui` is available on PyPI, the newest PySide6-based GUI and features **must be obtained by installing from source**.
+`deeplabcut-live-gui` 2.0 is now available on PyPI.
 
 To get the **latest version**, please follow the **instructions below**.
 
-### 1) Clone the repository
-
-```bash
-git clone https://github.com/DeepLabCut/DeepLabCut-live-GUI.git
-cd DeepLabCut-live-GUI
-```
 
 ### Option A — Install with `uv`
 
-#### 2) Create & activate a new virtual environment
+#### 1) Create & activate a new virtual environment
 
 ```bash
-uv venv dlclivegui
+uv venv -p 3.12 dlclivegui
 
 # Linux/macOS:
 source dlclivegui/bin/activate
@@ -69,13 +63,13 @@ You may install **PyTorch** or **TensorFlow** extras (or both), but you must cho
 - **PyTorch (recommended):**
 
 ```bash
-uv pip install -e .[pytorch]
+uv pip install --pre deeplabcut-live-gui[pytorch]
 ```
 
 - **TensorFlow (backwards compatibility):**
 
 ```bash
-uv pip install -e .[tf]
+uv pip install --pre deeplabcut-live-gui[tf]
 ```
 
 ---
@@ -85,7 +79,7 @@ uv pip install -e .[tf]
 #### 1) Create & activate a new conda environment
 
 ```bash
-conda create -n dlclivegui python=3.12
+conda create -n dlclivegui python=3.12 # or mamba
 conda activate dlclivegui
 ```
 
@@ -94,13 +88,13 @@ conda activate dlclivegui
 - **PyTorch (recommended):**
 
 ```bash
-pip install -e .[pytorch]
+pip install --pre deeplabcut-live-gui[pytorch]
 ```
 
 - **TensorFlow:**
 
 ```bash
-pip install -e .[tf]
+pip install --pre deeplabcut-live-gui[tf]
 ```
 
 ## Run the application
