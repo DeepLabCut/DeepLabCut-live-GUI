@@ -54,8 +54,9 @@ jobs:
             libxcb-cursor0
 
       - name: Run tests (exclude hardware) with coverage via tox
+        shell: bash -eo pipefail {0}
         run: |
-          tox -q | tee tox-output.log
+          tox -q 2>&1 | tee tox-output.log
 
 
       - name: Append Coverage Summary to Job
@@ -78,3 +79,43 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./.coverage.py312.xml
           fail_ci_if_error: false
+
+  dlclive-compat:
+    name: DLCLive Compatibility • ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: pypi-1.1
+            tox_env: dlclive-pypi
+          - label: github-main
+            tox_env: dlclive-github
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Qt/OpenGL runtime deps (Ubuntu)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libopengl0 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0
+
+      - name: Install tox
+        run: |
+          python -m pip install -U pip wheel
+          python -m pip install -U tox tox-gh-actions
+
+      - name: Run DLCLive compatibility tests via tox
+        shell: bash -eo pipefail {0}
+        run: |
+          tox -e ${{ matrix.tox_env }} -q

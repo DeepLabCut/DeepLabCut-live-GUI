@@ -10,12 +10,13 @@ import time
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from dlclivegui.config import DLCProcessorSettings
+from dlclivegui.config import DLCProcessorSettings, ModelType
 from dlclivegui.processors.processor_utils import instantiate_from_scan
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
 
@@ -33,10 +34,74 @@ except Exception as e:  # pragma: no cover - handled gracefully
     DLCLive = None  # type: ignore[assignment]
 
 
+class PoseBackends(Enum):
+    DLC_LIVE = auto()
+
+
 @dataclass
 class PoseResult:
     pose: np.ndarray | None
     timestamp: float
+    packet: PosePacket | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class PoseSource:
+    backend: PoseBackends  # e.g. "DLCLive"
+    model_type: ModelType | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class PosePacket:
+    schema_version: int = 0
+    keypoints: np.ndarray | None = None
+    keypoint_names: list[str] | None = None
+    individual_ids: list[str] | None = None
+    source: PoseSource = PoseSource(backend=PoseBackends.DLC_LIVE)
+    raw: Any | None = None
+
+
+def validate_pose_array(pose: Any, *, source_backend: PoseBackends = PoseBackends.DLC_LIVE) -> np.ndarray:
+    """
+    Validate pose output shape and dtype.
+
+    Accepted runner output shapes:
+    - (K, 3): single-animal
+    - (N, K, 3): multi-animal
+    """
+    try:
+        arr = np.asarray(pose)
+    except Exception as exc:
+        raise ValueError(
+            f"{source_backend} returned an invalid pose output format: could not convert to array ({exc})"
+        ) from exc
+
+    if arr.ndim not in (2, 3):
+        raise ValueError(
+            f"{source_backend} returned an invalid pose output format:"
+            f" expected a 2D or 3D array, got ndim={arr.ndim}, shape={arr.shape!r}"
+        )
+
+    if arr.shape[-1] != 3:
+        raise ValueError(
+            f"{source_backend} returned an invalid pose output format:"
+            f" expected last dimension size 3 (x, y, likelihood), got shape={arr.shape!r}"
+        )
+
+    if arr.ndim == 2 and arr.shape[0] <= 0:
+        raise ValueError(f"{source_backend} returned an invalid pose output format: expected at least one keypoint")
+    if arr.ndim == 3 and (arr.shape[0] <= 0 or arr.shape[1] <= 0):
+        raise ValueError(
+            f"{source_backend} returned an invalid pose output format:"
+            f" expected at least one individual and one keypoint, got shape={arr.shape!r}"
+        )
+
+    if not np.issubdtype(arr.dtype, np.number):
+        raise ValueError(
+            f"{source_backend} returned an invalid pose output format: expected numeric values, got dtype={arr.dtype}"
+        )
+
+    return arr
 
 
 @dataclass
@@ -58,9 +123,6 @@ class ProcessorStats:
     # Separated timing for GPU vs socket processor
     avg_gpu_inference_time: float = 0.0  # Pure model inference
     avg_processor_overhead: float = 0.0  # Socket processor overhead
-
-
-# _SENTINEL = object()
 
 
 class DLCLiveProcessor(QObject):
@@ -269,8 +331,17 @@ class DLCLiveProcessor(QObject):
         # Time GPU inference (and processor overhead when present)
         with self._timed_processor() as proc_holder:
             inference_start = time.perf_counter()
-            pose = self._dlc.get_pose(frame, frame_time=timestamp)
+            raw_pose: Any = self._dlc.get_pose(frame, frame_time=timestamp)
             inference_time = time.perf_counter() - inference_start
+        pose_arr: np.ndarray = validate_pose_array(raw_pose, source_backend=PoseBackends.DLC_LIVE)
+        pose_packet = PosePacket(
+            schema_version=0,
+            keypoints=pose_arr,
+            keypoint_names=None,
+            individual_ids=None,
+            source=PoseSource(backend=PoseBackends.DLC_LIVE, model_type=self._settings.model_type),
+            raw=raw_pose,
+        )
 
         processor_overhead = 0.0
         gpu_inference_time = inference_time
@@ -280,7 +351,7 @@ class DLCLiveProcessor(QObject):
 
         # Emit pose (measure signal overhead)
         signal_start = time.perf_counter()
-        self.pose_ready.emit(PoseResult(pose=pose, timestamp=timestamp))
+        self.pose_ready.emit(PoseResult(pose=pose_packet.keypoints, timestamp=timestamp, packet=pose_packet))
         signal_time = time.perf_counter() - signal_start
 
         end_ts = time.perf_counter()
