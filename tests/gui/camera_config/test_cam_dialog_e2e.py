@@ -120,6 +120,7 @@ def dialog(qtbot, patch_detect_cameras):
     d = CameraConfigDialog(None, s)
     qtbot.addWidget(d)
     d.show()
+    qtbot.waitUntil(lambda: not d._is_scan_running(), timeout=2000)
     qtbot.waitExposed(d)
 
     yield d
@@ -424,3 +425,97 @@ def test_cancel_loading_preview_button(dialog, qtbot, monkeypatch):
 
     qtbot.waitUntil(lambda: dialog._preview.loader is None and dialog._preview.state == PreviewState.IDLE, timeout=2000)
     assert dialog._preview.backend is None
+
+
+@pytest.mark.gui
+def test_remove_active_camera_works_while_scan_running(dialog, qtbot, monkeypatch):
+    """
+    Regression test for:
+    - 'When coming back to camera config after choosing a camera, it cannot be removed'
+    Root cause: scan_running disabled structure edits (Remove/Move).
+    Expected: Remove works even while discovery scan is running.
+    """
+
+    # Slow down camera detection so scan stays RUNNING long enough for interaction
+    def slow_detect(backend, max_devices=10, should_cancel=None, progress_cb=None, **kwargs):
+        for i in range(50):
+            if should_cancel and should_cancel():
+                break
+            if progress_cb:
+                progress_cb(f"Scanning… {i}")
+            time.sleep(0.02)
+        return [
+            DetectedCamera(index=0, label=f"{backend}-X"),
+            DetectedCamera(index=1, label=f"{backend}-Y"),
+        ]
+
+    monkeypatch.setattr(CameraFactory, "detect_cameras", staticmethod(slow_detect))
+
+    # Ensure an active row is selected
+    dialog.active_cameras_list.setCurrentRow(0)
+    qtbot.waitUntil(lambda: dialog.active_cameras_list.currentRow() == 0, timeout=1000)
+
+    initial_active = dialog.active_cameras_list.count()
+    initial_model = len(dialog._working_settings.cameras)
+    assert initial_active == initial_model == 1
+
+    # Trigger scan; wait until scan controls indicate it's running
+    qtbot.mouseClick(dialog.refresh_btn, Qt.LeftButton)
+    qtbot.waitUntil(lambda: dialog._is_scan_running(), timeout=1000)
+    qtbot.waitUntil(lambda: dialog.scan_cancel_btn.isVisible(), timeout=1000)
+
+    # Remove button should be enabled even during scan
+    qtbot.waitUntil(lambda: dialog.remove_camera_btn.isEnabled(), timeout=1000)
+
+    # Remove the selected active camera during scan
+    qtbot.mouseClick(dialog.remove_camera_btn, Qt.LeftButton)
+
+    assert dialog.active_cameras_list.count() == initial_active - 1
+    assert len(dialog._working_settings.cameras) == initial_model - 1
+
+    # Clean up: cancel scan so teardown doesn't hang waiting for scan completion
+    if dialog.scan_cancel_btn.isVisible() and dialog.scan_cancel_btn.isEnabled():
+        qtbot.mouseClick(dialog.scan_cancel_btn, Qt.LeftButton)
+
+    qtbot.waitUntil(lambda: not dialog._is_scan_running(), timeout=3000)
+
+
+@pytest.mark.gui
+def test_ok_updates_internal_multicamera_settings(dialog, qtbot):
+    """
+    Regression test for:
+    - 'adding another camera and hitting OK does not add the new extra camera'
+    when caller reads dialog._multi_camera_settings after closing.
+
+    Expected:
+    - OK emits updated settings
+    - dialog._multi_camera_settings is updated to match accepted settings
+    """
+
+    # Ensure backend combo matches the active camera backend, so duplicate logic behaves consistently
+    _select_backend_for_active_cam(dialog, cam_row=0)
+
+    # Scan and add a non-duplicate camera (index 1)
+    _run_scan_and_wait(dialog, qtbot, timeout=2000)
+    dialog.available_cameras_list.setCurrentRow(1)
+    qtbot.mouseClick(dialog.add_camera_btn, Qt.LeftButton)
+
+    qtbot.waitUntil(lambda: dialog.active_cameras_list.count() == 2, timeout=1000)
+    assert len(dialog._working_settings.cameras) == 2
+
+    # Click OK and capture emitted settings
+    with qtbot.waitSignal(dialog.settings_changed, timeout=2000) as sig:
+        qtbot.mouseClick(dialog.ok_btn, Qt.LeftButton)
+
+    emitted = sig.args[0]
+    assert isinstance(emitted, MultiCameraSettings)
+    assert len(emitted.cameras) == 2
+
+    # Check: internal source-of-truth must match accepted state
+    assert dialog._multi_camera_settings is not None
+    assert len(dialog._multi_camera_settings.cameras) == 2
+
+    # Optional: ensure camera identities match (names/index/backend)
+    assert [(c.backend, int(c.index)) for c in dialog._multi_camera_settings.cameras] == [
+        (c.backend, int(c.index)) for c in emitted.cameras
+    ]

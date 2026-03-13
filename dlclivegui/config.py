@@ -12,6 +12,25 @@ Rotation = Literal[0, 90, 180, 270]
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
 Precision = Literal["FP32", "FP16"]
 ModelType = Literal["pytorch", "tensorflow"]
+BGR = tuple[int, int, int]  # (B, G, R) color format
+
+
+class SkeletonColorMode(str, Enum):
+    SOLID = "solid"
+    GRADIENT_KEYPOINTS = "gradient_keypoints"  # use endpoint keypoint colors
+
+
+class SkeletonStyle(BaseModel):
+    mode: SkeletonColorMode = SkeletonColorMode.SOLID
+    color: BGR = (0, 255, 255)  # default if SOLID
+    thickness: int = 2  # base thickness in pixels
+    gradient_steps: int = 16  # segments per edge when gradient
+    scale_with_zoom: bool = True  # scale thickness with (sx, sy)
+
+    def effective_thickness(self, sx: float, sy: float) -> int:
+        if not self.scale_with_zoom:
+            return max(1, int(self.thickness))
+        return max(1, int(round(self.thickness * min(sx, sy))))
 
 
 class CameraSettings(BaseModel):
@@ -301,11 +320,21 @@ class VisualizationSettings(BaseModel):
     colormap: str = "hot"
     bbox_color: tuple[int, int, int] = (0, 0, 255)
 
+    show_pose: bool = True
+    show_skeleton: bool = False
+    skeleton_style: SkeletonStyle = Field(default_factory=SkeletonStyle)
+
     def get_bbox_color_bgr(self) -> tuple[int, int, int]:
         """Get bounding box color in BGR format"""
         if isinstance(self.bbox_color, (list, tuple)) and len(self.bbox_color) == 3:
             return tuple(int(c) for c in self.bbox_color)
         return (0, 0, 255)  # default red
+
+    def get_skeleton_color_bgr(self) -> tuple[int, int, int]:
+        c = self.skeleton_style.color
+        if isinstance(c, (list, tuple)) and len(c) == 3:
+            return tuple(int(v) for v in c)
+        return (0, 255, 255)  # default yellow
 
 
 class RecordingSettings(BaseModel):
@@ -315,6 +344,7 @@ class RecordingSettings(BaseModel):
     container: Literal["mp4", "avi", "mov"] = "mp4"
     codec: str = "libx264"
     crf: int = Field(default=23, ge=0, le=51)
+    with_overlays: bool = False
 
     def output_path(self) -> Path:
         """Return the absolute output path for recordings."""
