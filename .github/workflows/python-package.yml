@@ -29,11 +29,9 @@ jobs:
         with:
           python-version: '3.x'
           cache: 'pip'
+          # we only use pyproject.toml for dependencies
           cache-dependency-path: |
             pyproject.toml
-            requirements.txt
-            setup.cfg
-            setup.py
 
       - name: Install Qt/OpenGL runtime deps (Ubuntu)
         run: |
@@ -44,7 +42,7 @@ jobs:
             libopengl0 \
             libxkbcommon-x11-0 \
             libxcb-cursor0
-            
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
