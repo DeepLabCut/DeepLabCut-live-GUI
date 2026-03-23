@@ -66,4 +66,4 @@ jobs:
           python -m build
           ls dist/
           tar tvf dist/deeplabcut-live-gui-*.tar.gz
-          python3 -m twine upload --verbose dist/*
+          python -m twine upload --verbose dist/*
