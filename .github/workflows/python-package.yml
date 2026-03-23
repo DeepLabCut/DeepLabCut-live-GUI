@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*.*.*'
+
   pull_request:
     branches:
       - main
@@ -15,13 +16,36 @@ on:
       - synchronize
       - reopened
 
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag to build/publish (e.g. v1.2.3 or v2.0.0rc1)'
+        required: true
+        type: string
+
 jobs:
   release:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate manual tag input
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          case "${{ inputs.release_tag }}" in
+            v*.*.*)
+              echo "Manual release tag accepted: ${{ inputs.release_tag }}"
+              ;;
+            *)
+              echo "release_tag must look like v1.2.3 (or similar, e.g. v2.0.0rc1)"
+              exit 1
+              ;;
+          esac
+
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
 
       - name: Setup Python
         id: setup-python
@@ -29,7 +53,6 @@ jobs:
         with:
           python-version: '3.x'
           cache: 'pip'
-          # we only use pyproject.toml for dependencies
           cache-dependency-path: |
             pyproject.toml
 
