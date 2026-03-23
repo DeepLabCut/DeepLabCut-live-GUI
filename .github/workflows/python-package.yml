@@ -200,4 +200,4 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.TWINE_API_KEY }}
-        run: python -m twine upload --non-interactive --skip-existing dist/*
+        run: python -m twine upload --non-interactive --verbose --skip-existing dist/*
