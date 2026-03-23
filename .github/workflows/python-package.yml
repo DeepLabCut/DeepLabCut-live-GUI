@@ -1,203 +1,68 @@
-name: Build, validate & Release
-
-# Usage:
-# - For PRs: this workflow runs automatically to validate the package builds and installs correctly on multiple Python versions. No artifacts are published for PRs.
-# - For releases: when you push a tag like v1.2.3, this workflow runs the full matrix validation, then builds the release artifacts, and finally publishes to PyPI if all checks pass.
-# - For manual re-runs: use "Run workflow" and provide a tag-like value such as v2.0.0rc1.
+name: Update pypi release
 
 on:
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: 'Tag to build/publish (e.g. v1.2.3 or v2.0.0rc1)'
-        required: true
-        type: string
-  # Release pipeline: run only when pushing a version-like tag (e.g. v1.2.3)
-  # Test pipeline: run tests on main/master pushes & pull requests AND tags.
   push:
     tags:
-      - "v*.*.*"
+      - 'v*.*.*'
+  pull_request:
     branches:
       - main
       - master
-
-  # Validation pipeline: run on PRs targeting main/master (no publishing)
-  pull_request:
-    branches: [main, master]
-    types: [opened, edited, synchronize, reopened]
-
-# This workflow only needs to read repo contents
-permissions:
-  contents: read
+    types:
+      - labeled
+      - opened
+      - edited
+      - synchronize
+      - reopened
 
 jobs:
-  test_matrix:
-    # PR + tag validation: ensure the project builds and installs on multiple Pythons
-    name: Test install & smoke (Py ${{ matrix.python-version }})
+  release:
     runs-on: ubuntu-latest
-    strategy:
-      # Run all versions even if one fails (helps spot version-specific issues)
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
-      - name: Validate manual tag input
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        shell: bash
-        run: |
-          case "${{ inputs.release_tag }}" in
-            v*.*.*)
-              echo "Manual release tag accepted: ${{ inputs.release_tag }}"
-              ;;
-            *)
-              echo "release_tag must look like v1.2.3 (or similar, e.g. v2.0.0rc1)"
-              exit 1
-              ;;
-          esac
-
-      - name: Checkout sources
-        uses: actions/checkout@v6
+      - name: Setup Python
+        id: setup-python
+        uses: actions/setup-python@v5
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          python-version: '3.x'
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Cache dependencies
+        id: pip-cache
+        uses: actions/cache@v4
         with:
-          python-version: ${{ matrix.python-version }}
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'requirements.txt', 'setup.cfg', 'setup.py') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ steps.setup-python.outputs.python-version }}-
+            ${{ runner.os }}-pip-
 
       - name: Install Qt/OpenGL runtime deps (Ubuntu)
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
             libegl1 \
             libgl1 \
             libopengl0 \
             libxkbcommon-x11-0 \
             libxcb-cursor0
-
-      # Install packaging toolchain:
-      # - build: creates wheel + sdist
-      # - twine: validates metadata and can upload (upload only happens in publish job)
-      - name: Install build tools
-        run: python -m pip install -U pip build twine
-
-      # Build distributions just to verify packaging config works on this Python
-      - name: Build (for validation only)
-        run: python -m build
-
-      # Validate dist metadata (README rendering, required fields, etc.)
-      - name: Twine check
-        run: python -m twine check dist/*
-
-      # Smoke test: install the built wheel and verify the package imports
-      - name: Install from wheel & smoke test
+            
+      - name: Install dependencies
         run: |
-          WHEEL=$(ls -1 dist/*.whl | head -n 1)
-          echo "Using wheel: $WHEEL"
-          python -m pip install \
-            --extra-index-url https://download.pytorch.org/whl/cpu \
-            "deeplabcut-live-gui[pytorch] @ file://$(pwd)/${WHEEL}"
-          python -c "import dlclivegui; print('Imported dlclivegui OK')"
-          QT_QPA_PLATFORM=offscreen dlclivegui --help
+          pip install --upgrade pip
+          pip install wheel
+          pip install "packaging>=24.2"
+          pip install build
+          pip install twine
 
-  build_release:
-    # Tag-only build: produce the "official" release artifacts once matrix passed
-    name: Build release artifacts
-    runs-on: ubuntu-latest
-    needs: test_matrix
-    # Safety gate: only run for version tags, never for PRs/branches
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    steps:
-      - name: Validate manual tag input
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        shell: bash
-        run: |
-          case "${{ inputs.release_tag }}" in
-            v*.*.*)
-              echo "Manual release tag accepted: ${{ inputs.release_tag }}"
-              ;;
-            *)
-              echo "release_tag must look like v1.2.3 (or similar, e.g. v2.0.0rc1)"
-              exit 1
-              ;;
-          esac
-      # Fetch sources for the tagged revision
-      - name: Checkout sources
-        uses: actions/checkout@v6
-        with:
-          # For a manual run, we want to check out the commit at the provided tag
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
-
-      # Use a single, modern Python for the canonical release build
-      - name: Set up Python (release build)
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      # Install build + validation tooling
-      - name: Install build tools
-        run: python -m pip install -U pip build twine
-
-      # Produce both sdist and wheel in dist/
-      - name: Build distributions
-        run: python -m build
-
-      # Re-check metadata on the final artifacts we intend to publish
-      - name: Twine check
-        run: python -m twine check dist/*
-
-      # Store dist/ outputs so the publish job uploads exactly what we built here
-      - name: Upload dist artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/*
-
-  publish:
-    # Tag-only publish: download built artifacts and upload them to PyPI
-    name: Publish to PyPI (API token)
-    runs-on: ubuntu-latest
-    needs: build_release
-    # Safety gate: only run for version tags
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
-
-    steps:
-      # Retrieve the exact distributions produced in build_release
-      - name: Download dist artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist
-
-      # Set up Python (only needed to run Twine)
-      - name: Set up Python (publish)
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      # Install twine for uploading
-      - name: Install Twine
-        run: python -m pip install -U twine
-
-      # Check that the PyPI API token is present before attempting upload (fails fast if not set)
-      - name: Check PyPI credential presence
-        shell: bash
-        env:
-          TWINE_PASSWORD: ${{ secrets.TWINE_API_KEY }}
-        run: |
-          if [ -z "$TWINE_PASSWORD" ]; then
-            echo "TWINE_PASSWORD is empty"
-            exit 1
-          else
-            echo "TWINE_PASSWORD is present"
-          fi
-
-      # Upload to PyPI using an API token stored in repo secrets.
-      # --skip-existing avoids failing if you re-run a workflow for the same version.
-      - name: Publish to PyPI
+      - name: Build and publish to PyPI
+        if: ${{ github.event_name == 'push' }}
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.TWINE_API_KEY }}
-        run: python -m twine upload --non-interactive --skip-existing dist/*
+        run: |
+          python -m build
+          ls dist/
+          tar tvf dist/deeplabcut-live-gui-*.tar.gz
+          python3 -m twine upload --verbose dist/*
