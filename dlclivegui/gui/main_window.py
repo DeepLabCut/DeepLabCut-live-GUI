@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QStatusBar,
@@ -62,6 +63,7 @@ from dlclivegui.config import (
     VisualizationSettings,
 )
 
+from ..config import SkeletonColorMode, SkeletonStyle
 from ..processors.processor_utils import (
     default_processors_dir,
     instantiate_from_scan,
@@ -70,7 +72,8 @@ from ..processors.processor_utils import (
 )
 from ..services.dlc_processor import DLCLiveProcessor, PoseResult
 from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
-from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
+from ..utils import skeleton as skel
+from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose, keypoint_colors_bgr
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import format_dlc_stats
 from ..utils.utils import FPSTracker
@@ -164,6 +167,10 @@ class DLCLiveMainWindow(QMainWindow):
         self._p_cutoff = 0.6
         self._colormap = "hot"
         self._bbox_color = (0, 0, 255)  # BGR: red
+        ## Skeleton settings
+        self._skeleton: skel.Skeleton | None = None
+        self._skeleton_auto_disabled: bool = False
+        self._last_skeleton_disable_msg: str | None = None
 
         # Multi-camera state
         self._multi_camera_mode = False
@@ -207,6 +214,8 @@ class DLCLiveMainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, "controls_scroll"):
+            self._sync_controls_dock_min_width()
         if not self.multi_camera_controller.is_running():
             self._show_logo_and_text()
 
@@ -223,6 +232,34 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _load_icons(self):
         self.setWindowIcon(QIcon(LOGO))
+
+    def _sync_controls_dock_min_width(self) -> None:
+        """Ensure the dock/scroll area is at least as wide as the controls content."""
+        if not hasattr(self, "controls_scroll") or self.controls_scroll is None:
+            return
+        w = self.controls_scroll.widget()
+        if w is None:
+            return
+
+        # Ensure layout has calculated its hints
+        w.adjustSize()
+
+        # Minimum width needed by the controls content
+        content_w = w.minimumSizeHint().width()
+        if content_w <= 0:
+            content_w = w.sizeHint().width()
+
+        # Reserve space for the vertical scrollbar (even if not currently visible)
+        vbar_w = self.controls_scroll.verticalScrollBar().sizeHint().width()
+
+        # Account for scrollarea frame/margins
+        frame = self.controls_scroll.frameWidth() * 2
+
+        target = content_w + vbar_w + frame
+
+        # Apply to both scroll area and dock (dock is what user resizes)
+        self.controls_scroll.setMinimumWidth(target)
+        self.controls_dock.setMinimumWidth(target)
 
     def _setup_ui(self) -> None:
         # central = QWidget()
@@ -262,6 +299,7 @@ class DLCLiveMainWindow(QMainWindow):
         controls_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         controls_layout = QVBoxLayout(controls_widget)
         controls_layout.setContentsMargins(5, 5, 5, 5)
+        controls_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
         controls_layout.addWidget(self._build_camera_group())
         controls_layout.addWidget(self._build_dlc_group())
         controls_layout.addWidget(self._build_recording_group())
@@ -287,7 +325,16 @@ class DLCLiveMainWindow(QMainWindow):
         ## Dock widget for controls
         self.controls_dock = QDockWidget("Controls", self)
         self.controls_dock.setObjectName("ControlsDock")  # important for state saving
-        self.controls_dock.setWidget(controls_widget)
+        self.controls_scroll = QScrollArea()
+        controls_widget.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
+        self.controls_scroll.setWidget(controls_widget)
+        self.controls_scroll.setWidgetResizable(True)
+        self.controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.controls_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.controls_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.controls_scroll.setSizeAdjustPolicy(QScrollArea.SizeAdjustPolicy.AdjustToContents)
+        # self.controls_dock.setWidget(controls_widget)
+        self.controls_dock.setWidget(self.controls_scroll)
         ### Dock features
         self.controls_dock.setFeatures(
             # must not be closable by user but visibility can be toggled from View -> Show controls
@@ -310,6 +357,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
         self._build_menus()
+        QTimer.singleShot(0, self._sync_controls_dock_min_width)  # ensure dock is wide enough for controls after layout
         QTimer.singleShot(0, self._show_logo_and_text)
 
     def _build_stats_layout(self, stats_widget: QWidget) -> QGridLayout:
@@ -664,8 +712,10 @@ class DLCLiveMainWindow(QMainWindow):
         return group
 
     def _build_viz_group(self) -> QGroupBox:
+        # Visualization settings group
         group = QGroupBox("Visualization")
         form = QFormLayout(group)
+        ## Pose overlay
         self.show_predictions_checkbox = QCheckBox("Display pose predictions")
         self.show_predictions_checkbox.setChecked(True)
 
@@ -690,6 +740,47 @@ class DLCLiveMainWindow(QMainWindow):
         )
         form.addRow(keypoints_settings)
 
+        ## Skeleton overlay
+        self.show_skeleton_checkbox = QCheckBox("Display skeleton")
+        self.show_skeleton_checkbox.setChecked(False)
+        self.show_skeleton_checkbox.setEnabled(False)
+        self.show_skeleton_checkbox.setToolTip(
+            "If enabled, draws connections between keypoints based on the model's skeleton definition.\n"
+            "Auto-disables if the model keypoints do not match the skeleton definition."
+        )
+
+        # Skeleton color mode / color
+        self.skeleton_color_combo = color_ui.make_skeleton_color_combo(
+            BBoxColors,  # re-use PrimaryColors palette; you aliased it already
+            current_mode="solid",
+            current_color=(0, 255, 255),
+            include_icons=True,
+            tooltip="Select skeleton color, or Gradient to blend endpoint keypoint colors",
+            sizing=color_ui.ComboSizing(min_width=80, max_width=200),
+        )
+        self.skeleton_color_combo.setEnabled(False)
+
+        # Skeleton thickness
+        self.skeleton_thickness_spin = QSpinBox()
+        self.skeleton_thickness_spin.setRange(1, 20)
+        self.skeleton_thickness_spin.setValue(2)
+        self.skeleton_thickness_spin.setToolTip("Skeleton line thickness (scaled with zoom if enabled in style)")
+        self.skeleton_thickness_spin.setEnabled(False)
+
+        # Layout like keypoints/bbox
+        skeleton_row = lyts.make_two_field_row(
+            "Skeleton:",
+            self.skeleton_color_combo,
+            None,
+            self.show_skeleton_checkbox,
+            key_width=120,
+            left_stretch=0,
+            right_stretch=0,
+        )
+        form.addRow(skeleton_row)
+        form.addRow("Skeleton thickness:", self.skeleton_thickness_spin)
+
+        ## Bounding box overlay & controls
         self.bbox_enabled_checkbox = QCheckBox("Show bounding box")
         self.bbox_enabled_checkbox.setChecked(False)
 
@@ -740,7 +831,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.bbox_y1_spin.setValue(100)
         bbox_layout.addWidget(self.bbox_y1_spin)
 
-        form.addRow("Coordinates", bbox_layout)
+        form.addRow("Box coordinates", bbox_layout)
 
         return group
 
@@ -760,6 +851,10 @@ class DLCLiveMainWindow(QMainWindow):
         # Visualization settings
         ## Colormap change
         self.cmap_combo.currentIndexChanged.connect(self._on_colormap_changed)
+        ## Skeleton change
+        self.show_skeleton_checkbox.stateChanged.connect(self._on_show_skeleton_changed)
+        self.skeleton_color_combo.currentIndexChanged.connect(self._on_skeleton_style_changed)
+        self.skeleton_thickness_spin.valueChanged.connect(self._on_skeleton_style_changed)
         ## Connect bounding box controls
         self.bbox_enabled_checkbox.stateChanged.connect(self._on_bbox_changed)
         self.bbox_x0_spin.valueChanged.connect(self._on_bbox_changed)
@@ -797,6 +892,45 @@ class DLCLiveMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # Config
+    # ------------------------------------------------------------------
+    def _apply_viz_settings_to_ui(self, viz: VisualizationSettings) -> None:
+        """Set UI state from VisualizationSettings (does not require skeleton to exist)."""
+        # Pose toggle
+        self.show_predictions_checkbox.blockSignals(True)
+        self.show_predictions_checkbox.setChecked(bool(viz.show_pose))
+        self.show_predictions_checkbox.blockSignals(False)
+
+        # Skeleton toggle (may remain disabled until skeleton exists)
+        self.show_skeleton_checkbox.blockSignals(True)
+        self.show_skeleton_checkbox.setChecked(bool(viz.show_skeleton))
+        self.show_skeleton_checkbox.blockSignals(False)
+
+        # Skeleton style controls (combo/spin) - set values even if disabled
+        if hasattr(self, "skeleton_color_combo"):
+            mode = viz.skeleton_style.mode.value  # "solid" or "gradient_keypoints"
+            color = tuple(viz.skeleton_style.color)
+            color_ui.set_skeleton_combo_from_style(self.skeleton_color_combo, mode=mode, color=color)
+
+        if hasattr(self, "skeleton_thickness_spin"):
+            self.skeleton_thickness_spin.blockSignals(True)
+            self.skeleton_thickness_spin.setValue(int(viz.skeleton_style.thickness))
+            self.skeleton_thickness_spin.blockSignals(False)
+
+    def _apply_viz_settings_to_skeleton(self, viz: VisualizationSettings) -> None:
+        """Apply VisualizationSettings onto the active runtime Skeleton, if present."""
+        if self._skeleton is None:
+            return
+
+        # Copy style fields
+        self._skeleton.style.mode = skel.SkeletonColorMode(viz.skeleton_style.mode.value)
+        self._skeleton.style.color = tuple(viz.skeleton_style.color)
+        self._skeleton.style.thickness = int(viz.skeleton_style.thickness)
+        self._skeleton.style.gradient_steps = int(viz.skeleton_style.gradient_steps)
+        self._skeleton.style.scale_with_zoom = bool(viz.skeleton_style.scale_with_zoom)
+
+        # Enable/disable UI controls now that skeleton exists
+        self._sync_skeleton_controls_from_model()
+
     def _apply_config(self, config: ApplicationSettings) -> None:
         # Update active cameras label
         self._update_active_cameras_label()
@@ -813,6 +947,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.output_directory_edit.setText(recording.directory)
         self.filename_edit.setText(recording.filename)
         self.container_combo.setCurrentText(recording.container)
+        self.record_with_overlays_checkbox.setChecked(recording.with_overlays)
         codec_index = self.codec_combo.findText(recording.codec)
         if codec_index >= 0:
             self.codec_combo.setCurrentIndex(codec_index)
@@ -839,14 +974,20 @@ class DLCLiveMainWindow(QMainWindow):
         self.bbox_y1_spin.setValue(bbox.y1)
 
         # Set visualization settings from config
+        ## Keypoints
         viz = config.visualization
         self._p_cutoff = viz.p_cutoff
         self._colormap = viz.colormap
+        self._apply_viz_settings_to_ui(viz)
         if hasattr(self, "cmap_combo"):
             color_ui.set_cmap_combo_from_name(self.cmap_combo, self._colormap, fallback="viridis")
         self._bbox_color = viz.get_bbox_color_bgr()
         if hasattr(self, "bbox_color_combo"):
             color_ui.set_bbox_combo_from_bgr(self.bbox_color_combo, self._bbox_color)
+        ## Skeleton
+        if resolved_model_path.strip():
+            self._configure_skeleton_for_model(resolved_model_path)
+        self._apply_viz_settings_to_skeleton(viz)
 
         # Update DLC camera list
         self._refresh_dlc_camera_list()
@@ -909,6 +1050,7 @@ class DLCLiveMainWindow(QMainWindow):
             container=self.container_combo.currentText().strip() or "mp4",
             codec=self.codec_combo.currentText().strip() or "libx264",
             crf=int(self.crf_spin.value()),
+            with_overlays=self.record_with_overlays_checkbox.isChecked(),
         )
 
     def _bbox_settings_from_ui(self) -> BoundingBoxSettings:
@@ -921,10 +1063,29 @@ class DLCLiveMainWindow(QMainWindow):
         )
 
     def _visualization_settings_from_ui(self) -> VisualizationSettings:
+        # Read skeleton mode+color from combo
+        mode_str, color = color_ui.get_skeleton_style_from_combo(
+            self.skeleton_color_combo,
+            fallback_mode="solid",
+            fallback_color=(0, 255, 255),
+        )
+
+        # Build SkeletonStyle (pydantic)
+        style = SkeletonStyle(
+            mode=SkeletonColorMode(mode_str),  # or SkeletonColorMode.GRADIENT_KEYPOINTS if mode_str matches
+            color=tuple(color) if color else (0, 255, 255),
+            thickness=int(self.skeleton_thickness_spin.value()),
+            gradient_steps=getattr(self._skeleton.style, "gradient_steps", 16) if self._skeleton else 16,
+            scale_with_zoom=getattr(self._skeleton.style, "scale_with_zoom", True) if self._skeleton else True,
+        )
+
         return VisualizationSettings(
             p_cutoff=self._p_cutoff,
             colormap=self._colormap,
             bbox_color=self._bbox_color,
+            show_pose=self.show_predictions_checkbox.isChecked(),
+            show_skeleton=self.show_skeleton_checkbox.isChecked(),
+            skeleton_style=style,
         )
 
     # ------------------------------------------------------------------
@@ -1018,6 +1179,7 @@ class DLCLiveMainWindow(QMainWindow):
                 return
             file_path = str(file_path)
             self.model_path_edit.setText(file_path)
+            self._configure_skeleton_for_model(file_path)
 
             # Persist model path + directory
             self._model_path_store.save_if_valid(file_path)
@@ -1180,6 +1342,26 @@ class DLCLiveMainWindow(QMainWindow):
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
 
+    def _on_show_skeleton_changed(self, _state: int) -> None:
+        self._skeleton_auto_disabled = False
+        self._last_skeleton_disable_msg = None
+        if self._current_frame is not None:
+            self._display_frame(self._current_frame, force=True)
+
+    def _on_skeleton_style_changed(self, _value: int = 0) -> None:
+        if self._skeleton is None:
+            return
+
+        mode_str, color = color_ui.get_skeleton_style_from_combo(self.skeleton_color_combo)
+        self._skeleton.style.mode = skel.SkeletonColorMode(mode_str)
+        if self._skeleton.style.mode == skel.SkeletonColorMode.SOLID and color is not None:
+            self._skeleton.style.color = tuple(color)
+
+        self._skeleton.style.thickness = int(self.skeleton_thickness_spin.value())
+
+        if self._current_frame is not None:
+            self._display_frame(self._current_frame, force=True)
+
     # ------------------------------------------------------------------
     # Multi-camera
     def _open_camera_config_dialog(self) -> None:
@@ -1338,6 +1520,13 @@ class DLCLiveMainWindow(QMainWindow):
                 offset=offset,
                 scale=scale,
             )
+            self._draw_skeleton_on_frame(
+                output,
+                self._last_pose.pose,
+                offset=offset,
+                scale=scale,
+            )
+
         if self._bbox_enabled:
             output = draw_bbox(
                 frame=output,
@@ -1608,6 +1797,76 @@ class DLCLiveMainWindow(QMainWindow):
             self.camera_stats_label.setText("Camera idle")
         # self._show_logo_and_text()
 
+    def _sync_skeleton_controls_from_model(self) -> None:
+        """Enable and initialize skeleton UI controls from the current Skeleton.style."""
+        enabled = self._skeleton is not None
+
+        self.show_skeleton_checkbox.setEnabled(enabled)
+        self.skeleton_color_combo.setEnabled(enabled)
+        self.skeleton_thickness_spin.setEnabled(enabled)
+
+        if not enabled:
+            return
+
+        # Set thickness
+        self.skeleton_thickness_spin.blockSignals(True)
+        self.skeleton_thickness_spin.setValue(int(self._skeleton.style.thickness))
+        self.skeleton_thickness_spin.blockSignals(False)
+
+        # Set color/mode
+        mode = (
+            "gradient_keypoints" if self._skeleton.style.mode == skel.SkeletonColorMode.GRADIENT_KEYPOINTS else "solid"
+        )
+        color_ui.set_skeleton_combo_from_style(
+            self.skeleton_color_combo,
+            mode=mode,
+            color=self._skeleton.style.color,
+        )
+
+        if hasattr(self.skeleton_color_combo, "update_shrink_width"):
+            self.skeleton_color_combo.update_shrink_width()
+
+    def _configure_skeleton_for_model(self, model_path: str) -> None:
+        """Select an appropriate skeleton definition for the currently configured model."""
+        self._skeleton = None
+        self._skeleton_auto_disabled = False
+        self._last_skeleton_disable_msg = None
+
+        # Default: disable until we find a compatible skeleton
+        if hasattr(self, "show_skeleton_checkbox"):
+            # This will disable all skeleton controls when self._skeleton is None
+            self._sync_skeleton_controls_from_model()
+
+        p = Path(model_path).expanduser()
+
+        root = p if p.is_dir() else p.parent
+        cfg = root / "config.yaml"
+        if cfg.exists() and self._skeleton is None:
+            try:
+                sk = skel.load_dlc_skeleton(cfg)
+            except Exception as e:
+                logger.warning(f"Failed to load DLC skeleton from {cfg}: {e}")
+                sk = None
+
+            if sk is not None:
+                self._skeleton = sk
+                self._sync_skeleton_controls_from_model()
+                if hasattr(self, "show_skeleton_checkbox"):
+                    self.show_skeleton_checkbox.setEnabled(True)
+                self.statusBar().showMessage("Skeleton available: DLC config.yaml", 3000)
+
+        if self._skeleton is not None:
+            try:
+                viz = self._config.visualization
+                self._apply_viz_settings_to_skeleton(viz)
+            except Exception as e:
+                logger.warning(f"Failed to apply visualization settings to skeleton: {e}")
+                pass
+            return
+
+        # None found
+        self.statusBar().showMessage("No skeleton definition available for this model.", 3000)
+
     def _configure_dlc(self) -> bool:
         try:
             settings = self._dlc_settings_from_ui()
@@ -1639,6 +1898,7 @@ class DLCLiveMainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Processor selection ignored (control disabled): {selected_key}", 3000)
 
         self._dlc.configure(settings, processor=processor)
+        self._configure_skeleton_for_model(settings.model_path)
         self._model_path_store.save_if_valid(settings.model_path)
         return True
 
@@ -1864,6 +2124,18 @@ class DLCLiveMainWindow(QMainWindow):
         self._last_processor_vid_recording = False
         self._auto_record_session_name = None
 
+        # Reset skeleton
+        self._skeleton = None
+        self._skeleton_auto_disabled = False
+        self._last_skeleton_disable_msg = None
+        self.skeleton_color_combo.setEnabled(False)
+        self.skeleton_thickness_spin.setEnabled(False)
+        if hasattr(self, "show_skeleton_checkbox"):
+            self.show_skeleton_checkbox.blockSignals(True)
+            self.show_skeleton_checkbox.setChecked(False)
+            self.show_skeleton_checkbox.setEnabled(False)
+            self.show_skeleton_checkbox.blockSignals(False)
+
         # Reset button appearance
         self.start_inference_button.setText("Start pose inference")
         self.start_inference_button.setStyleSheet("")
@@ -1908,6 +2180,69 @@ class DLCLiveMainWindow(QMainWindow):
         self._stop_inference(show_message=False)
         self._show_error(message)
 
+    def _draw_skeleton_on_frame(
+        self,
+        overlay: np.ndarray,
+        pose: np.ndarray,
+        *,
+        offset: tuple[int, int],
+        scale: tuple[float, float],
+        allow_auto_disable: bool = True,
+    ) -> skel.SkeletonRenderStatus | None:
+        """Draw skeleton on overlay with correct style. Optionally auto-disables UI on mismatch."""
+        if self._skeleton is None:
+            return None
+        if not self.show_skeleton_checkbox.isChecked():
+            return None
+        if self._skeleton_auto_disabled:
+            return None
+
+        pose_arr = np.asarray(pose)
+
+        # Provide keypoint_colors iff gradient mode is active
+        kp_colors = None
+        if self._skeleton.style.mode == skel.SkeletonColorMode.GRADIENT_KEYPOINTS:
+            n_kpts = pose_arr.shape[1] if pose_arr.ndim == 3 else pose_arr.shape[0]
+            kp_colors = keypoint_colors_bgr(self._colormap, int(n_kpts))
+
+        try:
+            if pose_arr.ndim == 3:
+                status = self._skeleton.draw_many(
+                    overlay,
+                    pose_arr,
+                    p_cutoff=self._p_cutoff,
+                    offset=offset,
+                    scale=scale,
+                    keypoint_colors=kp_colors,
+                )
+            else:
+                status = self._skeleton.draw(
+                    overlay,
+                    pose_arr,
+                    p_cutoff=self._p_cutoff,
+                    offset=offset,
+                    scale=scale,
+                    keypoint_colors=kp_colors,
+                )
+        except Exception as e:
+            status = skel.SkeletonRenderStatus(
+                code=skel.SkeletonRenderCode.POSE_SHAPE_INVALID,
+                message=f"Skeleton rendering error: {e}",
+            )
+
+        if allow_auto_disable and status.should_disable:
+            self._skeleton_auto_disabled = True
+            msg = status.message or "Skeleton disabled due to mismatch."
+            if msg != self._last_skeleton_disable_msg:
+                self._last_skeleton_disable_msg = msg
+                self.statusBar().showMessage(f"Skeleton disabled: {msg}", 6000)
+
+            self.show_skeleton_checkbox.blockSignals(True)
+            self.show_skeleton_checkbox.setChecked(False)
+            self.show_skeleton_checkbox.blockSignals(False)
+
+        return status
+
     def _update_video_display(self, frame: np.ndarray) -> None:
         display_frame = frame
 
@@ -1917,6 +2252,13 @@ class DLCLiveMainWindow(QMainWindow):
                 self._last_pose.pose,
                 p_cutoff=self._p_cutoff,
                 colormap=self._colormap,
+                offset=self._dlc_tile_offset,
+                scale=self._dlc_tile_scale,
+            )
+
+            self._draw_skeleton_on_frame(
+                display_frame,
+                self._last_pose.pose,
                 offset=self._dlc_tile_offset,
                 scale=self._dlc_tile_scale,
             )
