@@ -209,12 +209,6 @@ class BaseProcessorSocket(Processor):
             try:
                 conn = self.listener.accept()
 
-                # Apply safe timeout to client socket
-                try:
-                    conn._socket.settimeout(self._socket_timeout)
-                except Exception:
-                    pass
-
                 logger.debug(f"Client connected from {self.listener.last_accepted}")
                 self.conns.add(conn)
 
@@ -238,7 +232,7 @@ class BaseProcessorSocket(Processor):
                     self._handle_client_message(msg)
                     continue
 
-                if getattr(conn._socket, "_closed", False):
+                if conn.closed:
                     raise EOFError
 
             except (EOFError, OSError, ConnectionError, BrokenPipeError):
@@ -253,10 +247,6 @@ class BaseProcessorSocket(Processor):
 
     def _close_conn(self, conn):
         """Force-close client connection."""
-        try:
-            conn._socket.shutdown(socket.SHUT_RDWR)
-        except Exception:
-            pass
         try:
             conn.close()
         except Exception:
