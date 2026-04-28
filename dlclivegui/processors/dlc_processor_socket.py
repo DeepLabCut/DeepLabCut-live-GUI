@@ -387,12 +387,11 @@ class BaseProcessorSocket(Processor):
     def process(self, pose, **kwargs):
         curr_time = self.timing_func()
 
-        if self.save_original:
-            self.original_pose.append(pose.copy())
-
         self.curr_step += 1
 
         if self.recording:
+            if self.save_original and self.original_pose is not None:
+                self.original_pose.append(pose.copy())
             self.time_stamp.append(curr_time)
             self.step.append(self.curr_step)
             self.frame_time.append(kwargs.get("frame_time", -1))
@@ -568,9 +567,6 @@ class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):  # pragma: 
         logger.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
 
     def process(self, pose, **kwargs):
-        if self.save_original:
-            self.original_pose.append(pose.copy())
-
         # Extract keypoints and confidence
         xy = pose[:, :2]
         conf = pose[:, 2]
@@ -623,6 +619,8 @@ class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):  # pragma: 
 
         # Store processed data (only if recording)
         if self.recording:
+            if self.save_original and self.original_pose is not None:
+                self.original_pose.append(pose.copy())
             self.center_x.append(vals[0])
             self.center_y.append(vals[1])
             self.heading_direction.append(vals[2])
@@ -680,7 +678,7 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no 
         },
         "save_original": {
             "type": "bool",
-            "default": False,
+            "default": True,
             "description": "Save raw pose arrays for analysis",
         },
     }
@@ -692,7 +690,7 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no 
         use_perf_counter=False,
         use_filter=False,
         filter_kwargs: dict | None = None,
-        save_original=False,
+        save_original=True,
         p_cutoff=0.4,
     ):
         super().__init__(
@@ -731,9 +729,6 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no 
         logger.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
 
     def process(self, pose, **kwargs):
-        if self.save_original:
-            self.original_pose.append(pose.copy())
-
         # Extract keypoints and confidence
         xy = pose[:, :2]
         conf = pose[:, 2]
@@ -791,6 +786,8 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no 
 
         # Store processed data (only if recording)
         if self.recording:
+            if self.save_original and self.original_pose is not None:
+                self.original_pose.append(pose.copy())
             self.center_x.append(vals[0])
             self.center_y.append(vals[1])
             self.heading_direction.append(vals[2])
