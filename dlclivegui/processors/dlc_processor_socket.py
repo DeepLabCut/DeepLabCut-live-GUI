@@ -209,12 +209,6 @@ class BaseProcessorSocket(Processor):
             try:
                 conn = self.listener.accept()
 
-                # Apply safe timeout to client socket
-                try:
-                    conn._socket.settimeout(self._socket_timeout)
-                except Exception:
-                    pass
-
                 logger.debug(f"Client connected from {self.listener.last_accepted}")
                 self.conns.add(conn)
 
@@ -238,7 +232,7 @@ class BaseProcessorSocket(Processor):
                     self._handle_client_message(msg)
                     continue
 
-                if getattr(conn._socket, "_closed", False):
+                if conn.closed:
                     raise EOFError
 
             except (EOFError, OSError, ConnectionError, BrokenPipeError):
@@ -253,10 +247,6 @@ class BaseProcessorSocket(Processor):
 
     def _close_conn(self, conn):
         """Force-close client connection."""
-        try:
-            conn._socket.shutdown(socket.SHUT_RDWR)
-        except Exception:
-            pass
         try:
             conn.close()
         except Exception:
@@ -397,12 +387,11 @@ class BaseProcessorSocket(Processor):
     def process(self, pose, **kwargs):
         curr_time = self.timing_func()
 
-        if self.save_original:
-            self.original_pose.append(pose.copy())
-
         self.curr_step += 1
 
         if self.recording:
+            if self.save_original and self.original_pose is not None:
+                self.original_pose.append(pose.copy())
             self.time_stamp.append(curr_time)
             self.step.append(self.curr_step)
             self.frame_time.append(kwargs.get("frame_time", -1))
@@ -578,9 +567,6 @@ class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):  # pragma: 
         logger.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
 
     def process(self, pose, **kwargs):
-        if self.save_original:
-            self.original_pose.append(pose.copy())
-
         # Extract keypoints and confidence
         xy = pose[:, :2]
         conf = pose[:, 2]
@@ -633,6 +619,8 @@ class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):  # pragma: 
 
         # Store processed data (only if recording)
         if self.recording:
+            if self.save_original and self.original_pose is not None:
+                self.original_pose.append(pose.copy())
             self.center_x.append(vals[0])
             self.center_y.append(vals[1])
             self.heading_direction.append(vals[2])
@@ -690,7 +678,7 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no 
         },
         "save_original": {
             "type": "bool",
-            "default": False,
+            "default": True,
             "description": "Save raw pose arrays for analysis",
         },
     }
@@ -702,7 +690,7 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no 
         use_perf_counter=False,
         use_filter=False,
         filter_kwargs: dict | None = None,
-        save_original=False,
+        save_original=True,
         p_cutoff=0.4,
     ):
         super().__init__(
@@ -741,9 +729,6 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no 
         logger.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
 
     def process(self, pose, **kwargs):
-        if self.save_original:
-            self.original_pose.append(pose.copy())
-
         # Extract keypoints and confidence
         xy = pose[:, :2]
         conf = pose[:, 2]
@@ -801,6 +786,8 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no 
 
         # Store processed data (only if recording)
         if self.recording:
+            if self.save_original and self.original_pose is not None:
+                self.original_pose.append(pose.copy())
             self.center_x.append(vals[0])
             self.center_y.append(vals[1])
             self.heading_direction.append(vals[2])
