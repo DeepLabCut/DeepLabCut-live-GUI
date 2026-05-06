@@ -120,7 +120,7 @@ def test_base_process_without_and_with_recording(socket_mod):
     BaseProcessorSocket.process() should:
       - increment curr_step always,
       - when recording, append time/step/frame_time/pose_time,
-      - when save_original=True, store copies of pose arrays.
+            - when save_original=True, store copies of pose arrays only while recording.
     """
     BaseProcessorSocket = socket_mod.BaseProcessorSocket
     proc = BaseProcessorSocket(bind=("127.0.0.1", 0), save_original=True)
@@ -136,10 +136,9 @@ def test_base_process_without_and_with_recording(socket_mod):
         assert len(proc.step) == 0
         assert len(proc.frame_time) == 0
         assert len(proc.pose_time) == 0
-        # When not recording, save_original is still respected
+        # Raw poses must stay aligned with recorded metadata.
         assert proc.original_pose is not None
-        assert len(proc.original_pose) == 1
-        np.testing.assert_allclose(proc.original_pose[0], pose)
+        assert len(proc.original_pose) == 0
 
         # Start recording and push two frames
         proc._handle_client_message({"cmd": "start_recording"})
@@ -150,6 +149,9 @@ def test_base_process_without_and_with_recording(socket_mod):
         assert len(proc.step) == 2
         assert len(proc.frame_time) == 2
         assert len(proc.pose_time) == 2
+        assert len(proc.original_pose) == 2
+        np.testing.assert_allclose(proc.original_pose[0], pose)
+        np.testing.assert_allclose(proc.original_pose[1], pose)
 
         # Data snapshot integrity
         data = proc.get_data()
@@ -164,6 +166,128 @@ def test_base_process_without_and_with_recording(socket_mod):
 
     finally:
         proc.stop()
+
+
+def test_save_ignores_pre_recording_original_pose_frames(socket_mod):
+    """
+    save_original data must stay aligned with recorded metadata even if process()
+    is called before recording starts.
+    """
+    BaseProcessorSocket = socket_mod.BaseProcessorSocket
+    proc = BaseProcessorSocket(bind=("127.0.0.1", 0), save_original=True)
+
+    try:
+        n_keypoints = 4
+        bodyparts = _mk_bodyparts(n_keypoints)
+        proc.set_dlc_cfg({"metadata": {"bodyparts": bodyparts}})
+
+        pose = _mk_pose(n_keypoints=n_keypoints)
+
+        for _ in range(3):
+            proc.process(pose, frame_time=0.001, pose_time=0.002)
+
+        assert len(proc.original_pose) == 0
+        assert len(proc.frame_time) == 0
+
+        proc._handle_client_message({"cmd": "start_recording"})
+        for _ in range(2):
+            proc.process(pose, frame_time=0.01, pose_time=0.02)
+        proc._handle_client_message({"cmd": "stop_recording"})
+
+        filename = "unit_test_pre_recording_frames.pkl"
+        ret = proc.save(filename)
+        assert ret == 1
+
+        data_dir = _module_data_dir(socket_mod)
+        pkl_path = data_dir / filename
+        h5_path = data_dir / (Path(filename).stem + "_DLC.hdf5")
+
+        assert pkl_path.exists()
+        assert h5_path.exists()
+
+        with open(pkl_path, "rb") as f:
+            payload = pickle.load(f)
+
+        assert len(payload["frame_time"]) == 2
+        assert len(payload["time_stamp"]) == 2
+
+        pytest.importorskip("tables")
+        df = pd.read_hdf(h5_path, key="df_with_missing")
+        assert df.shape[0] == 2
+        assert list(df["frame_time"]) == [0.01, 0.01]
+        assert list(df["pose_time"]) == list(payload["time_stamp"])
+
+    finally:
+        proc.stop()
+        try:
+            pkl_path.unlink(missing_ok=True)
+            h5_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+@pytest.mark.parametrize(
+    ("class_name", "n_keypoints"),
+    [
+        ("ExampleProcessorSocketCalculateMousePose", 27),
+        ("ExampleProcessorSocketFilterKeypoints", 10),
+    ],
+)
+def test_subclass_save_ignores_pre_recording_original_pose_frames(socket_mod, class_name, n_keypoints):
+    """
+    Concrete processors must keep original_pose aligned with recorded metadata
+    even when process() is called before recording starts.
+    """
+    processor_class = getattr(socket_mod, class_name)
+    proc = processor_class(bind=("127.0.0.1", 0), save_original=True)
+
+    try:
+        bodyparts = _mk_bodyparts(n_keypoints)
+        proc.set_dlc_cfg({"metadata": {"bodyparts": bodyparts}})
+
+        pose = _mk_pose(n_keypoints=n_keypoints)
+
+        for _ in range(4):
+            proc.process(pose, frame_time=0.001, pose_time=0.002)
+
+        assert len(proc.original_pose) == 0
+        assert len(proc.frame_time) == 0
+
+        proc._handle_client_message({"cmd": "start_recording"})
+        for _ in range(3):
+            proc.process(pose, frame_time=0.01, pose_time=0.02)
+        proc._handle_client_message({"cmd": "stop_recording"})
+
+        filename = f"unit_test_{class_name}.pkl"
+        ret = proc.save(filename)
+        assert ret == 1
+
+        data_dir = _module_data_dir(socket_mod)
+        pkl_path = data_dir / filename
+        h5_path = data_dir / (Path(filename).stem + "_DLC.hdf5")
+
+        assert pkl_path.exists()
+        assert h5_path.exists()
+
+        with open(pkl_path, "rb") as f:
+            payload = pickle.load(f)
+
+        assert len(payload["frame_time"]) == 3
+        assert len(payload["time_stamp"]) == 3
+
+        pytest.importorskip("tables")
+        df = pd.read_hdf(h5_path, key="df_with_missing")
+        assert df.shape[0] == 3
+        assert list(df["frame_time"]) == [0.01, 0.01, 0.01]
+        assert list(df["pose_time"]) == list(payload["time_stamp"])
+
+    finally:
+        proc.stop()
+        try:
+            pkl_path.unlink(missing_ok=True)
+            h5_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def test_base_broadcast_handles_bad_connections(socket_mod):
@@ -270,6 +394,8 @@ def test_save_writes_pkl_and_hdf5_with_labels(socket_mod, caplog):
         # frame_time & pose_time columns are present
         assert "frame_time" in df.columns
         assert "pose_time" in df.columns
+        assert list(df["frame_time"]) == [0.01, 0.01, 0.01]
+        assert list(df["pose_time"]) == list(payload["time_stamp"])
 
         # sanity check values for first row
         for i, bp in enumerate(bodyparts):
