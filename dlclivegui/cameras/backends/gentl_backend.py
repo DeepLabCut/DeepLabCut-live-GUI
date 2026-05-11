@@ -133,6 +133,7 @@ class GenTLCameraBackend(CameraBackend):
         # --- Harvesters resources ---
         self._harvester = None
         self._acquirer = None
+        self._shared_entry = None
         self._device_label: str | None = None
 
         self._cti_files_source_used: str | None = None
@@ -435,8 +436,6 @@ class GenTLCameraBackend(CameraBackend):
             self._cti_files_source_used or ns.get("cti_files_source") or self._CTI_FILES_SOURCE_AUTO
         )
 
-        self._harvester = Harvester()
-
         loaded: list[str] = []
         failed: list[tuple[str, str]] = []
 
@@ -447,17 +446,12 @@ class GenTLCameraBackend(CameraBackend):
                 LOG.warning("Skipping CTI '%s': %s", cti, reason)
                 continue
 
-            try:
-                self._harvester.add_file(cti)
-                loaded.append(cti)
-            except Exception as exc:
-                failed.append((str(cti), str(exc)))
-                LOG.warning("Failed to load CTI '%s': %s", cti, exc)
+            loaded.append(str(cti))
 
         # Persist diagnostics for UI / debugging
         ns["cti_files"] = [str(p) for p in cti_files]  # all resolved candidates
-        ns["cti_files_loaded"] = [str(p) for p in loaded]  # successfully added to harvester
-        ns["cti_files_failed"] = [{"cti": c, "error": e} for c, e in failed]  # load failures
+        ns["cti_files_loaded"] = [str(p) for p in loaded]  # CTIs that passed initial checks
+        ns["cti_files_failed"] = [{"cti": c, "error": e} for c, e in failed]
 
         # Keep single-cti convenience key for backward compatibility / display
         if loaded:
@@ -475,10 +469,32 @@ class GenTLCameraBackend(CameraBackend):
                 "set properties.gentl.cti_file to a known working producer."
             )
 
-        # Update device list after loading producers
-        self._harvester.update()
+        # Acquire a process-shared Harvester instance for this CTI set
+        try:
+            self._shared_entry = cti_finder.SharedHarvesterPool.acquire(loaded)
+            self._harvester = self._shared_entry.harvester
 
-        if not self._harvester.device_info_list:
+            with self._shared_entry.lock:
+                # Refresh device list on open; safer for hotplug cases
+                self._harvester.update()
+                infos = list(self._harvester.device_info_list or [])
+
+            # Now that shared loading succeeded, persist the actual loaded list
+            ns["cti_files_loaded"] = list(getattr(self._shared_entry, "loaded_files", loaded))
+
+        except Exception as exc:
+            if self._shared_entry is not None:
+                try:
+                    cti_finder.SharedHarvesterPool.release(self._shared_entry)
+                except Exception:
+                    pass
+            self._shared_entry = None
+            self._harvester = None
+            raise RuntimeError(
+                f"Failed to initialize shared GenTL producer state.\n\nCTIs: {loaded}\nReason: {exc}"
+            ) from exc
+
+        if not infos:
             self._reset_harvester()
             raise RuntimeError(
                 "No GenTL cameras detected via Harvesters after loading producers.\n\n"
@@ -486,8 +502,6 @@ class GenTLCameraBackend(CameraBackend):
                 f"Failed CTIs: {failed}\n"
                 "Fix: ensure your camera vendor's GenTL producer is installed and working."
             )
-
-        infos = list(self._harvester.device_info_list)
 
         # Helper: robustly read device_info fields (dict-like or attribute-like)
         def _info_get(info, key: str, default=None):
@@ -604,15 +618,17 @@ class GenTLCameraBackend(CameraBackend):
 
         # Create ImageAcquirer via Harvester.create(...)
         try:
-            if selected_serial:
-                self._acquirer = self._harvester.create({"serial_number": str(selected_serial)})
-            else:
-                self._acquirer = self._harvester.create(int(selected_index))
+            with self._shared_entry.lock:
+                if selected_serial:
+                    self._acquirer = self._harvester.create({"serial_number": str(selected_serial)})
+                else:
+                    self._acquirer = self._harvester.create(int(selected_index))
         except TypeError:
-            if selected_serial:
-                self._acquirer = self._harvester.create({"serial_number": str(selected_serial)})
-            else:
-                self._acquirer = self._harvester.create(index=int(selected_index))
+            with self._shared_entry.lock:
+                if selected_serial:
+                    self._acquirer = self._harvester.create({"serial_number": str(selected_serial)})
+                else:
+                    self._acquirer = self._harvester.create(index=int(selected_index))
 
         remote = self._acquirer.remote_device
         node_map = remote.node_map
@@ -681,7 +697,8 @@ class GenTLCameraBackend(CameraBackend):
             LOG.info("GenTL open() in fast_start probe mode: acquisition not started.")
             return
 
-        self._acquirer.start()
+        with self._shared_entry.lock:
+            self._acquirer.start()
 
     @staticmethod
     def _device_id_from_info(info) -> str | None:
@@ -1042,7 +1059,11 @@ class GenTLCameraBackend(CameraBackend):
     def stop(self) -> None:
         if self._acquirer is not None:
             try:
-                self._acquirer.stop()
+                if self._shared_entry is not None:
+                    with self._shared_entry.lock:
+                        self._acquirer.stop()
+                else:
+                    self._acquirer.stop()
             except Exception:
                 pass
 
@@ -1056,28 +1077,38 @@ class GenTLCameraBackend(CameraBackend):
 
     def _reset_harvester(self) -> None:
         try:
-            self._reset_select_harvester(self._harvester)
+            if self._shared_entry is not None:
+                cti_finder.SharedHarvesterPool.release(self._shared_entry)
+                self._shared_entry = None
+            else:
+                self._reset_select_harvester(self._harvester)
         finally:
             self._harvester = None
 
     def close(self) -> None:
         if self._acquirer is not None:
             try:
-                self._acquirer.stop()
+                if self._shared_entry is not None:
+                    with self._shared_entry.lock:
+                        self._acquirer.stop()
+                else:
+                    self._acquirer.stop()
             except Exception:
                 pass
+
             try:
                 destroy = getattr(self._acquirer, "destroy", None)
                 if destroy is not None:
-                    destroy()
+                    if self._shared_entry is not None:
+                        with self._shared_entry.lock:
+                            destroy()
+                    else:
+                        destroy()
             finally:
                 self._acquirer = None
 
-        if self._harvester is not None:
-            try:
-                self._harvester.reset()
-            finally:
-                self._harvester = None
+        if self._harvester is not None or self._shared_entry is not None:
+            self._reset_harvester()
 
         self._device_label = None
 
