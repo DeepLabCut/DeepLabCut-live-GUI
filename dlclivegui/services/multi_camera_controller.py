@@ -185,13 +185,30 @@ class MultiCameraController(QObject):
             return
 
         # Check for dupes
-        seen = set()
+        seen = {}
         for s in active_settings:
-            key = camera_identity_key(s)
+            camera_id = get_camera_id(s)
+            try:
+                key = camera_identity_key(s)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to compute camera identity key for %s; falling back to camera_id",
+                    camera_id,
+                )
+                key = camera_id
+
             if key in seen:
-                self.initialization_failed.emit([(key, "Duplicate camera configuration")])
+                self.initialization_failed.emit(
+                    [
+                        (
+                            camera_id,
+                            f"Duplicate camera configuration. Conflicts with {seen[key]}",
+                        )
+                    ]
+                )
                 return
-            seen.add(key)
+
+            seen[key] = camera_id
 
         self._running = True
         self._frames.clear()
