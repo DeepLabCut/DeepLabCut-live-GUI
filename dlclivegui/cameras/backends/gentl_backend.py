@@ -565,11 +565,13 @@ class GenTLCameraBackend(CameraBackend):
             self._harvester = self._shared_entry.harvester
 
             actual_loaded = list(getattr(self._shared_entry, "loaded_files", loaded))
-            actual_failed = list(getattr(self._shared_entry, "failed_files", []))
+            actual_failed = dict(getattr(self._shared_entry, "failed_files", {}))
 
             ns["cti_files_loaded"] = actual_loaded
             if actual_failed:
-                ns["cti_files_failed"] = [{"cti": str(cti), "error": str(error)} for cti, error in actual_failed]
+                ns["cti_files_failed"] = [
+                    {"cti": str(cti), "error": str(error)} for cti, error in actual_failed.items()
+                ]
 
             with self._shared_entry.lock:
                 infos = list(self._harvester.device_info_list or [])
@@ -583,11 +585,11 @@ class GenTLCameraBackend(CameraBackend):
 
         except Exception as exc:
             exc_loaded = list(getattr(exc, "loaded_files", []))
-            exc_failed = list(getattr(exc, "failed_files", []))
+            exc_failed = dict(getattr(exc, "failed_files", {}))
 
             if exc_loaded or exc_failed:
                 ns["cti_files_loaded"] = [str(p) for p in exc_loaded]
-                ns["cti_files_failed"] = [{"cti": str(cti), "error": str(error)} for cti, error in exc_failed]
+                ns["cti_files_failed"] = [{"cti": str(cti), "error": str(error)} for cti, error in exc_failed.items()]
 
             if self._shared_entry is not None:
                 try:

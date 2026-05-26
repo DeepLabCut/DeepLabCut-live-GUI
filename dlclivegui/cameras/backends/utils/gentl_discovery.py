@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import glob
+import logging
 import os
 import threading
 from collections.abc import Iterable, Sequence
@@ -24,6 +25,8 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover - optional dependency
     Harvester = None  # type: ignore
 
+logger = logging.getLogger(__name__)
+
 
 class SharedHarvesterEntry:
     """
@@ -41,13 +44,34 @@ class SharedHarvesterEntry:
         self.refcount = 0
         self.harvester = Harvester()
         self.loaded_files: list[str] = []
+        self.failed_files: dict[str, str] = {}
 
         for cti in self.key:
-            self.harvester.add_file(cti)
-            self.loaded_files.append(cti)
+            try:
+                self.harvester.add_file(cti)
+                self.loaded_files.append(cti)
+            except Exception as e:
+                logger.exception(f"Failed to load CTI file: {cti}. Skipping.")
+                self.failed_files[cti] = str(e)
+
+        if not self.loaded_files:
+            e = RuntimeError("No GenTL producer (.cti) could be loaded by shared Harvester.")
+            self._raise_and_reset_harvester(e)
 
         # Initial device enumeration.
-        self.harvester.update()
+        try:
+            self.harvester.update()
+        except Exception as e:
+            self._raise_and_reset_harvester(e)
+
+    def _raise_and_reset_harvester(self, exc: Exception) -> None:
+        exc.loaded_files = self.loaded_files[:]
+        exc.failed_files = dict(self.failed_files)
+        try:
+            self.harvester.reset()
+        except Exception:
+            pass
+        raise exc
 
 
 class SharedHarvesterPool:
