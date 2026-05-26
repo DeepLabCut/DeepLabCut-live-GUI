@@ -569,9 +569,12 @@ class GenTLCameraBackend(CameraBackend):
 
             ns["cti_files_loaded"] = actual_loaded
             if actual_failed:
-                ns["cti_files_failed"] = [
+                existing_failed = ns.get("cti_files_failed")
+                merged_failed = list(existing_failed) if isinstance(existing_failed, list) else []
+                merged_failed.extend(
                     {"cti": str(cti), "error": str(error)} for cti, error in actual_failed.items()
-                ]
+                )
+                ns["cti_files_failed"] = merged_failed
 
             with self._shared_entry.lock:
                 infos = list(self._harvester.device_info_list or [])
