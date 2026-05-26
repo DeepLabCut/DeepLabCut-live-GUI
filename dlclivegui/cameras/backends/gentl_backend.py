@@ -592,7 +592,10 @@ class GenTLCameraBackend(CameraBackend):
 
             if exc_loaded or exc_failed:
                 ns["cti_files_loaded"] = [str(p) for p in exc_loaded]
-                ns["cti_files_failed"] = [{"cti": str(cti), "error": str(error)} for cti, error in exc_failed.items()]
+                existing_failed = ns.get("cti_files_failed")
+                merged_failed = list(existing_failed) if isinstance(existing_failed, list) else []
+                merged_failed.extend({"cti": str(cti), "error": str(error)} for cti, error in exc_failed.items())
+                ns["cti_files_failed"] = merged_failed
 
             if self._shared_entry is not None:
                 try:
