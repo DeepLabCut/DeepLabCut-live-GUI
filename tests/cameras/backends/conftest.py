@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -641,6 +642,122 @@ class _FakeFetchedBufferCtx:
         return False
 
 
+class FakeSharedHarvesterPoolAcquireError(RuntimeError):
+    """Raised by the fake shared pool when no CTI can be loaded."""
+
+    def __init__(self, message: str, *, loaded_files=None, failed_files=None):
+        super().__init__(message)
+        self.loaded_files = list(loaded_files or [])
+        self.failed_files = list(failed_files or [])
+
+
+class FakeSharedEntry:
+    def __init__(self, harvester, loaded_files, failed_files=None):
+        self.harvester = harvester
+        self.loaded_files = list(loaded_files or [])
+        self.failed_files = list(failed_files or [])
+        self.lock = threading.RLock()
+
+
+class FakeSharedHarvesterPool:
+    """
+    Test double for cti_finder.SharedHarvesterPool.
+
+    Important behavior:
+    - Reuses one Harvester per normalized CTI set.
+    - Calls update() only when creating the shared Harvester.
+    - Does not call update() when reusing an existing shared Harvester.
+    - Tracks loaded_files/failed_files so backend diagnostics can be tested.
+    """
+
+    _entries: dict[tuple[str, ...], FakeSharedEntry] = {}
+    _refcounts: dict[tuple[str, ...], int] = {}
+    _harvester_factory = None
+
+    @classmethod
+    def configure(cls, harvester_factory):
+        cls.reset()
+        cls._harvester_factory = harvester_factory
+
+    @staticmethod
+    def _key(cti_files) -> tuple[str, ...]:
+        # Stable across case/path spelling on Windows while preserving loaded_files separately.
+        return tuple(os.path.normcase(os.path.abspath(str(p))) for p in cti_files)
+
+    @classmethod
+    def acquire(cls, cti_files):
+        key = cls._key(cti_files)
+
+        if key in cls._entries:
+            cls._refcounts[key] += 1
+            return cls._entries[key]
+
+        if cls._harvester_factory is None:
+            raise RuntimeError("FakeSharedHarvesterPool is not configured")
+
+        h = cls._harvester_factory()
+
+        loaded: list[str] = []
+        failed: list[tuple[str, str]] = []
+
+        for cti in cti_files:
+            cti_str = str(cti)
+            try:
+                h.add_file(cti_str)
+                loaded.append(cti_str)
+            except Exception as exc:
+                failed.append((cti_str, str(exc)))
+
+        if not loaded:
+            try:
+                h.reset()
+            except Exception:
+                pass
+            raise FakeSharedHarvesterPoolAcquireError(
+                "No fake CTIs could be loaded",
+                loaded_files=[],
+                failed_files=failed,
+            )
+
+        h.update()
+
+        entry = FakeSharedEntry(h, loaded_files=loaded, failed_files=failed)
+        cls._entries[key] = entry
+        cls._refcounts[key] = 1
+        return entry
+
+    @classmethod
+    def release(cls, entry):
+        for key, value in list(cls._entries.items()):
+            if value is entry:
+                cls._refcounts[key] -= 1
+                if cls._refcounts[key] <= 0:
+                    try:
+                        entry.harvester.reset()
+                    except Exception:
+                        pass
+                    del cls._entries[key]
+                    del cls._refcounts[key]
+                return
+
+    @classmethod
+    def get_refcount(cls, entry):
+        for key, value in cls._entries.items():
+            if value is entry:
+                return cls._refcounts[key]
+        return 0
+
+    @classmethod
+    def reset(cls):
+        for entry in list(cls._entries.values()):
+            try:
+                entry.harvester.reset()
+            except Exception:
+                pass
+        cls._entries.clear()
+        cls._refcounts.clear()
+
+
 @dataclass
 class FakeImageAcquirer:
     """
@@ -691,6 +808,7 @@ class FakeImageAcquirer:
     def start(self):
         self.start_calls += 1
         self._started = True
+        self._queue.clear()
 
     def stop(self):
         self.stop_calls += 1
@@ -707,10 +825,28 @@ class FakeImageAcquirer:
         if not self._started:
             raise FakeGenTLTimeoutException("fetch called while not started")
 
-        if not self._queue:
-            raise FakeGenTLTimeoutException(f"timeout after {timeout}s")
+        if self._queue:
+            payload = self._queue.pop(0)
+        else:
+            # Generate from the current node map, because backend may have changed
+            # PixelFormat/Width/Height during open().
+            pf = str(self.node_map.PixelFormat.value or "Mono8")
+            if pf in ("RGB8", "BGR8"):
+                channels, dtype = 3, np.uint8
+            elif pf in ("Mono16", "Mono12", "Mono10"):
+                channels, dtype = 1, np.uint16
+            else:
+                # Mono8 and Bayer*8 are single-channel uint8
+                channels, dtype = 1, np.uint8
 
-        payload = self._queue.pop(0)
+            comp = _FakeComponent(
+                int(self.node_map.Width.value),
+                int(self.node_map.Height.value),
+                channels,
+                dtype=dtype,
+            )
+            payload = _FakePayload(comp)
+
         return _FakeFetchedBufferCtx(payload)
 
 
@@ -854,18 +990,37 @@ def gentl_fail_add_file_for():
 def patch_gentl_sdk(monkeypatch, fake_harvester_factory, gentl_fail_add_file_for, tmp_path):
     """
     Patch dlclivegui.cameras.backends.gentl_backend to use FakeHarvester + Fake timeout.
-    Ensure CTI discovery succeeds for classmethods by creating a real dummy .cti and
-    exposing it via GENICAM_GENTL64_PATH.
+
+    Important:
+    The production backend now uses cti_finder.SharedHarvesterPool.acquire()
+    during open(), so tests must patch that pool too.
     """
     import dlclivegui.cameras.backends.gentl_backend as gb
 
-    # Patch Harvester symbol (the backend calls Harvester() directly)
+    # Reset and expose test counters/state.
+    gb.update_count = 0
+    gb.fail_add_file_for = gentl_fail_add_file_for
+
+    # Patch Harvester symbol for discovery/rebind paths.
     monkeypatch.setattr(gb, "Harvester", lambda: fake_harvester_factory(), raising=False)
 
-    # Keep timeout contract
+    # Count all fake update() calls.
+    original_update = FakeHarvester.update
+
+    def update_with_count(self):
+        gb.update_count += 1
+        return original_update(self)
+
+    monkeypatch.setattr(FakeHarvester, "update", update_with_count, raising=True)
+
+    # Keep timeout contract.
     monkeypatch.setattr(gb, "HarvesterTimeoutError", FakeGenTLTimeoutException, raising=False)
 
-    # Create a real CTI file and advertise it via env var
+    # Patch the shared pool used by open().
+    FakeSharedHarvesterPool.configure(fake_harvester_factory)
+    monkeypatch.setattr(gb.cti_finder, "SharedHarvesterPool", FakeSharedHarvesterPool, raising=False)
+
+    # Create a real CTI file and advertise it via env var.
     cti_file = tmp_path / "dummy.cti"
     if not cti_file.exists():
         cti_file.write_text("fake", encoding="utf-8")
@@ -873,10 +1028,11 @@ def patch_gentl_sdk(monkeypatch, fake_harvester_factory, gentl_fail_add_file_for
     monkeypatch.setenv("GENICAM_GENTL64_PATH", str(tmp_path))
     monkeypatch.delenv("GENICAM_GENTL32_PATH", raising=False)
 
-    # OPTIONAL: expose failure control so tests can do gb.fail_add_file_for.add(...)
-    gb.fail_add_file_for = gentl_fail_add_file_for
-
-    return gb
+    try:
+        yield gb
+    finally:
+        FakeSharedHarvesterPool.reset()
+        gb.fail_add_file_for = set()
 
 
 @pytest.fixture()
