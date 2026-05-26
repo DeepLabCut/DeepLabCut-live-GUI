@@ -682,7 +682,7 @@ class FakeSharedHarvesterPool:
     @staticmethod
     def _key(cti_files) -> tuple[str, ...]:
         # Stable across case/path spelling on Windows while preserving loaded_files separately.
-        return tuple(os.path.normcase(os.path.abspath(str(p))) for p in cti_files)
+        return tuple(sorted(os.path.normcase(os.path.abspath(str(p))) for p in cti_files))
 
     @classmethod
     def acquire(cls, cti_files):
