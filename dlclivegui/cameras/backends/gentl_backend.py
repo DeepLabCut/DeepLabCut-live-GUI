@@ -385,42 +385,54 @@ class GenTLCameraBackend(CameraBackend):
 
         with type(self)._OPEN_LOCK:
             loaded, failed = self._resolve_and_persist_ctis()
-            infos = self._acquire_shared_harvester(loaded)
-            if not infos:
-                self._reset_harvester()
-                raise RuntimeError(
-                    "No GenTL cameras detected via Harvesters after loading producers.\n\n"
-                    f"Loaded CTIs: {loaded}\n"
-                    f"Failed CTIs: {failed}\n"
-                    "Fix: ensure your camera vendor's GenTL producer is installed and working."
+            try:
+                infos = self._acquire_shared_harvester(loaded)
+                if not infos:
+                    self._reset_harvester()
+                    raise RuntimeError(
+                        "No GenTL cameras detected via Harvesters after loading producers.\n\n"
+                        f"Loaded CTIs: {loaded}\n"
+                        f"Failed CTIs: {failed}\n"
+                        "Fix: ensure your camera vendor's GenTL producer is installed and working."
+                    )
+
+                selected_index, selected_serial, selected_info = self._select_device(infos)
+                self.settings.index = int(selected_index)
+
+                with self._shared_entry.lock:
+                    self._acquirer = self._create_image_acquirer(selected_serial, int(selected_index))
+                    node_map = self._acquirer.remote_device.node_map
+                    self._device_label = self._resolve_device_label(node_map)
+
+                    self._configure_pixel_format(node_map)
+                    self._configure_trigger(node_map)
+                    self._configure_resolution(node_map)
+                    self._configure_exposure(node_map)
+                    self._configure_gain(node_map)
+                    self._configure_frame_rate(node_map)
+                    self._read_telemetry(node_map)
+                    self._persist_device_metadata(selected_info, selected_serial)
+
+                    if self._fast_start:
+                        LOG.info("GenTL open() in fast_start probe mode: acquisition not started.")
+                        return
+
+                    self._acquirer.start()
+
+                LOG.debug(
+                    "Opened GenTL camera index=%s serial=%s label=%s",
+                    selected_index,
+                    selected_serial,
+                    self._device_label,
                 )
-
-            selected_index, selected_serial, selected_info = self._select_device(infos)
-            self.settings.index = int(selected_index)
-
-            with self._shared_entry.lock:
-                self._acquirer = self._create_image_acquirer(selected_serial, int(selected_index))
-                node_map = self._acquirer.remote_device.node_map
-                self._device_label = self._resolve_device_label(node_map)
-
-                self._configure_pixel_format(node_map)
-                self._configure_trigger(node_map)
-                self._configure_resolution(node_map)
-                self._configure_exposure(node_map)
-                self._configure_gain(node_map)
-                self._configure_frame_rate(node_map)
-                self._read_telemetry(node_map)
-                self._persist_device_metadata(selected_info, selected_serial)
-
-                if self._fast_start:
-                    LOG.info("GenTL open() in fast_start probe mode: acquisition not started.")
-                    return
-
-                self._acquirer.start()
-
-            LOG.debug(
-                "Opened GenTL camera index=%s serial=%s label=%s", selected_index, selected_serial, self._device_label
-            )
+            except Exception as exc:
+                try:
+                    self.close()
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"Failed to open GenTL camera.\n\nLoaded CTIs: {loaded}\nFailed CTIs: {failed}\nReason: {exc}"
+                ) from exc
 
     def read(self) -> tuple[np.ndarray, float]:
         if self._acquirer is None:
@@ -681,12 +693,20 @@ class GenTLCameraBackend(CameraBackend):
         selected_serial: str | None = None
 
         if target_device_id:
-            selected_index, selected_serial = self._match_device(infos, str(target_device_id).strip())
+            target = str(target_device_id).strip()
+            selected_index, selected_serial = self._match_device(infos, target)
+            if selected_index is None:
+                available = [str(self._info_get(i, "serial_number", "") or "").strip() for i in infos]
+                raise RuntimeError(f"GenTL device '{target}' not found. Available serials: {available}")
 
-        if selected_index is None and self._serial_number:
-            selected_index, selected_serial = self._match_device(infos, str(self._serial_number).strip())
+        elif self._serial_number:
+            serial = str(self._serial_number).strip()
+            selected_index, selected_serial = self._match_device(infos, serial)
+            if selected_index is None:
+                available = [str(self._info_get(i, "serial_number", "") or "").strip() for i in infos]
+                raise RuntimeError(f"GenTL camera with serial '{serial}' not found. Available serials: {available}")
 
-        if selected_index is None:
+        else:
             if requested_index < 0 or requested_index >= len(infos):
                 raise RuntimeError(f"Camera index {requested_index} out of range for {len(infos)} GenTL device(s)")
             selected_index = requested_index
