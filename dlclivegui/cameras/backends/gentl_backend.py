@@ -54,6 +54,20 @@ class GenTLCameraBackend(CameraBackend):
         r"C:\Program Files\The Imaging Source Europe GmbH\TIS Camera SDK\bin\win64_x64\*.cti",
         r"C:\Program Files (x86)\The Imaging Source Europe GmbH\TIS Grabber\bin\win64_x64\*.cti",
     )
+    _COLOR_PIXEL_FORMATS: ClassVar[tuple[str, ...]] = (
+        "BGR8",
+        "RGB8",
+        "BayerRG8",
+        "BayerGB8",
+        "BayerGR8",
+        "BayerBG8",
+    )
+    _MONO_PIXEL_FORMATS: ClassVar[tuple[str, ...]] = (
+        "Mono8",
+        "Mono10",
+        "Mono12",
+        "Mono16",
+    )
 
     # Source marker stored in properties["gentl"]["cti_files_source"].
     # auto: persisted by auto-discovery; may be stale and can fall back.
@@ -77,7 +91,8 @@ class GenTLCameraBackend(CameraBackend):
         self._device_id: str | None = str(raw_device_id).strip() if raw_device_id else None
         self._serial_number: str | None = self._serial_from_identity(self._device_id, legacy_serial)
 
-        self._pixel_format: str = ns.get("pixel_format") or props.get("pixel_format", "Mono8")
+        self._pixel_format: str = ns.get("pixel_format") or props.get("pixel_format", "auto")
+        self._pixel_format = str(self._pixel_format).strip()
         self._rotate: int = int(ns.get("rotate", props.get("rotate", 0))) % 360
         self._crop: tuple[int, int, int, int] | None = self._parse_crop(ns.get("crop", props.get("crop")))
 
@@ -913,17 +928,56 @@ class GenTLCameraBackend(CameraBackend):
 
     def _configure_pixel_format(self, node_map) -> None:
         try:
-            if self._pixel_format in node_map.PixelFormat.symbolics:
-                node_map.PixelFormat.value = self._pixel_format
-                actual = node_map.PixelFormat.value
-                if actual != self._pixel_format:
-                    LOG.warning("Pixel format mismatch: requested '%s', got '%s'", self._pixel_format, actual)
+            pixel_format_node = getattr(node_map, "PixelFormat", None)
+            if pixel_format_node is None:
+                return
+
+            available = list(getattr(pixel_format_node, "symbolics", []) or [])
+            if not available:
+                return
+
+            requested = str(self._pixel_format or "auto").strip()
+
+            if requested.lower() == "auto":
+                selected = None
+
+                for fmt in self._COLOR_PIXEL_FORMATS:
+                    if fmt in available:
+                        selected = fmt
+                        break
+
+                if selected is None:
+                    for fmt in self._MONO_PIXEL_FORMATS:
+                        if fmt in available:
+                            selected = fmt
+                            break
+
+                if selected is None:
+                    selected = available[0]
+
             else:
-                LOG.warning(
-                    "Pixel format '%s' not in available formats: %s", self._pixel_format, node_map.PixelFormat.symbolics
-                )
+                selected = requested
+                if selected not in available:
+                    LOG.warning(
+                        "Pixel format '%s' not available. Available formats: %s. Falling back to auto.",
+                        selected,
+                        available,
+                    )
+                    selected = None
+                    for fmt in self._COLOR_PIXEL_FORMATS + self._MONO_PIXEL_FORMATS:
+                        if fmt in available:
+                            selected = fmt
+                            break
+                    if selected is None:
+                        selected = available[0]
+
+            pixel_format_node.value = selected
+            self._pixel_format = str(pixel_format_node.value)
+
+            LOG.debug("GenTL pixel format selected: %s", self._pixel_format)
+
         except Exception as e:
-            LOG.warning("Failed to set pixel format '%s': %s", self._pixel_format, e)
+            LOG.warning("Failed to configure pixel format '%s': %s", self._pixel_format, e)
 
     def _configure_trigger(self, node_map) -> None:
         try:
@@ -1056,10 +1110,24 @@ class GenTLCameraBackend(CameraBackend):
             scale = 255.0 / max_val if max_val > 0.0 else 1.0
             frame = np.clip(frame * scale, 0, 255).astype(np.uint8)
 
+        fmt = str(self._pixel_format or "").strip()
+
         if frame.ndim == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        elif frame.ndim == 3 and frame.shape[2] == 3 and self._pixel_format == "RGB8":
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            if fmt == "BayerRG8":
+                frame = cv2.cvtColor(frame, cv2.COLOR_BayerRG2BGR)
+            elif fmt == "BayerGB8":
+                frame = cv2.cvtColor(frame, cv2.COLOR_BayerGB2BGR)
+            elif fmt == "BayerGR8":
+                frame = cv2.cvtColor(frame, cv2.COLOR_BayerGR2BGR)
+            elif fmt == "BayerBG8":
+                frame = cv2.cvtColor(frame, cv2.COLOR_BayerBG2BGR)
+            else:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        elif frame.ndim == 3 and frame.shape[2] == 3:
+            if fmt == "RGB8":
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            # BGR8 is already OpenCV-native.
 
         if self._crop is not None:
             top, bottom, left, right = (int(v) for v in self._crop)
