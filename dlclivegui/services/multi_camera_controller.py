@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from PySide6.QtGui import QImage, QPixmap
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
+from dlclivegui.cameras.factory import camera_identity_key
 
 # from dlclivegui.config import CameraSettings
 from dlclivegui.config import CameraSettings
@@ -42,7 +44,7 @@ class SingleCameraWorker(QObject):
     def __init__(self, camera_id: str, settings: CameraSettings):
         super().__init__()
         self._camera_id = camera_id
-        self._settings = settings
+        self._settings = copy.deepcopy(settings)
         self._stop_event = Event()
         self._backend: CameraBackend | None = None
         self._max_consecutive_errors = 5
@@ -53,7 +55,24 @@ class SingleCameraWorker(QObject):
         self._stop_event.clear()
 
         try:
+            LOGGER.debug(
+                "[Worker %s] before create: backend=%s index=%s properties=%s",
+                self._camera_id,
+                self._settings.backend,
+                self._settings.index,
+                self._settings.properties,
+            )
+
             self._backend = CameraFactory.create(self._settings)
+
+            LOGGER.debug(
+                "[Worker %s] after create: backend=%s index=%s properties=%s",
+                self._camera_id,
+                self._backend.settings.backend,
+                self._backend.settings.index,
+                self._backend.settings.properties,
+            )
+
             self._backend.open()
         except Exception as exc:
             LOGGER.exception(f"Failed to initialize camera {self._camera_id}", exc_info=exc)
@@ -103,8 +122,20 @@ class SingleCameraWorker(QObject):
 
 
 def get_camera_id(settings: CameraSettings) -> str:
-    """Generate a unique camera ID from settings."""
-    return f"{settings.backend}:{settings.index}"
+    """Generate a unique camera ID from stable backend identity."""
+    backend = (settings.backend or "").lower()
+    props = settings.properties if isinstance(settings.properties, dict) else {}
+    ns = props.get(backend, {}) if isinstance(props.get(backend), dict) else {}
+
+    device_id = ns.get("device_id")
+    if device_id:
+        return f"{backend}:{device_id}"
+
+    serial = ns.get("serial_number") or ns.get("device_serial_number") or ns.get("serial")
+    if serial:
+        return f"{backend}:serial:{serial}"
+
+    return f"{backend}:index:{int(settings.index)}"
 
 
 class MultiCameraController(QObject):
@@ -153,6 +184,15 @@ class MultiCameraController(QObject):
             LOGGER.warning("No active cameras to start")
             return
 
+        # Check for dupes
+        seen = set()
+        for s in active_settings:
+            key = camera_identity_key(s)
+            if key in seen:
+                self.initialization_failed.emit([(key, "Duplicate camera configuration")])
+                return
+            seen.add(key)
+
         self._running = True
         self._frames.clear()
         self._timestamps.clear()
@@ -165,13 +205,16 @@ class MultiCameraController(QObject):
 
     def _start_camera(self, settings: CameraSettings) -> None:
         """Start a single camera."""
-        cam_id = get_camera_id(settings)
+        settings_copy = copy.deepcopy(settings)
+        cam_id = get_camera_id(settings_copy)
         if cam_id in self._workers:
             LOGGER.warning(f"Camera {cam_id} already has a worker")
             return
 
+        LOGGER.info(f"[MultiCameraController] Starting {cam_id} with settings: {settings_copy}")
+
         # Normalize and store the dataclass once
-        self._settings[cam_id] = settings
+        self._settings[cam_id] = settings_copy
         dc = self._settings[cam_id]
         worker = SingleCameraWorker(cam_id, dc)
         thread = QThread()

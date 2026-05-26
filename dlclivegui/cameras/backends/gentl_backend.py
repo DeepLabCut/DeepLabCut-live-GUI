@@ -3,7 +3,10 @@
 #  dlclivegui/cameras/backends/gentl_backend.py
 from __future__ import annotations
 
+import itertools
 import logging
+import os
+import threading
 import time
 from pathlib import Path
 from typing import ClassVar
@@ -34,17 +37,19 @@ class GenTLCameraBackend(CameraBackend):
     """Capture frames from GenTL-compatible devices via Harvesters."""
 
     OPTIONS_KEY: ClassVar[str] = "gentl"
-    _LEGACY_DEFAULT_CTI_PATTERNS: tuple[str, ...] = (  # Windows-only, ignored on other platforms
-        r"C:\\Program Files\\The Imaging Source Europe GmbH\\IC4 GenTL Driver for USB3Vision Devices *\\bin\\*.cti",
-        r"C:\\Program Files\\The Imaging Source Europe GmbH\\TIS Grabber\\bin\\win64_x64\\*.cti",
-        r"C:\\Program Files\\The Imaging Source Europe GmbH\\TIS Camera SDK\\bin\\win64_x64\\*.cti",
-        r"C:\\Program Files (x86)\\The Imaging Source Europe GmbH\\TIS Grabber\\bin\\win64_x64\\*.cti",
+    _OPEN_LOCK: ClassVar[threading.RLock] = threading.RLock()
+    _DEFAULT_CTI_PATTERNS: tuple[str, ...] = (  # Windows-only, ignored on other platforms
+        r"C:\Program Files\The Imaging Source Europe GmbH\IC4 GenTL Driver for USB3Vision Devices *\bin\*.cti",
+        r"C:\Program Files\The Imaging Source Europe GmbH\TIS Grabber\bin\win64_x64\*.cti",
+        r"C:\Program Files\The Imaging Source Europe GmbH\TIS Camera SDK\bin\win64_x64\*.cti",
+        r"C:\Program Files (x86)\The Imaging Source Europe GmbH\TIS Grabber\bin\win64_x64\*.cti",
     )
     # Source marker stored in properties["gentl"]["cti_files_source"]
     # auto : persisted by auto-discovery (env vars, patterns, etc.). Cache, may be stale, re-discover if missing.
     # user : explicitly set by user via properties.gentl.cti_file(s). Cache, strict raise if missing.
     _CTI_FILES_SOURCE_AUTO: ClassVar[str] = "auto"
     _CTI_FILES_SOURCE_USER: ClassVar[str] = "user"
+    _OPEN_SEQ: ClassVar[itertools.count] = itertools.count(1)
 
     def __init__(self, settings):
         super().__init__(settings)
@@ -309,15 +314,20 @@ class GenTLCameraBackend(CameraBackend):
                 )
 
         # ------------------------------------------------------------
-        # 3) Discovery path: env vars + patterns/dirs (source = "auto")
+        # 3) Discovery path: env vars + patterns/dirs + built-in defaults
         # ------------------------------------------------------------
         self._cti_files_source_used = self._CTI_FILES_SOURCE_AUTO
 
         search_paths = ns.get("cti_search_paths", props.get("cti_search_paths"))
         extra_dirs = ns.get("cti_dirs", props.get("cti_dirs"))
 
+        if search_paths is not None:
+            search_patterns = cti_finder.cti_files_as_list(search_paths)
+        else:
+            search_patterns = list(self._DEFAULT_CTI_PATTERNS)
+
         candidates, diag = cti_finder.discover_cti_files(
-            cti_search_paths=cti_finder.cti_files_as_list(search_paths) if search_paths is not None else None,
+            cti_search_paths=search_patterns,
             include_env=True,
             extra_dirs=cti_finder.cti_files_as_list(extra_dirs) if extra_dirs is not None else None,
             recursive_env_search=False,
@@ -332,10 +342,27 @@ class GenTLCameraBackend(CameraBackend):
                 "  - Set camera.properties.gentl.cti_file to the full path of a .cti file\n"
                 "  - Or set GENICAM_GENTL64_PATH / GENICAM_GENTL32_PATH to include the producer directory\n"
                 "  - Or provide camera.properties.gentl.cti_search_paths with glob patterns\n\n"
-                f"Discovery details:\n{diag.summarize()}"
+                f"Discovery details:\n{diag.summarize(redact_env=False)}"
             )
 
         return list(candidates)
+
+    def _configure_trigger(self, node_map) -> None:
+        """
+        Disable external trigger by default unless user explicitly configured otherwise.
+        This prevents fetch() timeouts on cameras left in trigger mode.
+        """
+        try:
+            trigger_mode = getattr(node_map, "TriggerMode", None)
+            if trigger_mode is None:
+                return
+
+            symbolics = getattr(trigger_mode, "symbolics", [])
+            if "Off" in symbolics:
+                trigger_mode.value = "Off"
+                LOG.info("TriggerMode set to Off")
+        except Exception as e:
+            LOG.warning("Failed to disable trigger mode: %s", e)
 
     @classmethod
     def _build_harvester_for_discovery(
@@ -354,7 +381,7 @@ class GenTLCameraBackend(CameraBackend):
 
         candidates, diag = cti_finder.discover_cti_files(
             include_env=True,
-            cti_search_paths=list(cls._LEGACY_DEFAULT_CTI_PATTERNS),
+            cti_search_paths=list(cls._DEFAULT_CTI_PATTERNS),
             must_exist=True,
         )
 
@@ -416,142 +443,269 @@ class GenTLCameraBackend(CameraBackend):
         return harvester, loaded, diag
 
     def open(self) -> None:
-        if Harvester is None:  # pragma: no cover
-            raise RuntimeError(
-                "The 'harvesters' package is required for the GenTL backend. Install it via 'pip install harvesters'."
+        with type(self)._OPEN_LOCK:
+            open_id = next(type(self)._OPEN_SEQ)
+            thread_name = threading.current_thread().name
+            target_for_log = self._device_id or self._serial_number or getattr(self.settings, "index", None)
+
+            LOG.debug(
+                "[GenTL:%s] open() ENTER pid=%s thread=%s settings_id=%s target=%s index=%s props=%s",
+                open_id,
+                os.getpid(),
+                thread_name,
+                id(self.settings),
+                target_for_log,
+                getattr(self.settings, "index", None),
+                self.settings.properties,
+            )
+            if Harvester is None:  # pragma: no cover
+                raise RuntimeError(
+                    "The 'harvesters' package is required for the GenTL backend. "
+                    "Install it via 'pip install harvesters'."
+                )
+
+            # Ensure properties namespace exists for persistence back to UI
+            if not isinstance(self.settings.properties, dict):
+                self.settings.properties = {}
+            props = self.settings.properties
+            ns = props.get(self.OPTIONS_KEY, {})
+            if not isinstance(ns, dict):
+                ns = {}
+                props[self.OPTIONS_KEY] = ns
+
+            # Ensure GenTL defalts are present
+            ns.setdefault("cti_search_paths", list(self._DEFAULT_CTI_PATTERNS))
+            ns.setdefault("cti_files_source", self._CTI_FILES_SOURCE_AUTO)
+
+            # Resolve CTIs (may return many). This no longer raises just because there are multiple.
+            cti_files = self._resolve_cti_files_for_settings()
+            ns["cti_files_source"] = (
+                self._cti_files_source_used or ns.get("cti_files_source") or self._CTI_FILES_SOURCE_AUTO
             )
 
-        # Ensure properties namespace exists for persistence back to UI
-        if not isinstance(self.settings.properties, dict):
-            self.settings.properties = {}
-        props = self.settings.properties
-        ns = props.get(self.OPTIONS_KEY, {})
-        if not isinstance(ns, dict):
-            ns = {}
-            props[self.OPTIONS_KEY] = ns
+            loaded: list[str] = []
+            failed: list[tuple[str, str]] = []
 
-        # Resolve CTIs (may return many). This no longer raises just because there are multiple.
-        cti_files = self._resolve_cti_files_for_settings()
-        ns["cti_files_source"] = (
-            self._cti_files_source_used or ns.get("cti_files_source") or self._CTI_FILES_SOURCE_AUTO
-        )
+            for cti in cti_files:
+                ok, reason = self._cti_preflight(cti)
+                if not ok:
+                    failed.append((str(cti), reason or "preflight failed"))
+                    LOG.warning("Skipping CTI '%s': %s", cti, reason)
+                    continue
 
-        loaded: list[str] = []
-        failed: list[tuple[str, str]] = []
+                loaded.append(str(cti))
 
-        for cti in cti_files:
-            ok, reason = self._cti_preflight(cti)
-            if not ok:
-                failed.append((str(cti), reason or "preflight failed"))
-                LOG.warning("Skipping CTI '%s': %s", cti, reason)
-                continue
+            # Persist diagnostics for UI / debugging
+            ns["cti_files"] = [str(p) for p in cti_files]  # all resolved candidates
+            ns["cti_files_loaded"] = [str(p) for p in loaded]  # CTIs that passed initial checks
+            ns["cti_files_failed"] = [{"cti": c, "error": e} for c, e in failed]
 
-            loaded.append(str(cti))
+            # Keep single-cti convenience key for backward compatibility / display
+            if loaded:
+                ns["cti_file"] = str(loaded[0])
+            elif cti_files:
+                ns["cti_file"] = str(cti_files[0])  # best effort
 
-        # Persist diagnostics for UI / debugging
-        ns["cti_files"] = [str(p) for p in cti_files]  # all resolved candidates
-        ns["cti_files_loaded"] = [str(p) for p in loaded]  # CTIs that passed initial checks
-        ns["cti_files_failed"] = [{"cti": c, "error": e} for c, e in failed]
+            if not loaded:
+                self._reset_harvester()
+                raise RuntimeError(
+                    "No GenTL producer (.cti) could be loaded.\n\n"
+                    f"Resolved CTIs: {cti_files}\n"
+                    f"Failures: {failed}\n"
+                    "Fix: remove/repair incompatible producers or "
+                    "set properties.gentl.cti_file to a known working producer."
+                )
 
-        # Keep single-cti convenience key for backward compatibility / display
-        if loaded:
-            ns["cti_file"] = str(loaded[0])
-        elif cti_files:
-            ns["cti_file"] = str(cti_files[0])  # best effort
+            # Use a per-backend Harvester instance.
+            #
+            # Important for multi-camera:
+            # Sharing one Harvester instance across camera workers can cause one open/update
+            # to disturb another. The Imaging Source U3V GenTL producer also appears sensitive
+            # to concurrent initialization, so serialize init/open but keep read() concurrent.
+            try:
+                LOG.debug("[GenTL:%s] waiting for _OPEN_LOCK", open_id)
+                t_lock_wait = time.monotonic()
 
-        if not loaded:
-            self._reset_harvester()
-            raise RuntimeError(
-                "No GenTL producer (.cti) could be loaded.\n\n"
-                f"Resolved CTIs: {cti_files}\n"
-                f"Failures: {failed}\n"
-                "Fix: remove/repair incompatible producers or "
-                "set properties.gentl.cti_file to a known working producer."
-            )
-
-        # Acquire a process-shared Harvester instance for this CTI set
-        try:
-            self._shared_entry = cti_finder.SharedHarvesterPool.acquire(loaded)
-            self._harvester = self._shared_entry.harvester
-
-            with self._shared_entry.lock:
-                # Refresh device list on open; safer for hotplug cases
-                self._harvester.update()
-                infos = list(self._harvester.device_info_list or [])
-
-            # Now that shared loading succeeded, persist the actual loaded list
-            ns["cti_files_loaded"] = list(getattr(self._shared_entry, "loaded_files", loaded))
-
-        except Exception as exc:
-            if self._shared_entry is not None:
+                LOG.debug(
+                    "[GenTL:%s] acquired _OPEN_LOCK after %.3fs",
+                    open_id,
+                    time.monotonic() - t_lock_wait,
+                )
+                LOG.debug("[GenTL:%s] creating Harvester()", open_id)
+                # ------------------------------------------------------------
+                # Shared Harvester per CTI set.
+                #
+                # Important:
+                # - SharedHarvesterEntry.__init__() performs the initial update().
+                # - Do NOT call update() again here. Calling update() while another
+                #   camera is already open/streaming can make the TIS U3V producer
+                #   report zero devices.
+                # ------------------------------------------------------------
                 try:
-                    cti_finder.SharedHarvesterPool.release(self._shared_entry)
+                    LOG.debug("[GenTL:%s] acquiring shared Harvester for CTIs=%s", open_id, loaded)
+                    self._shared_entry = cti_finder.SharedHarvesterPool.acquire(loaded)
+                    self._harvester = self._shared_entry.harvester
+
+                    with self._shared_entry.lock:
+                        infos = list(self._harvester.device_info_list or [])
+
+                    LOG.debug(
+                        "[GenTL:%s] shared Harvester acquired harvester_id=%s refcount=%s infos=%d",
+                        open_id,
+                        id(self._harvester),
+                        cti_finder.SharedHarvesterPool.get_refcount(self._shared_entry),
+                        len(infos),
+                    )
+
+                    ns["cti_files_loaded"] = list(getattr(self._shared_entry, "loaded_files", loaded))
+
+                except Exception as exc:
+                    if self._shared_entry is not None:
+                        try:
+                            cti_finder.SharedHarvesterPool.release(self._shared_entry)
+                        except Exception:
+                            pass
+                    self._shared_entry = None
+                    self._harvester = None
+                    raise RuntimeError(
+                        f"Failed to initialize shared GenTL producer state.\n\nCTIs: {loaded}\nReason: {exc}"
+                    ) from exc
+
+                def _debug_info(info, i):
+                    def g(key, default=""):
+                        try:
+                            if hasattr(info, "get"):
+                                v = info.get(key)
+                                if v is not None:
+                                    return v
+                        except Exception:
+                            pass
+                        try:
+                            return getattr(info, key, default)
+                        except Exception:
+                            return default
+
+                    return {
+                        "index": i,
+                        "serial": str(g("serial_number", "")),
+                        "display": str(g("display_name", "")),
+                        "model": str(g("model", "")),
+                        "vendor": str(g("vendor", "")),
+                        "tl_type": str(g("tl_type", "")),
+                        "access_status": str(g("access_status", "")),
+                        "id": str(g("id_", "")),
+                    }
+
+                LOG.debug(
+                    "[GenTL:%s] enumeration target=%s count=%d devices=%s",
+                    open_id,
+                    self._device_id or ns.get("device_id") or props.get("device_id"),
+                    len(infos),
+                    [_debug_info(info, i) for i, info in enumerate(infos)],
+                )
+
+            except Exception as exc:
+                self._shared_entry = None
+                self._harvester = None
+                raise RuntimeError(
+                    f"Failed to initialize GenTL producer state.\n\nCTIs: {loaded}\nReason: {exc}"
+                ) from exc
+
+            if not infos:
+                LOG.exception(
+                    "[GenTL:%s] open() FAILED target=%s harvester_id=%s acquirer_id=%s",
+                    open_id,
+                    target_for_log,
+                    id(self._harvester) if self._harvester is not None else None,
+                    id(self._acquirer) if self._acquirer is not None else None,
+                )
+                self._reset_harvester()
+                raise RuntimeError(
+                    "No GenTL cameras detected via Harvesters after loading producers.\n\n"
+                    f"Loaded CTIs: {loaded}\n"
+                    f"Failed CTIs: {failed}\n"
+                    "Fix: ensure your camera vendor's GenTL producer is installed and working."
+                )
+
+            # Helper: robustly read device_info fields (dict-like or attribute-like)
+            def _info_get(info, key: str, default=None):
+                try:
+                    if hasattr(info, "get"):
+                        v = info.get(key)
+                        if v is not None:
+                            return v
                 except Exception:
                     pass
-            self._shared_entry = None
-            self._harvester = None
-            raise RuntimeError(
-                f"Failed to initialize shared GenTL producer state.\n\nCTIs: {loaded}\nReason: {exc}"
-            ) from exc
-
-        if not infos:
-            self._reset_harvester()
-            raise RuntimeError(
-                "No GenTL cameras detected via Harvesters after loading producers.\n\n"
-                f"Loaded CTIs: {loaded}\n"
-                f"Failed CTIs: {failed}\n"
-                "Fix: ensure your camera vendor's GenTL producer is installed and working."
-            )
-
-        # Helper: robustly read device_info fields (dict-like or attribute-like)
-        def _info_get(info, key: str, default=None):
-            try:
-                if hasattr(info, "get"):
-                    v = info.get(key)
+                try:
+                    v = getattr(info, key, None)
                     if v is not None:
                         return v
-            except Exception:
-                pass
-            try:
-                v = getattr(info, key, None)
-                if v is not None:
-                    return v
-            except Exception:
-                pass
-            return default
-
-        # ------------------------------------------------------------------
-        # Device selection (stable device_id > serial > index)
-        # ------------------------------------------------------------------
-        requested_index = int(self.settings.index or 0)
-        selected_index: int | None = None
-        selected_serial: str | None = None
-
-        target_device_id = self._device_id or ns.get("device_id") or props.get("device_id")
-        if target_device_id:
-            target_device_id = str(target_device_id).strip()
-
-            # Exact match against computed device_id
-            for idx, info in enumerate(infos):
-                try:
-                    did = self._device_id_from_info(info)
                 except Exception:
-                    did = None
-                if did and did == target_device_id:
-                    selected_index = idx
-                    selected_serial = _info_get(info, "serial_number", None)
-                    selected_serial = str(selected_serial).strip() if selected_serial else None
-                    break
+                    pass
+                return default
 
-            # If device_id is "serial:XXXX", match serial directly
-            if selected_index is None and target_device_id.startswith("serial:"):
-                serial_target = target_device_id.split("serial:", 1)[1].strip()
-                if serial_target:
+            # ------------------------------------------------------------------
+            # Device selection (stable device_id > serial > index)
+            # ------------------------------------------------------------------
+            requested_index = int(self.settings.index or 0)
+            selected_index: int | None = None
+            selected_serial: str | None = None
+
+            target_device_id = self._device_id or ns.get("device_id") or props.get("device_id")
+            if target_device_id:
+                target_device_id = str(target_device_id).strip()
+
+                # Exact match against computed device_id
+                for idx, info in enumerate(infos):
+                    try:
+                        did = self._device_id_from_info(info)
+                    except Exception:
+                        did = None
+                    if did and did == target_device_id:
+                        selected_index = idx
+                        selected_serial = _info_get(info, "serial_number", None)
+                        selected_serial = str(selected_serial).strip() if selected_serial else None
+                        break
+
+                # If device_id is "serial:XXXX", match serial directly
+                if selected_index is None and target_device_id.startswith("serial:"):
+                    serial_target = target_device_id.split("serial:", 1)[1].strip()
+                    if serial_target:
+                        exact = []
+                        for idx, info in enumerate(infos):
+                            sn = _info_get(info, "serial_number", "")
+                            sn = str(sn).strip() if sn is not None else ""
+                            if sn == serial_target:
+                                exact.append((idx, sn))
+                        if exact:
+                            selected_index = exact[0][0]
+                            selected_serial = exact[0][1]
+                        else:
+                            sub = []
+                            for idx, info in enumerate(infos):
+                                sn = _info_get(info, "serial_number", "")
+                                sn = str(sn).strip() if sn is not None else ""
+                                if serial_target and serial_target in sn:
+                                    sub.append((idx, sn))
+                            if len(sub) == 1:
+                                selected_index = sub[0][0]
+                                selected_serial = sub[0][1] or None
+                            elif len(sub) > 1:
+                                candidates = [sn for _, sn in sub]
+                                raise RuntimeError(
+                                    f"Ambiguous GenTL serial match for '{serial_target}'. Candidates: {candidates}"
+                                )
+
+            # Legacy serial selection fallback
+            if selected_index is None:
+                serial = self._serial_number
+                if serial:
+                    serial = str(serial).strip()
                     exact = []
                     for idx, info in enumerate(infos):
                         sn = _info_get(info, "serial_number", "")
                         sn = str(sn).strip() if sn is not None else ""
-                        if sn == serial_target:
+                        if sn == serial:
                             exact.append((idx, sn))
                     if exact:
                         selected_index = exact[0][0]
@@ -561,144 +715,119 @@ class GenTLCameraBackend(CameraBackend):
                         for idx, info in enumerate(infos):
                             sn = _info_get(info, "serial_number", "")
                             sn = str(sn).strip() if sn is not None else ""
-                            if serial_target and serial_target in sn:
+                            if serial and serial in sn:
                                 sub.append((idx, sn))
                         if len(sub) == 1:
                             selected_index = sub[0][0]
                             selected_serial = sub[0][1] or None
                         elif len(sub) > 1:
                             candidates = [sn for _, sn in sub]
+                            raise RuntimeError(f"Ambiguous GenTL serial match for '{serial}'. Candidates: {candidates}")
+                        else:
+                            available = [str(_info_get(i, "serial_number", "")).strip() for i in infos]
                             raise RuntimeError(
-                                f"Ambiguous GenTL serial match for '{serial_target}'. Candidates: {candidates}"
+                                f"Camera with serial '{serial}' not found. Available cameras: {available}"
                             )
 
-        # Legacy serial selection fallback
-        if selected_index is None:
-            serial = self._serial_number
-            if serial:
-                serial = str(serial).strip()
-                exact = []
-                for idx, info in enumerate(infos):
-                    sn = _info_get(info, "serial_number", "")
-                    sn = str(sn).strip() if sn is not None else ""
-                    if sn == serial:
-                        exact.append((idx, sn))
-                if exact:
-                    selected_index = exact[0][0]
-                    selected_serial = exact[0][1]
-                else:
-                    sub = []
-                    for idx, info in enumerate(infos):
-                        sn = _info_get(info, "serial_number", "")
-                        sn = str(sn).strip() if sn is not None else ""
-                        if serial and serial in sn:
-                            sub.append((idx, sn))
-                    if len(sub) == 1:
-                        selected_index = sub[0][0]
-                        selected_serial = sub[0][1] or None
-                    elif len(sub) > 1:
-                        candidates = [sn for _, sn in sub]
-                        raise RuntimeError(f"Ambiguous GenTL serial match for '{serial}'. Candidates: {candidates}")
-                    else:
-                        available = [str(_info_get(i, "serial_number", "")).strip() for i in infos]
-                        raise RuntimeError(f"Camera with serial '{serial}' not found. Available cameras: {available}")
+            # Index fallback
+            if selected_index is None:
+                device_count = len(infos)
+                if requested_index < 0 or requested_index >= device_count:
+                    raise RuntimeError(
+                        f"Camera index {requested_index} out of range for {device_count} GenTL device(s)"
+                    )
+                selected_index = requested_index
+                sn = _info_get(infos[selected_index], "serial_number", "")
+                selected_serial = str(sn).strip() if sn else None
 
-        # Index fallback
-        if selected_index is None:
-            device_count = len(infos)
-            if requested_index < 0 or requested_index >= device_count:
-                raise RuntimeError(f"Camera index {requested_index} out of range for {device_count} GenTL device(s)")
-            selected_index = requested_index
-            sn = _info_get(infos[selected_index], "serial_number", "")
-            selected_serial = str(sn).strip() if sn else None
+            # Update settings.index to actual selected index (UI stability)
+            self.settings.index = int(selected_index)
+            selected_info = infos[int(selected_index)]
 
-        # Update settings.index to actual selected index (UI stability)
-        self.settings.index = int(selected_index)
-        selected_info = infos[int(selected_index)]
-
-        # Create ImageAcquirer via Harvester.create(...)
-        try:
+            # Create ImageAcquirer via Harvester.create(...)
             with self._shared_entry.lock:
-                if selected_serial:
-                    self._acquirer = self._harvester.create({"serial_number": str(selected_serial)})
-                else:
-                    self._acquirer = self._harvester.create(int(selected_index))
-        except TypeError:
-            with self._shared_entry.lock:
-                if selected_serial:
-                    self._acquirer = self._harvester.create({"serial_number": str(selected_serial)})
-                else:
-                    self._acquirer = self._harvester.create(index=int(selected_index))
+                self._acquirer = self._create_image_acquirer(selected_serial, selected_index)
 
-        remote = self._acquirer.remote_device
-        node_map = remote.node_map
+            remote = self._acquirer.remote_device
+            node_map = remote.node_map
 
-        self._device_label = self._resolve_device_label(node_map)
+            self._device_label = self._resolve_device_label(node_map)
 
-        # Apply configuration
-        self._configure_pixel_format(node_map)
-        self._configure_resolution(node_map)
-        self._configure_exposure(node_map)
-        self._configure_gain(node_map)
-        self._configure_frame_rate(node_map)
+            # Apply configuration
+            self._configure_pixel_format(node_map)
+            self._configure_trigger(node_map)
+            self._configure_resolution(node_map)
+            self._configure_exposure(node_map)
+            self._configure_gain(node_map)
+            self._configure_frame_rate(node_map)
 
-        # Read back telemetry
-        try:
-            self._actual_width = int(node_map.Width.value)
-            self._actual_height = int(node_map.Height.value)
-        except Exception:
-            pass
+            # Read back telemetry
+            try:
+                self._actual_width = int(node_map.Width.value)
+                self._actual_height = int(node_map.Height.value)
+            except Exception:
+                pass
 
-        try:
-            self._actual_fps = float(node_map.ResultingFrameRate.value)
-        except Exception:
-            self._actual_fps = None
+            try:
+                self._actual_fps = float(node_map.ResultingFrameRate.value)
+            except Exception:
+                self._actual_fps = None
 
-        try:
-            self._actual_exposure = float(node_map.ExposureTime.value)
-        except Exception:
-            self._actual_exposure = None
+            if self._actual_exposure is None:
+                try:
+                    self._actual_exposure = float(self._acquirer.remote_device.node_map.ExposureTime.value)
+                except Exception:
+                    self._actual_exposure = None
 
-        try:
-            self._actual_gain = float(node_map.Gain.value)
-        except Exception:
-            self._actual_gain = None
+            if self._actual_gain is None:
+                try:
+                    self._actual_gain = float(self._acquirer.remote_device.node_map.Gain.value)
+                except Exception:
+                    self._actual_gain = None
 
-        # Persist identity + metadata
-        computed_id = None
-        try:
-            computed_id = self._device_id_from_info(selected_info)
-        except Exception:
+            # Persist identity + metadata
             computed_id = None
+            try:
+                computed_id = self._device_id_from_info(selected_info)
+            except Exception:
+                computed_id = None
 
-        if computed_id:
-            ns["device_id"] = computed_id
-        elif selected_serial:
-            ns["device_id"] = f"serial:{selected_serial}"
+            if computed_id:
+                ns["device_id"] = computed_id
+            elif selected_serial:
+                ns["device_id"] = f"serial:{selected_serial}"
 
-        if selected_serial:
-            ns["serial_number"] = str(selected_serial)
-            ns["device_serial_number"] = str(selected_serial)
+            if selected_serial:
+                ns["serial_number"] = str(selected_serial)
+                ns["device_serial_number"] = str(selected_serial)
 
-        if self._device_label:
-            ns["device_name"] = str(self._device_label)
+            if self._device_label:
+                ns["device_name"] = str(self._device_label)
 
-        ns["device_display_name"] = str(_info_get(selected_info, "display_name", "") or "")
-        ns["device_info_id"] = str(_info_get(selected_info, "id_", "") or "")
-        ns["device_vendor"] = str(_info_get(selected_info, "vendor", "") or "")
-        ns["device_model"] = str(_info_get(selected_info, "model", "") or "")
-        ns["device_tl_type"] = str(_info_get(selected_info, "tl_type", "") or "")
-        ns["device_user_defined_name"] = str(_info_get(selected_info, "user_defined_name", "") or "")
-        ns["device_version"] = str(_info_get(selected_info, "version", "") or "")
-        ns["device_access_status"] = _info_get(selected_info, "access_status", None)
+            ns["device_display_name"] = str(_info_get(selected_info, "display_name", "") or "")
+            ns["device_info_id"] = str(_info_get(selected_info, "id_", "") or "")
+            ns["device_vendor"] = str(_info_get(selected_info, "vendor", "") or "")
+            ns["device_model"] = str(_info_get(selected_info, "model", "") or "")
+            ns["device_tl_type"] = str(_info_get(selected_info, "tl_type", "") or "")
+            ns["device_user_defined_name"] = str(_info_get(selected_info, "user_defined_name", "") or "")
+            ns["device_version"] = str(_info_get(selected_info, "version", "") or "")
+            ns["device_access_status"] = _info_get(selected_info, "access_status", None)
 
-        # Start acquisition unless fast_start
-        if getattr(self, "_fast_start", False):
-            LOG.info("GenTL open() in fast_start probe mode: acquisition not started.")
-            return
+            # Start acquisition unless fast_start
+            if getattr(self, "_fast_start", False):
+                LOG.info("GenTL open() in fast_start probe mode: acquisition not started.")
+                return
 
-        with self._shared_entry.lock:
-            self._acquirer.start()
+            with self._shared_entry.lock:
+                self._acquirer.start()
+
+            LOG.debug(
+                "[GenTL:%s] open() SUCCESS harvester_id=%s acquirer_id=%s device_label=%s",
+                open_id,
+                id(self._harvester),
+                id(self._acquirer),
+                self._device_label,
+            )
 
     @staticmethod
     def _device_id_from_info(info) -> str | None:
@@ -883,6 +1012,22 @@ class GenTLCameraBackend(CameraBackend):
         target_id = ns.get("device_id") or ns.get("serial_number") or ns.get("serial")
         if not target_id:
             return settings
+        # For serial-based GenTL devices, open() can select by serial directly.
+        # Avoid doing Harvester enumeration during CameraFactory.create(), because
+        # multi-camera startup calls create() concurrently from multiple threads.
+        target_id_str = str(target_id).strip()
+        if target_id_str.startswith("serial:"):
+            serial = target_id_str.split("serial:", 1)[1].strip()
+            if serial:
+                if not isinstance(settings.properties, dict):
+                    settings.properties = {}
+                ns2 = settings.properties.setdefault(cls.OPTIONS_KEY, {})
+                if not isinstance(ns2, dict):
+                    ns2 = {}
+                    settings.properties[cls.OPTIONS_KEY] = ns2
+                ns2["device_id"] = target_id_str
+                ns2["serial_number"] = serial
+            return settings
 
         source = ns.get("cti_files_source")
         source = str(source).strip().lower() if source is not None else None
@@ -1012,6 +1157,33 @@ class GenTLCameraBackend(CameraBackend):
                 except Exception:
                     pass
 
+    def _call_with_optional_lock(self, func, *args, **kwargs):
+        """
+        Call func under the shared Harvester lock if a shared entry exists.
+        In per-instance Harvester mode, call directly.
+        """
+        if self._shared_entry is not None:
+            with self._shared_entry.lock:
+                return func(*args, **kwargs)
+        return func(*args, **kwargs)
+
+    def _create_image_acquirer(self, selected_serial: str | None, selected_index: int):
+        """
+        Create a Harvester ImageAcquirer using serial when available.
+        Supports both create(arg) and create(index=...) API variants.
+        """
+        if self._harvester is None:
+            raise RuntimeError("Harvester is not initialized")
+
+        try:
+            if selected_serial:
+                return self._harvester.create({"serial_number": str(selected_serial)})
+            return self._harvester.create(int(selected_index))
+        except TypeError:
+            if selected_serial:
+                return self._harvester.create({"serial_number": str(selected_serial)})
+            return self._harvester.create(index=int(selected_index))
+
     def read(self) -> tuple[np.ndarray, float]:
         if self._acquirer is None:
             raise RuntimeError("GenTL image acquirer not initialised")
@@ -1044,13 +1216,13 @@ class GenTLCameraBackend(CameraBackend):
 
         if self._actual_exposure is None:
             try:
-                self._actual_exposure = float(self._acquirer.node_map.ExposureTime.value)
+                self._actual_exposure = float(self._acquirer.remote_device.node_map.ExposureTime.value)
             except Exception:
                 self._actual_exposure = None
 
         if self._actual_gain is None:
             try:
-                self._actual_gain = float(self._acquirer.node_map.Gain.value)
+                self._actual_gain = float(self._acquirer.remote_device.node_map.Gain.value)
             except Exception:
                 self._actual_gain = None
 
@@ -1059,11 +1231,7 @@ class GenTLCameraBackend(CameraBackend):
     def stop(self) -> None:
         if self._acquirer is not None:
             try:
-                if self._shared_entry is not None:
-                    with self._shared_entry.lock:
-                        self._acquirer.stop()
-                else:
-                    self._acquirer.stop()
+                self._call_with_optional_lock(self._acquirer.stop)
             except Exception:
                 pass
 
@@ -1078,6 +1246,11 @@ class GenTLCameraBackend(CameraBackend):
     def _reset_harvester(self) -> None:
         try:
             if self._shared_entry is not None:
+                LOG.debug(
+                    "GenTL releasing shared Harvester harvester_id=%s refcount_before=%s",
+                    id(self._shared_entry.harvester),
+                    cti_finder.SharedHarvesterPool.get_refcount(self._shared_entry),
+                )
                 cti_finder.SharedHarvesterPool.release(self._shared_entry)
                 self._shared_entry = None
             else:
@@ -1088,22 +1261,14 @@ class GenTLCameraBackend(CameraBackend):
     def close(self) -> None:
         if self._acquirer is not None:
             try:
-                if self._shared_entry is not None:
-                    with self._shared_entry.lock:
-                        self._acquirer.stop()
-                else:
-                    self._acquirer.stop()
+                self._call_with_optional_lock(self._acquirer.stop)
             except Exception:
                 pass
 
             try:
                 destroy = getattr(self._acquirer, "destroy", None)
                 if destroy is not None:
-                    if self._shared_entry is not None:
-                        with self._shared_entry.lock:
-                            destroy()
-                    else:
-                        destroy()
+                    self._call_with_optional_lock(destroy)
             finally:
                 self._acquirer = None
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 
@@ -54,6 +55,32 @@ def _maybe_allow_keyboard_interrupt(app: QApplication) -> None:
     app._sig_timer = sig_timer  # Store on app to keep it alive and allow cleanup on exit
 
 
+def configure_logging(debug: bool = False) -> None:
+    """Configure local application logging."""
+    env_debug = os.environ.get("DLCLIVEGUI_DEBUG_LOGGING", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+        "debug",
+    )
+
+    enabled = bool(debug or env_debug)
+    level = logging.DEBUG if enabled else logging.INFO
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s.%(msecs)03d %(levelname)-8s [%(threadName)s] %(name)s:%(lineno)d - %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
+
+    logging.getLogger("dlclivegui").setLevel(level)
+
+    if enabled:
+        logging.debug("Debug logging enabled.")
+
+
 def parse_args(argv=None):
     if argv is None:
         argv = sys.argv[1:]
@@ -77,12 +104,13 @@ def parse_args(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--no-art", action="store_true", help="Disable ASCII art in help and when launching.")
+    parser.add_argument("--debug-log", action="store_true", help="Enable debug logging.")
     return parser.parse_known_args(argv)
 
 
 def main() -> None:
     args, _unknown = parse_args()
-
+    configure_logging(debug=args.debug_log)
     logging.info("Starting DeepLabCut-Live GUI...")
 
     # If you want a startup banner, PRINT it (not log), and only in TTY contexts.
