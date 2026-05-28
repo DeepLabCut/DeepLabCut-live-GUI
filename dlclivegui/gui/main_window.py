@@ -56,6 +56,7 @@ from dlclivegui.config import (
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
+    CameraTriggerSettings,
     DLCProcessorSettings,
     MultiCameraSettings,
     RecordingSettings,
@@ -857,15 +858,36 @@ class DLCLiveMainWindow(QMainWindow):
         # Update recording path preview
         self._update_recording_path_preview()
 
-    def _current_config(self) -> ApplicationSettings:
+    def _with_camera_defaults_for_save(self, settings: MultiCameraSettings) -> MultiCameraSettings:
+        out = settings.model_copy(deep=True)
+
+        for cam in out.cameras:
+            backend = (cam.backend or "").lower()
+            if backend != "gentl":
+                continue
+
+            if not isinstance(cam.properties, dict):
+                cam.properties = {}
+
+            ns = cam.properties.setdefault("gentl", {})
+            if not isinstance(ns, dict):
+                ns = {}
+                cam.properties["gentl"] = ns
+
+            ns.setdefault("trigger", CameraTriggerSettings().model_dump(exclude_none=True))
+
+        return out
+
+    def _current_config(self, *, allow_empty_model_path=False) -> ApplicationSettings:
         # Get the first camera from multi-camera config for backward compatibility
+        multi_camera = self._with_camera_defaults_for_save(self._config.multi_camera)
         active_cameras = self._config.multi_camera.get_active_cameras()
         camera = active_cameras[0] if active_cameras else CameraSettings()
 
         return ApplicationSettings(
             camera=camera,
-            multi_camera=self._config.multi_camera,
-            dlc=self._dlc_settings_from_ui(),
+            multi_camera=multi_camera,
+            dlc=self._dlc_settings_from_ui(allow_empty_model_path=allow_empty_model_path),
             recording=self._recording_settings_from_ui(),
             bbox=self._bbox_settings_from_ui(),
             visualization=self._visualization_settings_from_ui(),
@@ -877,13 +899,24 @@ class DLCLiveMainWindow(QMainWindow):
             return {}
         return json.loads(text)
 
-    def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
+    def _dlc_settings_from_ui(self, *, allow_empty_model_path=False) -> DLCProcessorSettings:
         model_path = self.model_path_edit.text().strip()
         if Path(model_path).exists() and Path(model_path).suffix == ".pb":
             # IMPORTANT NOTE: DLClive expects a directory for TensorFlow models,
             # so if user selects a .pb file, we should pass the parent directory to DLCLive
             model_path = str(Path(model_path).parent)
-        if model_path == "":
+        if not model_path:
+            if allow_empty_model_path:
+                return DLCProcessorSettings(
+                    model_path="",
+                    model_directory=self._config.dlc.model_directory,  # Preserve from config
+                    device=self._config.dlc.device,  # Preserve from config
+                    dynamic=self._config.dlc.dynamic,  # Preserve from config
+                    resize=self._config.dlc.resize,  # Preserve from config
+                    precision=self._config.dlc.precision,  # Preserve from config
+                    model_type=None,
+                    # additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
+                )
             raise ValueError("Model path cannot be empty. Please enter a valid path to a DLCLive model file.")
         try:
             model_bknd = DLCLiveProcessor.get_model_backend(model_path)
@@ -968,7 +1001,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _save_config_to_path(self, path: Path) -> None:
         try:
-            config = self._current_config()
+            config = self._current_config(allow_empty_model_path=True)
             config.save(path)
             self._settings_store.set_last_config_path(str(path))
             self._settings_store.save_full_config_snapshot(config)
@@ -1614,7 +1647,7 @@ class DLCLiveMainWindow(QMainWindow):
     def _configure_dlc(self) -> bool:
         try:
             settings = self._dlc_settings_from_ui()
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
             self._show_error(f"Invalid DLCLive settings: {exc}")
             return False
         if not settings.model_path:
