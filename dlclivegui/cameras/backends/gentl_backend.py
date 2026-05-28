@@ -498,8 +498,7 @@ class GenTLCameraBackend(CameraBackend):
                 except ValueError:
                     frame = array.copy()
         except HarvesterTimeoutError as exc:
-            role = str(self._trigger_attr(getattr(self, "_trigger", None), "role", "off") or "off").lower()
-            if role in {"external", "follower"}:
+            if self.waits_for_hardware_trigger:
                 raise TimeoutError(str(exc) + " (GenTL timeout; waiting for hardware trigger?)") from exc
             raise TimeoutError(str(exc) + " (GenTL timeout)") from exc
 
@@ -1123,6 +1122,7 @@ class GenTLCameraBackend(CameraBackend):
         self._set_enum_node(node_map, "TriggerMode", "Off", strict=strict)
 
     def _configure_trigger_input(self, node_map, cfg, *, strict: bool = False) -> None:
+        role = str(self._trigger_attr(cfg, "role", "external") or "external").strip().lower()
         selector = str(self._trigger_attr(cfg, "selector", "FrameStart") or "FrameStart")
         source = str(self._trigger_attr(cfg, "source", "Line0") or "Line0")
         activation = str(self._trigger_attr(cfg, "activation", "RisingEdge") or "RisingEdge")
@@ -1130,17 +1130,51 @@ class GenTLCameraBackend(CameraBackend):
         # Disable trigger while changing trigger-related nodes.
         self._set_enum_node(node_map, "TriggerMode", "Off", strict=False)
 
-        self._set_enum_node(node_map, "TriggerSelector", selector, strict=strict)
-        self._set_enum_node(node_map, "TriggerSource", source, strict=strict)
-        self._set_enum_node(node_map, "TriggerActivation", activation, strict=strict)
+        selector_ok = self._set_enum_node(node_map, "TriggerSelector", selector, strict=strict)
+        source_ok = self._set_enum_node(node_map, "TriggerSource", source, strict=strict)
+        activation_ok = self._set_enum_node(node_map, "TriggerActivation", activation, strict=strict)
+
+        # TriggerSelector and TriggerSource are required routing nodes.
+        # If either failed in non-strict mode, do not arm TriggerMode=On.
+        # Otherwise the camera may wait on a previous/default input line.
+        if not (selector_ok and source_ok):
+            LOG.warning(
+                "Could not apply GenTL trigger input routing "
+                "(selector_ok=%s, source_ok=%s); disabling trigger. "
+                "requested role=%s selector=%s source=%s activation=%s",
+                selector_ok,
+                source_ok,
+                role,
+                selector,
+                source,
+                activation,
+            )
+            self._configure_trigger_off(node_map, strict=False)
+            self._trigger = CameraTriggerSettings()
+            return
+
+        if not activation_ok:
+            LOG.warning(
+                "Could not apply GenTL TriggerActivation=%s; using camera default/current activation.",
+                activation,
+            )
 
         self._set_enum_node(node_map, "AcquisitionMode", "Continuous", strict=False)
 
         if not self._set_enum_node(node_map, "TriggerMode", "On", strict=strict):
-            if strict:
-                raise RuntimeError("Could not enable GenTL TriggerMode=On")
-            else:
-                LOG.warning("Could not enable GenTL TriggerMode=On; trigger mode may not be correctly configured.")
+            LOG.warning("Could not enable GenTL TriggerMode=On; disabling trigger.")
+            self._configure_trigger_off(node_map, strict=False)
+            self._trigger = CameraTriggerSettings()
+            return
+
+        LOG.info(
+            "GenTL trigger input configured: role=%s selector=%s source=%s activation=%s activation_ok=%s",
+            role,
+            selector,
+            source,
+            activation,
+            activation_ok,
+        )
 
         LOG.info(
             "GenTL trigger input configured: role=%s selector=%s source=%s activation=%s",
@@ -1174,8 +1208,16 @@ class GenTLCameraBackend(CameraBackend):
             )
             return
 
-        self._set_enum_node(node_map, "LineMode", "Output", strict=strict)
-        self._set_enum_node(node_map, "LineSource", output_source, strict=strict)
+        mode_ok = self._set_enum_node(node_map, "LineMode", "Output", strict=strict)
+        source_ok = self._set_enum_node(node_map, "LineSource", output_source, strict=strict)
+
+        if not (mode_ok and source_ok):
+            LOG.warning(
+                "GenTL trigger master output configuration incomplete (LineMode ok=%s, LineSource ok=%s).",
+                mode_ok,
+                source_ok,
+            )
+            return
 
         LOG.info(
             "GenTL trigger master configured: output_line=%s output_source=%s",
