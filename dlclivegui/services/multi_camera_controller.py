@@ -235,6 +235,7 @@ class MultiCameraController(QObject):
         self._running = False
         self._started_cameras: set = set()
         self._display_ids: dict[str, str] = {}  # camera_id -> display_id (for labeling)
+        self._camera_display_order: list[str] = []
         self._failed_cameras: dict[str, str] = {}  # camera_id -> error message
         self._expected_cameras: int = 0  # Number of cameras we're trying to start
 
@@ -252,8 +253,17 @@ class MultiCameraController(QObject):
             LOGGER.warning("Multi-camera controller already running")
             return
 
-        active_settings = [s for s in camera_settings if s.enabled][: self.MAX_CAMERAS]
-        active_settings = sorted(active_settings, key=_camera_start_priority)
+        active_settings_user_order = [s for s in camera_settings if s.enabled][: self.MAX_CAMERAS]
+        if not active_settings_user_order:
+            LOGGER.warning("No active cameras to start")
+            return
+
+        # Display/tile order follows the user-configured camera order.
+        self._camera_display_order = [get_camera_id(s) for s in active_settings_user_order]
+
+        # Startup order may differ for trigger safety:
+        # followers/external first, master last.
+        active_settings = sorted(active_settings_user_order, key=_camera_start_priority)
         if not active_settings:
             LOGGER.warning("No active cameras to start")
             return
@@ -416,6 +426,8 @@ class MultiCameraController(QObject):
         self._started_cameras.clear()
         self._failed_cameras.clear()
         self._display_ids.clear()
+        self._camera_display_order.clear()
+        
         with self._frame_lock:
             self._frames.clear()
             self._timestamps.clear()
@@ -442,10 +454,27 @@ class MultiCameraController(QObject):
 
             # Emit frame data without tiling (tiling done in GUI for performance)
             if self._frames:
+                ordered_frames: dict[str, np.ndarray] = {}
+                ordered_timestamps: dict[str, float] = {}
+
+                for cam_id in self._camera_display_order:
+                    if cam_id in self._frames:
+                        ordered_frames[cam_id] = self._frames[cam_id]
+                    if cam_id in self._timestamps:
+                        ordered_timestamps[cam_id] = self._timestamps[cam_id]
+
+                # Any unexpected/legacy IDs, appended deterministically.
+                for cam_id in self._frames:
+                    if cam_id not in ordered_frames:
+                        ordered_frames[cam_id] = self._frames[cam_id]
+                for cam_id in self._timestamps:
+                    if cam_id not in ordered_timestamps:
+                        ordered_timestamps[cam_id] = self._timestamps[cam_id]
+
                 frame_data = MultiFrameData(
-                    frames=dict(self._frames),
-                    timestamps=dict(self._timestamps),
-                    source_camera_id=camera_id,  # Track which camera triggered this
+                    frames=ordered_frames,
+                    timestamps=ordered_timestamps,
+                    source_camera_id=camera_id,
                     tiled_frame=None,
                     display_ids=dict(self._display_ids),
                 )

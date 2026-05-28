@@ -1301,8 +1301,10 @@ class DLCLiveMainWindow(QMainWindow):
         """Populate the inference camera dropdown from currently running cameras."""
         self.dlc_camera_combo.blockSignals(True)
         self.dlc_camera_combo.clear()
-        for cam_id in sorted(self._running_cams_ids):
-            self.dlc_camera_combo.addItem(self._label_for_cam_id(cam_id), cam_id)
+        for cam in self._config.multi_camera.get_active_cameras():
+            cam_id = get_camera_id(cam)
+            if cam_id in self._running_cams_ids:
+                self.dlc_camera_combo.addItem(self._label_for_cam_id(cam_id), cam_id)
 
         # Keep current selection if still present, else select first running
         if self._inference_camera_id in self._running_cams_ids:
