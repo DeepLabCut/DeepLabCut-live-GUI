@@ -18,9 +18,10 @@ from PySide6.QtWidgets import (
 )
 
 from ...cameras.factory import CameraFactory, DetectedCamera, apply_detected_identity, camera_identity_key
-from ...config import CameraSettings, MultiCameraSettings
+from ...config import CameraSettings, CameraTriggerSettings, MultiCameraSettings
 from .loaders import CameraLoadWorker, CameraProbeWorker, CameraScanState, DetectCamerasWorker
 from .preview import PreviewSession, PreviewState, apply_crop, apply_rotation, resize_to_fit, to_display_pixmap
+from .trigger_config_dialog import TriggerConfigDialog
 from .ui_blocks import setup_camera_config_dialog_ui
 
 LOGGER = logging.getLogger(__name__)
@@ -328,6 +329,7 @@ class CameraConfigDialog(QDialog):
         self.active_cameras_list.currentRowChanged.connect(self._on_active_camera_selected)
         self.available_cameras_list.currentRowChanged.connect(self._on_available_camera_selected)
         self.available_cameras_list.itemDoubleClicked.connect(self._on_available_camera_double_clicked)
+        self.trigger_settings_btn.clicked.connect(self._open_trigger_settings_dialog)
         self.apply_settings_btn.clicked.connect(self._apply_camera_settings)
         self.reset_settings_btn.clicked.connect(self._reset_selected_camera)
         self.preview_btn.clicked.connect(self._toggle_preview)
@@ -451,11 +453,24 @@ class CameraConfigDialog(QDialog):
         finally:
             cam_list.blockSignals(False)
 
+    def _trigger_role_for_label(self, cam: CameraSettings) -> str:
+        backend = (cam.backend or "").lower()
+        props = cam.properties if isinstance(cam.properties, dict) else {}
+        ns = props.get(backend, {}) if isinstance(props.get(backend), dict) else {}
+        trigger = ns.get("trigger", {})
+        if not isinstance(trigger, dict):
+            return "off"
+        return str(trigger.get("role", "off") or "off").lower()
+
     def _format_camera_label(self, cam: CameraSettings, index: int = -1) -> str:
         status = "✓" if cam.enabled else "○"
         this_id = f"{(cam.backend or '').lower()}:{cam.index}"
         dlc_indicator = " [DLC]" if this_id == self._dlc_camera_id and cam.enabled else ""
-        return f"{status} {cam.name} [{cam.backend}:{cam.index}]{dlc_indicator}"
+
+        trigger_role = self._trigger_role_for_label(cam)
+        trigger_indicator = "" if trigger_role in {"off", "disabled"} else f" [{trigger_role}]"
+
+        return f"{status} {cam.name} [{cam.backend}:{cam.index}]{trigger_indicator}{dlc_indicator}"
 
     def _selected_detected_camera(self) -> DetectedCamera | None:
         row = self.available_cameras_list.currentRow()
@@ -513,6 +528,9 @@ class CameraConfigDialog(QDialog):
         # Exposure / Gain
         apply(self.cam_exposure, "set_exposure", "Exposure")
         apply(self.cam_gain, "set_gain", "Gain")
+
+        # Hardware trigger / sync
+        apply(self.trigger_settings_btn, "hardware_trigger", "Hardware trigger")
 
     def _set_preview_button_loading(self, loading: bool) -> None:
         if loading:
@@ -800,6 +818,21 @@ class CameraConfigDialog(QDialog):
             self._load_camera_to_form(cam)
             self._start_probe_for_camera(cam, apply_to_requested=False)
 
+    def _ensure_default_trigger_config(self, cam: CameraSettings) -> None:
+        backend = (cam.backend or "").lower()
+        if backend != "gentl":
+            return
+
+        if not isinstance(cam.properties, dict):
+            cam.properties = {}
+
+        ns = cam.properties.setdefault("gentl", {})
+        if not isinstance(ns, dict):
+            ns = {}
+            cam.properties["gentl"] = ns
+
+        ns.setdefault("trigger", CameraTriggerSettings().model_dump(exclude_none=True))
+
     def _add_selected_camera(self) -> None:
         if not self._commit_pending_edits(reason="before adding a new camera"):
             return
@@ -850,6 +883,7 @@ class CameraConfigDialog(QDialog):
             properties={},
         )
         apply_detected_identity(new_cam, detected, backend)
+        self._ensure_default_trigger_config(new_cam)
         self._working_settings.cameras.append(new_cam)
         new_index = len(self._working_settings.cameras) - 1
         new_item = QListWidgetItem(self._format_camera_label(new_cam, new_index))
@@ -969,6 +1003,7 @@ class CameraConfigDialog(QDialog):
             self.cam_crop_y0.setValue(cam.crop_y0)
             self.cam_crop_x1.setValue(cam.crop_x1)
             self.cam_crop_y1.setValue(cam.crop_y1)
+            self._ensure_default_trigger_config(cam)
             self.apply_settings_btn.setEnabled(True)
             self._set_detected_labels(cam)
         finally:
@@ -1028,6 +1063,39 @@ class CameraConfigDialog(QDialog):
             if enabled:
                 count += 1
         return count
+
+    def _open_trigger_settings_dialog(self) -> None:
+        """Open per-camera hardware trigger settings dialog."""
+        if self._current_edit_index is None:
+            return
+
+        row = self._current_edit_index
+        if row < 0 or row >= len(self._working_settings.cameras):
+            return
+
+        # Commit normal camera edits first so we do not lose pending UI changes.
+        if not self._commit_pending_edits(reason="before opening trigger settings"):
+            return
+
+        cam = self._working_settings.cameras[row]
+
+        dlg = TriggerConfigDialog(cam, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        updated = dlg.camera_settings
+
+        self._working_settings.cameras[row] = updated
+        self._update_active_list_item(row, updated)
+        self._load_camera_to_form(updated)
+
+        # Trigger changes require reopening the camera preview/backend.
+        if self._preview.state == PreviewState.ACTIVE:
+            self._append_status("[Trigger] Restarting preview to apply trigger settings.")
+            self._request_preview_restart(updated, reason="trigger-settings")
+
+        self.apply_settings_btn.setEnabled(False)
+        self._set_apply_dirty(False)
 
     def _apply_camera_settings(self) -> bool:
         try:
@@ -1597,6 +1665,13 @@ class CameraConfigDialog(QDialog):
         self._preview.epoch += 1
         return self._preview.epoch
 
+    def _trigger_dict_for_cam(self, cam: CameraSettings) -> dict:
+        backend = (cam.backend or "").lower()
+        props = cam.properties if isinstance(cam.properties, dict) else {}
+        ns = props.get(backend, {}) if isinstance(props.get(backend), dict) else {}
+        trigger = ns.get("trigger", {})
+        return trigger if isinstance(trigger, dict) else {}
+
     def _should_restart_preview(self, old: CameraSettings, new: CameraSettings) -> bool:
         """
         Fast UX policy:
@@ -1611,6 +1686,9 @@ class CameraConfigDialog(QDialog):
                     return True
             except Exception:
                 return True  # safest: restart
+
+        if self._trigger_dict_for_cam(old) != self._trigger_dict_for_cam(new):
+            return True
 
         # No restart needed if only rotation/crop/enabled changed
         return False
