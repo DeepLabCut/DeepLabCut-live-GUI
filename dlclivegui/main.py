@@ -27,32 +27,70 @@ from dlclivegui.gui.theme import (
 
 def _maybe_allow_keyboard_interrupt(app: QApplication) -> None:
     """
-    Gracefully handle Ctrl+C (SIGINT) by closing the main window and quitting Qt.
+    Gracefully handle Ctrl+C/SIGTERM by closing the main window and quitting Qt.
+
+    Notes:
+    - The small timer keeps Python signal handling responsive while Qt owns the event loop.
+    - First Ctrl+C tries graceful cleanup via closeEvent().
+    - Second Ctrl+C exits immediately with code 130.
     """
+    quitting = {"requested": False}
 
     def _request_quit() -> None:
+        if quitting["requested"]:
+            return
+
+        quitting["requested"] = True
         logging.info("Keyboard interrupt received, closing application...")
+
         win = getattr(app, "_main_window", None)
+
         if win is not None:
-            # Trigger your existing closeEvent cleanup (camera stop, threads, timers, etc.)
-            win.close()
-        else:
-            app.quit()
+            try:
+                # Trigger existing closeEvent cleanup:
+                # camera stop, controller shutdown, timers, DLC shutdown, etc.
+                win.close()
+            except Exception:
+                logging.exception("Error while closing main window after Ctrl+C")
+
+        # Explicitly ask Qt to leave app.exec().
+        # Do this even after win.close(), because closeEvent cleanup can be async
+        # and relying only on quitOnLastWindowClosed can be fragile.
+        QTimer.singleShot(0, app.quit)
+
+    def _force_exit() -> None:
+        logging.warning("Second interrupt received, forcing process exit.")
+        os._exit(130)
 
     def _sigint_handler(_signum, _frame) -> None:
+        if quitting["requested"]:
+            _force_exit()
         QTimer.singleShot(0, _request_quit)
 
     signal.signal(signal.SIGINT, _sigint_handler)
 
-    # Keepalive timer to allow Python to handle signals while Qt is running.
-    sig_timer = QTimer()
-    sig_timer.setInterval(100)  # 50–200ms typical; keep low overhead
+    # Ctrl+Break on Windows.
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _sigint_handler)
+
+    # Useful when process is terminated from shells/process managers.
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _sigint_handler)
+
+    # Parent the timer to app so Qt owns its lifetime.
+    sig_timer = QTimer(app)
+    sig_timer.setInterval(100)
     sig_timer.timeout.connect(lambda: None)
     sig_timer.start()
 
-    if hasattr(app, "_sig_timer"):
-        app._sig_timer.stop()  # Stop any existing timer to avoid duplicates
-    app._sig_timer = sig_timer  # Store on app to keep it alive and allow cleanup on exit
+    old_timer = getattr(app, "_sig_timer", None)
+    if old_timer is not None:
+        try:
+            old_timer.stop()
+        except Exception:
+            pass
+
+    app._sig_timer = sig_timer
 
 
 def configure_logging(debug: bool = False) -> None:
