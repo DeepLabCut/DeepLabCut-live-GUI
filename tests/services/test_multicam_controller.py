@@ -259,7 +259,6 @@ def test_start_preserves_user_display_order_even_when_trigger_start_order_differ
         with qtbot.waitSignal(mc.all_started, timeout=1500):
             mc.start([master, follower])
 
-        # Display order follows user order, but stores stable IDs.
         assert mc._camera_display_order == expected_display_order
 
     finally:
