@@ -61,7 +61,9 @@ class PosePacket:
     raw: Any | None = None
 
 
-def validate_pose_array(pose: Any, *, source_backend: PoseBackends = PoseBackends.DLC_LIVE) -> np.ndarray:
+def validate_pose_array(
+    pose: Any, *, source_backend: PoseBackends | str = PoseBackends.DLC_LIVE, check_finite: bool = True
+) -> np.ndarray:
     """
     Validate pose output shape and dtype.
 
@@ -100,6 +102,9 @@ def validate_pose_array(pose: Any, *, source_backend: PoseBackends = PoseBackend
         raise ValueError(
             f"{source_backend} returned an invalid pose output format: expected numeric values, got dtype={arr.dtype}"
         )
+
+    if check_finite and not np.isfinite(arr).all():
+        raise ValueError(f"{source_backend} returned an invalid pose output format: contains non-finite values")
 
     return arr
 

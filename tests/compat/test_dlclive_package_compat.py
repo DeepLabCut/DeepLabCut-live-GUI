@@ -3,20 +3,22 @@ from __future__ import annotations
 import importlib.metadata
 import inspect
 import os
+from collections.abc import Mapping
+from inspect import Parameter
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 
-def _get_signature_params(callable_obj) -> tuple[set[str], bool]:
+def _get_signature_params(callable_obj) -> tuple[Mapping[str, Parameter], bool]:
     """
-    Return allowed keyword names for callable, allowing for **kwargs.
+    Return allowed keyword names for callable and whether it accepts **kwargs.
 
     Example:
     >>> params, accepts_var_kw = _get_signature_params(lambda x, y, **kwargs: None, {"x", "y"})
-    >>> params == {"x", "y"}
-    True
+    >>> sorted(params)
+    ['x', 'y', 'kwargs']
     >>> accepts_var_kw
     True
     """
@@ -53,13 +55,20 @@ def test_dlclive_constructor_accepts_gui_expected_kwargs():
         "single_animal",
         "device",
     }
-    params, _ = _get_signature_params(DLCLive.__init__)
+    params, accepts_var_kw = _get_signature_params(DLCLive.__init__)
     params = {
         name
         for name, p in params.items()
         if p.kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
     }
     missing = {name for name in expected if name not in params}
+    if missing and accepts_var_kw:
+        # DLCLive.__init__ accepts **kwargs, so GUI-passed kwargs are still supported.
+        raise AssertionError(
+            f"DLCLive.__init__ is missing expected kwargs called by GUI: {sorted(missing)}, "
+            "but accepts **kwargs so may still be compatible. "
+            "Please verify that these kwargs are passed through and update this test if so."
+        )
     assert not missing, f"DLCLive.__init__ is missing expected kwargs called by GUI: {sorted(missing)}"
 
 

@@ -1,4 +1,5 @@
 # tests/compat/conftest.py
+import importlib.util
 import sys
 import types
 
@@ -6,5 +7,5 @@ import types
 # This allows testing of DLCLive API compatibility without requiring torch.
 # Ideally imports should be guarded in the package itself, but this is a pragmatic solution for now.
 # IMPORTANT NOTE: This should ideally be removed and replaced whenever possible.
-if "torch" not in sys.modules:
+if importlib.util.find_spec("torch") is None:
     sys.modules["torch"] = types.ModuleType("torch")
