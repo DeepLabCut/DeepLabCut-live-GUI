@@ -1387,7 +1387,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Determine DLC camera (first active camera)
         selected_id = self._inference_camera_id
-        available_ids = sorted(frame_data.frames.keys())
+        available_ids = list(frame_data.frames.keys())
         if selected_id in frame_data.frames:
             dlc_cam_id = selected_id
         else:
