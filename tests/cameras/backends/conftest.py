@@ -599,6 +599,18 @@ class _FakeNodeMap:
         self.GainAuto = _FakeNode("Off")
         self.Gain = _FakeNode(float(gain))
 
+        # Trigger input nodes
+        self.AcquisitionMode = _FakeNode("Continuous", symbolics=["Continuous", "SingleFrame"])
+        self.TriggerSelector = _FakeNode("FrameStart", symbolics=["FrameStart"])
+        self.TriggerMode = _FakeNode("Off", symbolics=["Off", "On"])
+        self.TriggerSource = _FakeNode("Line0", symbolics=["Line0", "Line1", "Software"])
+        self.TriggerActivation = _FakeNode("RisingEdge", symbolics=["RisingEdge", "FallingEdge"])
+
+        # GPIO output nodes for master/follower setups
+        self.LineSelector = _FakeNode("Line0", symbolics=["Line0", "Line1", "Line2"])
+        self.LineMode = _FakeNode("Input", symbolics=["Input", "Output"])
+        self.LineSource = _FakeNode("Off", symbolics=["Off", "ExposureActive", "AcquisitionActive"])
+
 
 class _FakeRemoteDevice:
     def __init__(self, node_map: _FakeNodeMap):
