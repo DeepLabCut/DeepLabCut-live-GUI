@@ -34,7 +34,7 @@ class TriggerConfigDialog(QDialog):
 
     def __init__(self, cam: CameraSettings, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Trigger Settings")
+        self.setWindowTitle("Configure trigger mode")
         self.setMinimumWidth(420)
 
         self._cam = cam.model_copy(deep=True)
