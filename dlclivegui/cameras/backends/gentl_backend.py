@@ -7,11 +7,12 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import cv2
 import numpy as np
 
+from ...config import CameraTriggerSettings
 from ..base import CameraBackend, SupportLevel, register_backend
 from ..factory import DetectedCamera
 from .utils import gentl_discovery as cti_finder
@@ -105,6 +106,16 @@ class GenTLCameraBackend(CameraBackend):
             self._gain = self._positive_float(ns.get("gain", props.get("gain")))
 
         self._timeout: float = float(ns.get("timeout", props.get("timeout", 2.0)))
+        try:
+            self._trigger = CameraTriggerSettings.from_any(ns.get("trigger", props.get("trigger")))
+        except Exception as exc:
+            LOG.warning("Invalid GenTL trigger config; falling back to trigger role=off: %s", exc)
+            self._trigger = CameraTriggerSettings()
+
+        trigger_timeout = self._positive_float(self._trigger_attr(self._trigger, "timeout", None))
+        if trigger_timeout is not None:
+            self._timeout = float(trigger_timeout)
+
         self._requested_resolution: tuple[int, int] | None = self._get_requested_resolution_or_none()
 
         self._actual_width: int | None = None
@@ -154,6 +165,7 @@ class GenTLCameraBackend(CameraBackend):
             "set_gain": SupportLevel.SUPPORTED,
             "device_discovery": SupportLevel.SUPPORTED,
             "stable_identity": SupportLevel.SUPPORTED,
+            "hardware_trigger": SupportLevel.BEST_EFFORT,
         }
 
     # ------------------------------------------------------------------
@@ -420,11 +432,12 @@ class GenTLCameraBackend(CameraBackend):
                     self._device_label = self._resolve_device_label(node_map)
 
                     self._configure_pixel_format(node_map)
-                    self._configure_trigger(node_map)
                     self._configure_resolution(node_map)
                     self._configure_exposure(node_map)
                     self._configure_gain(node_map)
                     self._configure_frame_rate(node_map)
+                    self._configure_trigger(node_map)  # keep low in the list
+                    self._ensure_settings_ns()["trigger_actual"] = self._trigger_to_dict(self._trigger)
                     self._read_telemetry(node_map)
                     self._persist_device_metadata(selected_info, selected_serial)
 
@@ -449,6 +462,11 @@ class GenTLCameraBackend(CameraBackend):
                     f"Failed to open GenTL camera.\n\nLoaded CTIs: {loaded}\nFailed CTIs: {failed}\nReason: {exc}"
                 ) from exc
 
+    @property
+    def waits_for_hardware_trigger(self) -> bool:
+        role = str(self._trigger_attr(getattr(self, "_trigger", None), "role", "off") or "off").lower()
+        return role in {"external", "follower"}
+
     def read(self) -> tuple[np.ndarray, float]:
         if self._acquirer is None:
             raise RuntimeError("GenTL image acquirer not initialised")
@@ -470,6 +488,9 @@ class GenTLCameraBackend(CameraBackend):
                 except ValueError:
                     frame = array.copy()
         except HarvesterTimeoutError as exc:
+            role = str(self._trigger_attr(getattr(self, "_trigger", None), "role", "off") or "off").lower()
+            if role in {"external", "follower"}:
+                raise TimeoutError(str(exc) + " (GenTL timeout; waiting for hardware trigger?)") from exc
             raise TimeoutError(str(exc) + " (GenTL timeout)") from exc
 
         frame = self._convert_frame(frame)
@@ -499,6 +520,12 @@ class GenTLCameraBackend(CameraBackend):
         if self._acquirer is not None:
             try:
                 self._call_with_optional_lock(self._acquirer.stop)
+            except Exception:
+                pass
+
+            try:
+                node_map = self._acquirer.remote_device.node_map
+                self._call_with_optional_lock(self._restore_trigger_idle, node_map)
             except Exception:
                 pass
 
@@ -949,6 +976,62 @@ class GenTLCameraBackend(CameraBackend):
     # ------------------------------------------------------------------
     # Camera configuration helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _node(node_map, name: str):
+        try:
+            return getattr(node_map, name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _node_symbolics(node) -> list[str]:
+        try:
+            return list(getattr(node, "symbolics", []) or [])
+        except Exception:
+            return []
+
+    def _set_enum_node(self, node_map, name: str, value: str, *, strict: bool = False) -> bool:
+        node = self._node(node_map, name)
+        if node is None:
+            if strict:
+                raise RuntimeError(f"GenICam node '{name}' is not available")
+            LOG.debug("GenICam node '%s' is not available; skipping", name)
+            return False
+
+        symbolics = self._node_symbolics(node)
+        if symbolics and value not in symbolics:
+            if strict:
+                raise RuntimeError(f"GenICam node '{name}' does not support '{value}'. Available: {symbolics}")
+            LOG.warning("GenICam node '%s' does not support '%s'. Available: %s", name, value, symbolics)
+            return False
+
+        try:
+            node.value = value
+            return True
+        except Exception as exc:
+            if strict:
+                raise RuntimeError(f"Failed to set GenICam node '{name}' to '{value}': {exc}") from exc
+            LOG.warning("Failed to set GenICam node '%s' to '%s': %s", name, value, exc)
+            return False
+
+    @staticmethod
+    def _trigger_attr(trigger, name: str, default=None):
+        if isinstance(trigger, dict):
+            return trigger.get(name, default)
+        return getattr(trigger, name, default)
+
+    @staticmethod
+    def _trigger_to_dict(trigger) -> dict[str, Any]:
+        if trigger is None:
+            return {}
+        if isinstance(trigger, dict):
+            return dict(trigger)
+        if hasattr(trigger, "model_dump"):
+            try:
+                return trigger.model_dump(exclude_none=True)
+            except Exception:
+                pass
+        return {}
 
     def _configure_pixel_format(self, node_map) -> None:
         try:
@@ -1004,12 +1087,95 @@ class GenTLCameraBackend(CameraBackend):
             LOG.warning("Failed to configure pixel format '%s': %s", self._pixel_format, e)
 
     def _configure_trigger(self, node_map) -> None:
+        cfg = self._trigger
+        role = str(self._trigger_attr(cfg, "role", "off") or "off").strip().lower()
+        strict = bool(self._trigger_attr(cfg, "strict", False))
+
+        if role in {"off", "disabled"}:
+            self._configure_trigger_off(node_map, strict=strict)
+            return
+
+        if role in {"external", "follower"}:
+            self._configure_trigger_input(node_map, cfg, strict=strict)
+            return
+
+        if role == "master":
+            self._configure_trigger_master(node_map, cfg, strict=strict)
+            return
+
+        if strict:
+            raise RuntimeError(f"Unsupported GenTL trigger role: {role!r}")
+
+        LOG.warning("Unsupported GenTL trigger role '%s'; disabling trigger.", role)
+        self._configure_trigger_off(node_map, strict=False)
+
+    def _configure_trigger_off(self, node_map, *, strict: bool = False) -> None:
+        self._set_enum_node(node_map, "TriggerMode", "Off", strict=strict)
+
+    def _configure_trigger_input(self, node_map, cfg, *, strict: bool = False) -> None:
+        selector = str(self._trigger_attr(cfg, "selector", "FrameStart") or "FrameStart")
+        source = str(self._trigger_attr(cfg, "source", "Line0") or "Line0")
+        activation = str(self._trigger_attr(cfg, "activation", "RisingEdge") or "RisingEdge")
+
+        # Disable trigger while changing trigger-related nodes.
+        self._set_enum_node(node_map, "TriggerMode", "Off", strict=False)
+
+        self._set_enum_node(node_map, "TriggerSelector", selector, strict=strict)
+        self._set_enum_node(node_map, "TriggerSource", source, strict=strict)
+        self._set_enum_node(node_map, "TriggerActivation", activation, strict=strict)
+
+        self._set_enum_node(node_map, "AcquisitionMode", "Continuous", strict=False)
+
+        if not self._set_enum_node(node_map, "TriggerMode", "On", strict=strict):
+            if strict:
+                raise RuntimeError("Could not enable GenTL TriggerMode=On")
+
+        LOG.info(
+            "GenTL trigger input configured: role=%s selector=%s source=%s activation=%s",
+            self._trigger_attr(cfg, "role", "external"),
+            selector,
+            source,
+            activation,
+        )
+
+    def _configure_trigger_master(self, node_map, cfg, *, strict: bool = False) -> None:
+        output_line = str(self._trigger_attr(cfg, "output_line", "Line2") or "Line2")
+        output_source = str(self._trigger_attr(cfg, "output_source", "ExposureActive") or "ExposureActive")
+
+        # Master camera runs freerun and exposes an output signal.
+        self._configure_trigger_off(node_map, strict=False)
+
+        self._set_enum_node(node_map, "LineSelector", output_line, strict=strict)
+        self._set_enum_node(node_map, "LineMode", "Output", strict=strict)
+        self._set_enum_node(node_map, "LineSource", output_source, strict=strict)
+
+        LOG.info(
+            "GenTL trigger master configured: output_line=%s output_source=%s",
+            output_line,
+            output_source,
+        )
+
+    def _restore_trigger_idle(self, node_map) -> None:
+        """Best-effort restore to a safe non-triggering state after acquisition stops.
+
+        Important:
+        - This should be called after acquirer.stop(), not while acquisition is active.
+        - It is intentionally non-strict because shutdown should not fail if a node
+        is missing or read-only.
+        """
+        role = str(self._trigger_attr(getattr(self, "_trigger", None), "role", "off") or "off").lower()
+
         try:
-            trigger_mode = getattr(node_map, "TriggerMode", None)
-            if trigger_mode is not None and "Off" in getattr(trigger_mode, "symbolics", []):
-                trigger_mode.value = "Off"
-        except Exception as e:
-            LOG.warning("Failed to disable trigger mode: %s", e)
+            if role in {"external", "follower"}:
+                self._set_enum_node(node_map, "TriggerMode", "Off", strict=False)
+
+            elif role == "master":
+                # Stop driving output if the camera exposes these nodes.
+                self._set_enum_node(node_map, "LineSource", "Off", strict=False)
+                self._set_enum_node(node_map, "LineMode", "Input", strict=False)
+
+        except Exception:
+            LOG.debug("Best-effort GenTL trigger restore failed", exc_info=True)
 
     def _configure_resolution(self, node_map) -> None:
         if self._requested_resolution is None:
