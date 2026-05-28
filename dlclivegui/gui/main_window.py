@@ -858,31 +858,40 @@ class DLCLiveMainWindow(QMainWindow):
         # Update recording path preview
         self._update_recording_path_preview()
 
+    def _with_camera_trigger_defaults_for_save(self, cam: CameraSettings) -> CameraSettings:
+        out = cam.model_copy(deep=True)
+
+        backend = (out.backend or "").lower()
+        if backend != "gentl":
+            return out
+
+        if not isinstance(out.properties, dict):
+            out.properties = {}
+
+        ns = out.properties.setdefault("gentl", {})
+        if not isinstance(ns, dict):
+            ns = {}
+            out.properties["gentl"] = ns
+
+        ns.setdefault("trigger", CameraTriggerSettings().model_dump(exclude_none=True))
+
+        return out
+
     def _with_camera_defaults_for_save(self, settings: MultiCameraSettings) -> MultiCameraSettings:
         out = settings.model_copy(deep=True)
 
-        for cam in out.cameras:
-            backend = (cam.backend or "").lower()
-            if backend != "gentl":
-                continue
-
-            if not isinstance(cam.properties, dict):
-                cam.properties = {}
-
-            ns = cam.properties.setdefault("gentl", {})
-            if not isinstance(ns, dict):
-                ns = {}
-                cam.properties["gentl"] = ns
-
-            ns.setdefault("trigger", CameraTriggerSettings().model_dump(exclude_none=True))
+        out.cameras = [self._with_camera_trigger_defaults_for_save(cam) for cam in out.cameras]
 
         return out
 
     def _current_config(self, *, allow_empty_model_path=False) -> ApplicationSettings:
         # Get the first camera from multi-camera config for backward compatibility
         multi_camera = self._with_camera_defaults_for_save(self._config.multi_camera)
-        active_cameras = self._config.multi_camera.get_active_cameras()
-        camera = active_cameras[0] if active_cameras else CameraSettings()
+        camera = (
+            multi_camera.cameras[0].model_copy(deep=True)
+            if multi_camera.cameras
+            else self._with_camera_trigger_defaults_for_save(self._config.camera)
+        )
 
         return ApplicationSettings(
             camera=camera,
