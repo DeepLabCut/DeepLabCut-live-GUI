@@ -1139,6 +1139,8 @@ class GenTLCameraBackend(CameraBackend):
         if not self._set_enum_node(node_map, "TriggerMode", "On", strict=strict):
             if strict:
                 raise RuntimeError("Could not enable GenTL TriggerMode=On")
+            else:
+                LOG.warning("Could not enable GenTL TriggerMode=On; trigger mode may not be correctly configured.")
 
         LOG.info(
             "GenTL trigger input configured: role=%s selector=%s source=%s activation=%s",
