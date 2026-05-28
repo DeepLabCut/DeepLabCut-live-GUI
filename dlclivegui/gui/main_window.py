@@ -886,19 +886,23 @@ class DLCLiveMainWindow(QMainWindow):
             # IMPORTANT NOTE: DLClive expects a directory for TensorFlow models,
             # so if user selects a .pb file, we should pass the parent directory to DLCLive
             model_path = str(Path(model_path).parent)
+
+        existing_dlc = (  # explicitly init from default if unset
+            self._config.dlc.model_copy(deep=True)
+            if getattr(self._config, "dlc", None) is not None
+            else DEFAULT_CONFIG.dlc.model_copy(deep=True)
+        )
         if not model_path:
             if allow_empty_model_path:
-                return DLCProcessorSettings(
-                    model_path="",
-                    model_directory=self._config.dlc.model_directory,  # Preserve from config
-                    device=self._config.dlc.device,  # Preserve from config
-                    dynamic=self._config.dlc.dynamic,  # Preserve from config
-                    resize=self._config.dlc.resize,  # Preserve from config
-                    precision=self._config.dlc.precision,  # Preserve from config
-                    model_type=None,
-                    # additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
+                # Preserve all existing DLC settings and only clear the model path.
+                return existing_dlc.model_copy(
+                    update={
+                        "model_path": "",
+                    }
                 )
+
             raise ValueError("Model path cannot be empty. Please enter a valid path to a DLCLive model file.")
+
         try:
             model_bknd = DLCLiveProcessor.get_model_backend(model_path)
         except Exception as e:
@@ -907,15 +911,13 @@ class DLCLiveMainWindow(QMainWindow):
                 "Please ensure the model file is valid and has an appropriate extension "
                 "(.pt, .pth for PyTorch or model directory for TensorFlow)."
             ) from e
-        return DLCProcessorSettings(
-            model_path=model_path,
-            model_directory=self._config.dlc.model_directory,  # Preserve from config
-            device=self._config.dlc.device,  # Preserve from config
-            dynamic=self._config.dlc.dynamic,  # Preserve from config
-            resize=self._config.dlc.resize,  # Preserve from config
-            precision=self._config.dlc.precision,  # Preserve from config
-            model_type=model_bknd,
-            # additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
+
+        # Preserve all unchanged DLC settings and only update values derived from the UI.
+        return existing_dlc.model_copy(
+            update={
+                "model_path": model_path,
+                "model_type": model_bknd,
+            }
         )
 
     def _recording_settings_from_ui(self) -> RecordingSettings:
