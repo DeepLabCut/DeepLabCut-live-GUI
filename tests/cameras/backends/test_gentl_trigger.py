@@ -75,6 +75,7 @@ def test_trigger_external_configures_input_line_and_timeout(patch_gentl_sdk, gen
     assert nm.TriggerSource.value == "Line0"
     assert nm.TriggerActivation.value == "RisingEdge"
     assert nm.TriggerMode.value == "On"
+    assert be.waits_for_hardware_trigger is True
     assert be._timeout == pytest.approx(10.0)
 
     ns = settings.properties["gentl"]
@@ -140,7 +141,7 @@ def test_trigger_master_configures_output_line_and_keeps_trigger_off(patch_gentl
     be.close()
 
 
-def test_trigger_invalid_source_non_strict_does_not_crash(patch_gentl_sdk, gentl_settings_factory):
+def test_trigger_invalid_source_non_strict_disables_trigger(patch_gentl_sdk, gentl_settings_factory):
     gb = patch_gentl_sdk
 
     settings = _gentl_trigger_settings(
@@ -158,9 +159,17 @@ def test_trigger_invalid_source_non_strict_does_not_crash(patch_gentl_sdk, gentl
 
     # Source was unsupported, so the fake node should retain its default.
     assert nm.TriggerSource.value == "Line0"
-    # Non-strict mode should still allow opening; TriggerMode may be enabled
-    # because TriggerSource failure is best-effort in this mode.
-    assert be._acquirer is not None
+
+    # Safety behavior: do not arm TriggerMode on the previous/default source.
+    assert nm.TriggerMode.value == "Off"
+
+    # Controller should not treat timeouts as expected trigger waits.
+    assert be.waits_for_hardware_trigger is False
+
+    # trigger_actual is persisted after _configure_trigger(); since we reset
+    # self._trigger to off, the effective trigger state is off.
+    actual = settings.properties["gentl"]["trigger_actual"]
+    assert actual["role"] == "off"
 
     be.close()
 
@@ -329,5 +338,37 @@ def test_trigger_actual_is_persisted_for_debugging(patch_gentl_sdk, gentl_settin
     assert actual["source"] == "Line1"
     assert actual["activation"] == "FallingEdge"
     assert actual["timeout"] == pytest.approx(9.0)
+
+    be.close()
+
+
+def test_trigger_invalid_selector_non_strict_disables_trigger(patch_gentl_sdk, gentl_settings_factory):
+    gb = patch_gentl_sdk
+
+    settings = _gentl_trigger_settings(
+        gentl_settings_factory,
+        {
+            "role": "external",
+            "selector": "NotARealSelector",
+            "source": "Line1",
+            "strict": False,
+        },
+    )
+    be = gb.GenTLCameraBackend(settings)
+
+    be.open()
+    nm = be._acquirer.remote_device.node_map
+
+    # Selector was unsupported, so the fake node should retain its default.
+    assert nm.TriggerSelector.value == "FrameStart"
+
+    # Source may have been applied, but trigger must not be armed because
+    # the required selector routing failed.
+    assert nm.TriggerSource.value == "Line1"
+    assert nm.TriggerMode.value == "Off"
+    assert be.waits_for_hardware_trigger is False
+
+    actual = settings.properties["gentl"]["trigger_actual"]
+    assert actual["role"] == "off"
 
     be.close()
