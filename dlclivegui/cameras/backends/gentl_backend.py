@@ -106,10 +106,20 @@ class GenTLCameraBackend(CameraBackend):
             self._gain = self._positive_float(ns.get("gain", props.get("gain")))
 
         self._timeout: float = float(ns.get("timeout", props.get("timeout", 2.0)))
+        raw_trigger = ns.get("trigger", props.get("trigger"))
+        raw_trigger_strict = isinstance(raw_trigger, dict) and bool(raw_trigger.get("strict", False))
+
         try:
-            self._trigger = CameraTriggerSettings.from_any(ns.get("trigger", props.get("trigger")))
+            self._trigger = CameraTriggerSettings.from_any(raw_trigger)
         except Exception as exc:
-            LOG.warning("Invalid GenTL trigger config; falling back to trigger role=off: %s", exc)
+            if raw_trigger_strict:
+                raise ValueError(f"Strict mode failure - Invalid GenTL trigger configuration: {exc}") from exc
+
+            LOG.warning(
+                "Invalid GenTL trigger config; falling back to trigger role=off: %s. "
+                "Enable strict mode to force this to raise.",
+                exc,
+            )
             self._trigger = CameraTriggerSettings()
 
         trigger_timeout = self._positive_float(self._trigger_attr(self._trigger, "timeout", None))
@@ -1145,7 +1155,23 @@ class GenTLCameraBackend(CameraBackend):
         # Master camera runs freerun and exposes an output signal.
         self._configure_trigger_off(node_map, strict=False)
 
-        self._set_enum_node(node_map, "LineSelector", output_line, strict=strict)
+        line_selected = self._set_enum_node(
+            node_map,
+            "LineSelector",
+            output_line,
+            strict=strict,
+        )
+
+        # In non-strict mode, do not continue configuring output behavior if the
+        # requested line could not be selected. Otherwise we may accidentally drive
+        # whichever GPIO line the camera had selected previously/defaulted to.
+        if not line_selected:
+            LOG.warning(
+                "Could not select GenTL output line '%s'; skipping trigger output configuration.",
+                output_line,
+            )
+            return
+
         self._set_enum_node(node_map, "LineMode", "Output", strict=strict)
         self._set_enum_node(node_map, "LineSource", output_source, strict=strict)
 
