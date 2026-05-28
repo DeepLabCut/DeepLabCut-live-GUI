@@ -190,6 +190,25 @@ class CameraSettings(BaseModel):
             self.properties[str(key).lower()] = ns
         ns["trigger"] = trigger.to_properties()
 
+    def with_save_defaults(self) -> CameraSettings:
+        out = self.model_copy(deep=True)
+
+        backend = (out.backend or "").lower()
+        if backend != "gentl":
+            return out
+
+        if not isinstance(out.properties, dict):
+            out.properties = {}
+
+        ns = out.properties.setdefault("gentl", {})
+        if not isinstance(ns, dict):
+            ns = {}
+            out.properties["gentl"] = ns
+
+        ns.setdefault("trigger", CameraTriggerSettings().to_properties())
+
+        return out
+
 
 class CameraTriggerSettings(BaseModel):
     """
@@ -302,11 +321,18 @@ class MultiCameraSettings(BaseModel):
         return cls(cameras=cameras, max_cameras=max_cameras, tile_layout=tile_layout)
 
     def to_dict(self) -> dict[str, Any]:
+        out = self.with_save_defaults()
         return {
-            "cameras": [cam.model_dump() for cam in self.cameras],
-            "max_cameras": self.max_cameras,
-            "tile_layout": self.tile_layout,
+            "cameras": [cam.model_dump() for cam in out.cameras],
+            "max_cameras": out.max_cameras,
+            "tile_layout": out.tile_layout,
         }
+
+    def with_save_defaults(self) -> MultiCameraSettings:
+        """Return a copy with save defaults applied to all cameras."""
+        out = self.model_copy(deep=True)
+        out.cameras = [cam.with_save_defaults() for cam in out.cameras]
+        return out
 
 
 class DynamicCropModel(BaseModel):
@@ -473,10 +499,18 @@ class ApplicationSettings(BaseModel):
         )
 
     def to_dict(self) -> dict[str, Any]:
+        multi_camera = self.multi_camera.with_save_defaults()
+        active_cameras = multi_camera.get_active_cameras()
+
+        if active_cameras:
+            camera = active_cameras[0].model_copy(deep=True)
+        else:
+            camera = self.camera.with_save_defaults()
+
         return {
             "version": self.version,
-            "camera": self.camera.model_dump(),
-            "multi_camera": self.multi_camera.to_dict(),
+            "camera": camera.model_dump(),
+            "multi_camera": multi_camera.to_dict(),
             "dlc": self.dlc.model_dump(),
             "recording": self.recording.model_dump(),
             "bbox": self.bbox.model_dump(),
