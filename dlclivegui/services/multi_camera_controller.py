@@ -99,6 +99,29 @@ class SingleCameraWorker(QObject):
                 consecutive_errors = 0
                 self.frame_captured.emit(self._camera_id, frame, timestamp)
 
+            except TimeoutError as exc:
+                if self._stop_event.is_set():
+                    break
+
+                # In hardware-trigger mode, a timeout usually means:
+                # "no trigger pulse arrived during this poll interval".
+                # This is expected and should not count as a camera failure.
+                if bool(getattr(self._backend, "waits_for_hardware_trigger", False)):
+                    LOGGER.debug(
+                        "[Worker %s] waiting for hardware trigger: %s",
+                        self._camera_id,
+                        exc,
+                    )
+                    consecutive_errors = 0
+                    continue
+
+                consecutive_errors += 1
+                if consecutive_errors >= self._max_consecutive_errors:
+                    self.error_occurred.emit(self._camera_id, f"Camera read timeout: {exc}")
+                    break
+                time.sleep(self._retry_delay)
+                continue
+
             except Exception as exc:
                 consecutive_errors += 1
                 if self._stop_event.is_set():
@@ -136,6 +159,46 @@ def get_camera_id(settings: CameraSettings) -> str:
         return f"{backend}:serial:{serial}"
 
     return f"{backend}:index:{int(settings.index)}"
+
+
+def _trigger_role_from_settings(settings: CameraSettings) -> str:
+    backend = (settings.backend or "").lower()
+    props = settings.properties if isinstance(settings.properties, dict) else {}
+    ns = props.get(backend, {}) if isinstance(props.get(backend), dict) else {}
+
+    trigger = ns.get("trigger", {})
+    if not isinstance(trigger, dict):
+        return "off"
+
+    role = str(trigger.get("role", "off") or "off").strip().lower()
+
+    # Match CameraTriggerSettings aliases enough for controller ordering.
+    if role in {"true", "on", "trigger", "triggered"}:
+        return "external"
+    if role in {"slave"}:
+        return "follower"
+    if role in {"main"}:
+        return "master"
+    if role in {"false", "none", "disabled", "disable", ""}:
+        return "off"
+
+    return role
+
+
+def _camera_start_priority(settings: CameraSettings) -> int:
+    """Start trigger-waiting cameras before trigger-generating cameras.
+
+    Priority:
+      0: external/follower cameras, which should be armed first
+      1: normal/free-run cameras
+      2: master cameras, which may generate trigger pulses
+    """
+    role = _trigger_role_from_settings(settings)
+    if role in {"external", "follower"}:
+        return 0
+    if role == "master":
+        return 2
+    return 1
 
 
 class MultiCameraController(QObject):
@@ -180,6 +243,7 @@ class MultiCameraController(QObject):
             return
 
         active_settings = [s for s in camera_settings if s.enabled][: self.MAX_CAMERAS]
+        active_settings = sorted(active_settings, key=_camera_start_priority)
         if not active_settings:
             LOGGER.warning("No active cameras to start")
             return
