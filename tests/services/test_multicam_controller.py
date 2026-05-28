@@ -5,7 +5,12 @@ from dlclivegui.cameras.factory import CameraFactory
 
 # from dlclivegui.config import CameraSettings
 from dlclivegui.config import CameraSettings
-from dlclivegui.services.multi_camera_controller import MultiCameraController, get_camera_id
+from dlclivegui.services.multi_camera_controller import (
+    MultiCameraController,
+    _camera_start_priority,
+    _trigger_role_from_settings,
+    get_camera_id,
+)
 
 
 @pytest.mark.unit
@@ -95,3 +100,297 @@ def test_initialization_failure(qtbot, monkeypatch):
     # Expect initialization_failed with the camera id
     with qtbot.waitSignals([mc.initialization_failed, mc.all_stopped], timeout=2000) as _:
         mc.start([cam])
+
+
+@pytest.mark.unit
+def test_get_camera_id_prefers_stable_device_id():
+    cam = CameraSettings(
+        name="GenTL Cam",
+        backend="gentl",
+        index=0,
+        properties={
+            "gentl": {
+                "device_id": "serial:30220469",
+                "serial_number": "30220469",
+            }
+        },
+    ).apply_defaults()
+
+    assert get_camera_id(cam) == "gentl:serial:30220469"
+
+
+@pytest.mark.unit
+def test_get_camera_id_falls_back_to_index_without_stable_identity():
+    cam = CameraSettings(
+        name="Cam",
+        backend="opencv",
+        index=2,
+    ).apply_defaults()
+
+    assert get_camera_id(cam) == "opencv:index:2"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("role", "expected"),
+    [
+        ("off", "off"),
+        ("disabled", "off"),
+        ("on", "external"),
+        ("triggered", "external"),
+        ("external", "external"),
+        ("follower", "follower"),
+        ("slave", "follower"),
+        ("master", "master"),
+        ("main", "master"),
+    ],
+)
+def test_trigger_role_from_settings_aliases(role, expected):
+    cam = CameraSettings(
+        name="C",
+        backend="gentl",
+        index=0,
+        properties={
+            "gentl": {
+                "trigger": {
+                    "role": role,
+                }
+            }
+        },
+    ).apply_defaults()
+
+    assert _trigger_role_from_settings(cam) == expected
+
+
+@pytest.mark.unit
+def test_camera_start_priority_orders_trigger_roles():
+    external = CameraSettings(
+        name="External",
+        backend="gentl",
+        index=0,
+        properties={"gentl": {"trigger": {"role": "external"}}},
+    ).apply_defaults()
+
+    normal = CameraSettings(
+        name="Normal",
+        backend="gentl",
+        index=1,
+        properties={"gentl": {"trigger": {"role": "off"}}},
+    ).apply_defaults()
+
+    master = CameraSettings(
+        name="Master",
+        backend="gentl",
+        index=2,
+        properties={"gentl": {"trigger": {"role": "master"}}},
+    ).apply_defaults()
+
+    assert _camera_start_priority(external) == 0
+    assert _camera_start_priority(normal) == 1
+    assert _camera_start_priority(master) == 2
+
+
+@pytest.mark.unit
+def test_start_preserves_user_display_order_even_when_trigger_start_order_differs(qtbot, patch_factory):
+    mc = MultiCameraController()
+
+    # User wants master first in tiled view, follower second.
+    # Startup order should still be follower first internally.
+    master = CameraSettings(
+        name="Master",
+        backend="opencv",
+        index=0,
+        enabled=True,
+        properties={
+            "opencv": {
+                "device_id": "master-cam",
+                "trigger": {"role": "master"},
+            }
+        },
+    ).apply_defaults()
+
+    follower = CameraSettings(
+        name="Follower",
+        backend="opencv",
+        index=1,
+        enabled=True,
+        properties={
+            "opencv": {
+                "device_id": "follower-cam",
+                "trigger": {"role": "follower"},
+            }
+        },
+    ).apply_defaults()
+
+    expected_display_order = [get_camera_id(master), get_camera_id(follower)]
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([master, follower])
+
+        assert mc._camera_display_order == expected_display_order
+
+    finally:
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_frame_ready_emits_frames_in_user_configured_order(qtbot, patch_factory):
+    mc = MultiCameraController()
+
+    cam_a = CameraSettings(
+        name="A",
+        backend="opencv",
+        index=0,
+        enabled=True,
+        properties={"opencv": {"device_id": "cam-a"}},
+    ).apply_defaults()
+
+    cam_b = CameraSettings(
+        name="B",
+        backend="opencv",
+        index=1,
+        enabled=True,
+        properties={"opencv": {"device_id": "cam-b"}},
+    ).apply_defaults()
+
+    expected_order = [get_camera_id(cam_a), get_camera_id(cam_b)]
+    seen_orders: list[list[str]] = []
+
+    def on_ready(mfd):
+        if len(mfd.frames) >= 2:
+            seen_orders.append(list(mfd.frames.keys()))
+
+    mc.frame_ready.connect(on_ready)
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([cam_a, cam_b])
+
+        qtbot.waitUntil(lambda: bool(seen_orders), timeout=2500)
+
+        assert seen_orders[-1] == expected_order
+
+    finally:
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_display_order_is_cleared_on_stop(qtbot, patch_factory):
+    mc = MultiCameraController()
+
+    cam = CameraSettings(
+        name="C",
+        backend="opencv",
+        index=0,
+        enabled=True,
+        properties={"opencv": {"device_id": "cam-0"}},
+    ).apply_defaults()
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([cam])
+
+        assert mc._camera_display_order == [get_camera_id(cam)]
+
+    finally:
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
+
+    assert mc._camera_display_order == []
+
+
+@pytest.mark.unit
+def test_hardware_trigger_timeouts_are_not_fatal(qtbot, monkeypatch):
+    class WaitingTriggerBackend:
+        waits_for_hardware_trigger = True
+
+        def __init__(self, settings):
+            self.settings = settings
+            self.opened = False
+            self.closed = False
+
+        def open(self):
+            self.opened = True
+
+        def read(self):
+            raise TimeoutError("waiting for hardware trigger")
+
+        def close(self):
+            self.closed = True
+
+    def _create(settings):
+        return WaitingTriggerBackend(settings)
+
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(_create))
+
+    mc = MultiCameraController()
+    cam = CameraSettings(
+        name="Triggered",
+        backend="gentl",
+        index=0,
+        enabled=True,
+        properties={
+            "gentl": {
+                "device_id": "serial:30220469",
+                "trigger": {"role": "external", "timeout": 0.1},
+            }
+        },
+    ).apply_defaults()
+
+    errors: list[tuple[str, str]] = []
+    mc.camera_error.connect(lambda cam_id, msg: errors.append((cam_id, msg)))
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([cam])
+
+        # Let several timeout cycles happen.
+        qtbot.wait(500)
+
+        assert mc.is_running()
+        assert errors == []
+
+    finally:
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_non_trigger_timeouts_are_fatal_after_retries(qtbot, monkeypatch):
+    class TimeoutBackend:
+        waits_for_hardware_trigger = False
+
+        def __init__(self, settings):
+            self.settings = settings
+
+        def open(self):
+            pass
+
+        def read(self):
+            raise TimeoutError("camera timeout")
+
+        def close(self):
+            pass
+
+    def _create(settings):
+        return TimeoutBackend(settings)
+
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(_create))
+
+    mc = MultiCameraController()
+    cam = CameraSettings(name="TimeoutCam", backend="opencv", index=0, enabled=True).apply_defaults()
+
+    with qtbot.waitSignal(mc.camera_error, timeout=3000) as blocker:
+        mc.start([cam])
+
+    cam_id, msg = blocker.args
+    assert cam_id == get_camera_id(cam)
+    assert "Camera read timeout" in msg
+
+    # Cleanup if still running.
+    if mc.is_running():
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
