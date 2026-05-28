@@ -12,6 +12,8 @@ Rotation = Literal[0, 90, 180, 270]
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
 Precision = Literal["FP32", "FP16"]
 ModelType = Literal["pytorch", "tensorflow"]
+TriggerRole = Literal["off", "external", "master", "follower"]
+TriggerActivation = Literal["RisingEdge", "FallingEdge", "AnyEdge", "LevelHigh", "LevelLow"]
 
 
 class CameraSettings(BaseModel):
@@ -167,6 +169,100 @@ class CameraSettings(BaseModel):
             except Exception:
                 pass
         return out
+
+    def backend_options(self, backend: str | None = None) -> dict[str, Any]:
+        key = backend or self.backend
+        props = self.properties if isinstance(self.properties, dict) else {}
+        ns = props.get(str(key).lower(), {})
+        return ns if isinstance(ns, dict) else {}
+
+    def get_trigger_settings(self, backend: str | None = None) -> CameraTriggerSettings:
+        ns = self.backend_options(backend)
+        return CameraTriggerSettings.from_any(ns.get("trigger"))
+
+    def set_trigger_settings(self, trigger: CameraTriggerSettings, backend: str | None = None) -> None:
+        key = backend or self.backend
+        if not isinstance(self.properties, dict):
+            self.properties = {}
+        ns = self.properties.setdefault(str(key).lower(), {})
+        if not isinstance(ns, dict):
+            ns = {}
+            self.properties[str(key).lower()] = ns
+        ns["trigger"] = trigger.to_properties()
+
+
+class CameraTriggerSettings(BaseModel):
+    """
+    Generic hardware-trigger settings.
+
+    Backend-specific code may ignore fields that are unsupported by a given
+    camera/SDK. For GenTL, these map to common GenICam nodes such as:
+    TriggerMode, TriggerSelector, TriggerSource, TriggerActivation,
+    LineSelector, LineMode, and LineSource.
+    """
+
+    role: TriggerRole = "off"
+
+    # Input trigger config: external/follower
+    selector: str = "FrameStart"
+    source: str = "Line0"
+    activation: TriggerActivation | str = "RisingEdge"
+
+    # Output config: master
+    output_line: str = "Line2"
+    output_source: str = "ExposureActive"
+
+    # Runtime behavior
+    timeout: float | None = None
+    strict: bool = False
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _coerce_role(cls, v):
+        if v is None:
+            return "off"
+
+        s = str(v).strip().lower()
+        aliases = {
+            "": "off",
+            "none": "off",
+            "false": "off",
+            "disabled": "off",
+            "disable": "off",
+            "off": "off",
+            "true": "external",
+            "on": "external",
+            "trigger": "external",
+            "triggered": "external",
+            "external": "external",
+            "follower": "follower",
+            "slave": "follower",
+            "master": "master",
+            "main": "master",
+        }
+        return aliases.get(s, s)
+
+    @field_validator("timeout", mode="before")
+    @classmethod
+    def _coerce_timeout(cls, v):
+        if v in (None, ""):
+            return None
+        try:
+            fv = float(v)
+        except Exception:
+            return None
+        return fv if fv > 0 else None
+
+    @classmethod
+    def from_any(cls, value) -> CameraTriggerSettings:
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, dict):
+            return cls(**value)
+        return cls()
+
+    def to_properties(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True)
 
 
 class MultiCameraSettings(BaseModel):
