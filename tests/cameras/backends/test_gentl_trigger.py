@@ -63,7 +63,7 @@ def test_trigger_external_configures_input_line_and_timeout(patch_gentl_sdk, gen
             "selector": "FrameStart",
             "source": "Line0",
             "activation": "RisingEdge",
-            "timeout": 10.0,
+            "timeout": gb.GenTLCameraBackend._MAX_HARDWARE_TRIGGER_FETCH_TIMEOUT,
         },
     )
     be = gb.GenTLCameraBackend(settings)
@@ -76,7 +76,7 @@ def test_trigger_external_configures_input_line_and_timeout(patch_gentl_sdk, gen
     assert nm.TriggerActivation.value == "RisingEdge"
     assert nm.TriggerMode.value == "On"
     assert be.waits_for_hardware_trigger is True
-    assert be._timeout == pytest.approx(10.0)
+    assert be._timeout == pytest.approx(gb.GenTLCameraBackend._MAX_HARDWARE_TRIGGER_FETCH_TIMEOUT)
 
     ns = settings.properties["gentl"]
     assert ns["trigger_actual"]["role"] == "external"
@@ -265,8 +265,12 @@ def test_trigger_alias_on_maps_to_external(patch_gentl_sdk, gentl_settings_facto
     be.close()
 
 
-def test_trigger_timeout_overrides_default_fetch_timeout(patch_gentl_sdk, gentl_settings_factory):
+def test_trigger_timeout_is_capped_for_hardware_trigger_fetch_polling(
+    patch_gentl_sdk,
+    gentl_settings_factory,
+):
     gb = patch_gentl_sdk
+    expected_fetch_timeout = gb.GenTLCameraBackend._MAX_HARDWARE_TRIGGER_FETCH_TIMEOUT
 
     settings = _gentl_trigger_settings(
         gentl_settings_factory,
@@ -277,18 +281,30 @@ def test_trigger_timeout_overrides_default_fetch_timeout(patch_gentl_sdk, gentl_
     )
     be = gb.GenTLCameraBackend(settings)
 
-    be.open()
-    assert be._timeout == pytest.approx(7.5)
+    try:
+        be.open()
 
-    # Fake acquisition is started, so read should pass and record the timeout.
-    frame, _ = be.read()
-    assert frame is not None
-    assert be._acquirer.fetch_calls[-1] == pytest.approx(7.5)
+        # Hardware-trigger fetch calls are intentionally capped so stop(wait=True)
+        # is not blocked by a long user trigger timeout.
+        assert be._timeout == pytest.approx(expected_fetch_timeout)
 
-    be.close()
+        # Fake acquisition is started, so read should pass and record the capped timeout.
+        frame, _ = be.read()
+        assert frame is not None
+        assert be._acquirer.fetch_calls[-1] == pytest.approx(expected_fetch_timeout)
+
+        # The requested trigger timeout is still preserved in persisted trigger_actual.
+        actual = settings.properties["gentl"]["trigger_actual"]
+        assert actual["timeout"] == pytest.approx(7.5)
+
+    finally:
+        be.close()
 
 
-def test_trigger_timeout_error_mentions_hardware_trigger_when_waiting(patch_gentl_sdk, gentl_settings_factory):
+def test_trigger_timeout_error_mentions_hardware_trigger_when_waiting(
+    patch_gentl_sdk,
+    gentl_settings_factory,
+):
     gb = patch_gentl_sdk
 
     settings = _gentl_trigger_settings(
@@ -297,22 +313,27 @@ def test_trigger_timeout_error_mentions_hardware_trigger_when_waiting(patch_gent
             "role": "external",
             "timeout": 3.0,
         },
-        # fast_start keeps acquisition stopped; fake fetch then raises timeout.
-        # This lets us assert the backend timeout message without hardware.
     )
+    # fast_start keeps acquisition stopped; fake fetch then raises timeout.
+    # This lets us assert the backend timeout message without hardware.
     settings.properties["gentl"]["fast_start"] = True
+
     be = gb.GenTLCameraBackend(settings)
 
-    be.open()
+    try:
+        be.open()
 
-    with pytest.raises(TimeoutError) as ei:
-        be.read()
+        assert be._timeout == pytest.approx(gb.GenTLCameraBackend._MAX_HARDWARE_TRIGGER_FETCH_TIMEOUT)
 
-    msg = str(ei.value).lower()
-    assert "gentl timeout" in msg
-    assert "hardware trigger" in msg or "trigger" in msg
+        with pytest.raises(TimeoutError) as ei:
+            be.read()
 
-    be.close()
+        msg = str(ei.value).lower()
+        assert "gentl timeout" in msg
+        assert "hardware trigger" in msg or "trigger" in msg
+
+    finally:
+        be.close()
 
 
 def test_trigger_actual_is_persisted_for_debugging(patch_gentl_sdk, gentl_settings_factory):
@@ -330,16 +351,22 @@ def test_trigger_actual_is_persisted_for_debugging(patch_gentl_sdk, gentl_settin
     )
     be = gb.GenTLCameraBackend(settings)
 
-    be.open()
+    try:
+        be.open()
 
-    actual = settings.properties["gentl"].get("trigger_actual")
-    assert isinstance(actual, dict)
-    assert actual["role"] == "follower"
-    assert actual["source"] == "Line1"
-    assert actual["activation"] == "FallingEdge"
-    assert actual["timeout"] == pytest.approx(9.0)
+        # Requested timeout remains in trigger_actual for debugging/config visibility.
+        actual = settings.properties["gentl"].get("trigger_actual")
+        assert isinstance(actual, dict)
+        assert actual["role"] == "follower"
+        assert actual["source"] == "Line1"
+        assert actual["activation"] == "FallingEdge"
+        assert actual["timeout"] == pytest.approx(9.0)
 
-    be.close()
+        # But each blocking Harvester.fetch() call is capped for responsive shutdown.
+        assert be._timeout == pytest.approx(gb.GenTLCameraBackend._MAX_HARDWARE_TRIGGER_FETCH_TIMEOUT)
+
+    finally:
+        be.close()
 
 
 def test_trigger_invalid_selector_non_strict_disables_trigger(patch_gentl_sdk, gentl_settings_factory):
@@ -372,3 +399,26 @@ def test_trigger_invalid_selector_non_strict_disables_trigger(patch_gentl_sdk, g
     assert actual["role"] == "off"
 
     be.close()
+
+
+def test_trigger_timeout_not_capped_for_master_mode(patch_gentl_sdk, gentl_settings_factory):
+    gb = patch_gentl_sdk
+
+    settings = _gentl_trigger_settings(
+        gentl_settings_factory,
+        {
+            "role": "master",
+            "timeout": 7.5,
+        },
+    )
+    be = gb.GenTLCameraBackend(settings)
+
+    try:
+        be.open()
+
+        # Master is free-running / trigger-generating, not waiting for hardware input.
+        assert be.waits_for_hardware_trigger is False
+        assert be._timeout == pytest.approx(7.5)
+
+    finally:
+        be.close()

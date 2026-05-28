@@ -76,6 +76,11 @@ class GenTLCameraBackend(CameraBackend):
     _CTI_FILES_SOURCE_AUTO: ClassVar[str] = "auto"
     _CTI_FILES_SOURCE_USER: ClassVar[str] = "user"
 
+    # Keep individual Harvester.fetch() calls short enough that controller
+    # shutdown can stop worker threads promptly. Hardware-trigger waits are
+    # handled by repeated polling in SingleCameraWorker.
+    _MAX_HARDWARE_TRIGGER_FETCH_TIMEOUT: ClassVar[float] = 1.0
+
     def __init__(self, settings):
         super().__init__(settings)
 
@@ -124,7 +129,16 @@ class GenTLCameraBackend(CameraBackend):
 
         trigger_timeout = self._positive_float(self._trigger_attr(self._trigger, "timeout", None))
         if trigger_timeout is not None:
-            self._timeout = float(trigger_timeout)
+            role = str(self._trigger_attr(self._trigger, "role", "off") or "off").strip().lower()
+
+            if role in {"external", "follower"}:
+                # Do not let a long hardware-trigger wait block shutdown.
+                # SingleCameraWorker treats these fetch timeouts as expected
+                # polling misses while waits_for_hardware_trigger is true.
+                self._timeout = min(float(trigger_timeout), self._MAX_HARDWARE_TRIGGER_FETCH_TIMEOUT)
+            else:
+                # For non-trigger-waiting modes, preserve legacy behavior.
+                self._timeout = float(trigger_timeout)
 
         self._requested_resolution: tuple[int, int] | None = self._get_requested_resolution_or_none()
 
@@ -1177,14 +1191,6 @@ class GenTLCameraBackend(CameraBackend):
             source,
             activation,
             activation_ok,
-        )
-
-        LOG.info(
-            "GenTL trigger input configured: role=%s selector=%s source=%s activation=%s",
-            self._trigger_attr(cfg, "role", "external"),
-            selector,
-            source,
-            activation,
         )
 
     def _configure_trigger_master(self, node_map, cfg, *, strict: bool = False) -> None:
