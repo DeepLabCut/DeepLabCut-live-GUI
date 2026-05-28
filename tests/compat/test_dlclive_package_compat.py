@@ -16,7 +16,7 @@ def _get_signature_params(callable_obj) -> tuple[Mapping[str, Parameter], bool]:
     Return allowed keyword names for callable and whether it accepts **kwargs.
 
     Example:
-    >>> params, accepts_var_kw = _get_signature_params(lambda x, y, **kwargs: None, {"x", "y"})
+    >>> params, accepts_var_kw = _get_signature_params(lambda x, y, **kwargs: None)
     >>> sorted(params)
     ['x', 'y', 'kwargs']
     >>> accepts_var_kw
@@ -72,27 +72,62 @@ def test_dlclive_constructor_accepts_gui_expected_kwargs():
     assert not missing, f"DLCLive.__init__ is missing expected kwargs called by GUI: {sorted(missing)}"
 
 
+def _signature_accepts_positional_after_self(method) -> bool:
+    sig = inspect.signature(method)
+    params = list(sig.parameters.values())
+
+    # Drop self/cls for unbound instance methods.
+    if params and params[0].name in {"self", "cls"}:
+        params = params[1:]
+
+    return any(
+        p.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        }
+        for p in params
+    )
+
+
+def _signature_accepts_keyword(method, keyword: str) -> bool:
+    sig = inspect.signature(method)
+    params = sig.parameters
+
+    if keyword in params:
+        param = params[keyword]
+        return param.kind in {
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 @pytest.mark.dlclive_compat
 def test_dlclive_methods_match_gui_usage():
     """
     GUI expects:
-    - init_inference(frame)
-    - get_pose(frame, frame_time=<float>)
+    - init_inference(<frame-like positional arg>)
+    - get_pose(<frame-like positional arg>, frame_time=<float>)
     """
     from dlclive import DLCLive  # noqa: PLC0415
 
-    assert hasattr(DLCLive, "init_inference"), "DLCLive must provide init_inference(frame)"
-    assert hasattr(DLCLive, "get_pose"), "DLCLive must provide get_pose(frame, frame_time=...)"
-    # NOTE: frame_time is passed as a kwarg, so we only check for "frame" as a required param.
-    #  This is used by DLCLive Processor classes, rather than the DLCLive class itself.
+    assert hasattr(DLCLive, "init_inference"), "DLCLive must provide init_inference(<frame-like positional arg>)"
+    assert hasattr(DLCLive, "get_pose"), "DLCLive must provide get_pose(<frame-like positional arg>, frame_time=...)"
 
-    init_params, _ = _get_signature_params(DLCLive.init_inference)
-    init_missing = {name for name in {"frame"} if name not in init_params}
-    assert not init_missing, f"DLCLive.init_inference signature mismatch, missing: {sorted(init_missing)}"
+    assert _signature_accepts_positional_after_self(DLCLive.init_inference), (
+        "DLCLive.init_inference must accept at least one positional argument after self"
+    )
 
-    get_pose_params, _ = _get_signature_params(DLCLive.get_pose)
-    get_pose_missing = {name for name in {"frame"} if name not in get_pose_params}
-    assert not get_pose_missing, f"DLCLive.get_pose signature mismatch, missing: {sorted(get_pose_missing)}"
+    assert _signature_accepts_positional_after_self(DLCLive.get_pose), (
+        "DLCLive.get_pose must accept at least one positional argument after self"
+    )
+
+    assert _signature_accepts_keyword(DLCLive.get_pose, "frame_time"), (
+        "DLCLive.get_pose must accept frame_time as a keyword argument or accept **kwargs"
+    )
 
 
 @pytest.mark.dlclive_compat
