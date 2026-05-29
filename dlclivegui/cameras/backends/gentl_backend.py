@@ -1059,6 +1059,51 @@ class GenTLCameraBackend(CameraBackend):
                 pass
         return {}
 
+    def _resolve_trigger_source(self, node_map, requested: str, *, strict: bool) -> tuple[str, bool]:
+        """Resolve TriggerSource against the camera-supported GenICam enum values.
+
+        Model-level default is "auto"; this backend maps it to the first preferred
+        source supported by the actual camera.
+        """
+        requested = str(requested or "auto").strip()
+        node = self._node(node_map, "TriggerSource")
+        available = self._node_symbolics(node)
+
+        if not available:
+            if strict:
+                raise RuntimeError("GenICam node 'TriggerSource' is not available or has no symbolics")
+            LOG.warning("GenICam node 'TriggerSource' is not available; disabling trigger input.")
+            return requested, False
+
+        if requested in available:
+            return requested, True
+
+        if requested.lower() == "auto":
+            for candidate in ("Line0", "Line1", "Line2", "Any"):
+                if candidate in available:
+                    LOG.info(
+                        "GenTL TriggerSource auto-selected '%s'. Available: %s",
+                        candidate,
+                        available,
+                    )
+                    return candidate, True
+
+            LOG.warning(
+                "Could not auto-select a GenTL TriggerSource. Available: %s",
+                available,
+            )
+            return requested, False
+
+        if strict:
+            raise RuntimeError(f"GenICam node 'TriggerSource' does not support '{requested}'. Available: {available}")
+
+        LOG.warning(
+            "GenTL TriggerSource '%s' is not available. Available: %s",
+            requested,
+            available,
+        )
+        return requested, False
+
     def _configure_pixel_format(self, node_map) -> None:
         try:
             pixel_format_node = getattr(node_map, "PixelFormat", None)
@@ -1148,7 +1193,8 @@ class GenTLCameraBackend(CameraBackend):
         self._set_enum_node(node_map, "TriggerMode", "Off", strict=False)
 
         selector_ok = self._set_enum_node(node_map, "TriggerSelector", selector, strict=strict)
-        source_ok = self._set_enum_node(node_map, "TriggerSource", source, strict=strict)
+        source, source_resolved = self._resolve_trigger_source(node_map, source, strict=strict)
+        source_ok = source_resolved and self._set_enum_node(node_map, "TriggerSource", source, strict=strict)
         activation_ok = self._set_enum_node(node_map, "TriggerActivation", activation, strict=strict)
 
         # TriggerSelector and TriggerSource are required routing nodes.
