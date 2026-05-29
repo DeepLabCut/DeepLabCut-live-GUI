@@ -158,7 +158,7 @@ def test_trigger_invalid_source_non_strict_disables_trigger(patch_gentl_sdk, gen
     nm = be._acquirer.remote_device.node_map
 
     # Source was unsupported, so the fake node should retain its default.
-    assert nm.TriggerSource.value == "Line0"
+    assert nm.TriggerSource.value == "Line1"
 
     # Safety behavior: do not arm TriggerMode on the previous/default source.
     assert nm.TriggerMode.value == "Off"
@@ -422,3 +422,39 @@ def test_trigger_timeout_not_capped_for_master_mode(patch_gentl_sdk, gentl_setti
 
     finally:
         be.close()
+
+
+def test_resolve_trigger_source_auto_selects_supported_line(
+    patch_gentl_sdk,
+    gentl_settings_factory,
+):
+    gb = patch_gentl_sdk
+    be = gb.GenTLCameraBackend(gentl_settings_factory())
+
+    class Node:
+        symbolics = ["Line1", "Software", "Any"]
+
+    class NodeMap:
+        TriggerSource = Node()
+
+    source, ok = be._resolve_trigger_source(NodeMap(), "auto", strict=False)
+
+    assert ok is True
+    assert source == "Line1"
+
+
+def test_resolve_trigger_source_strict_raises_for_unsupported_explicit_line(
+    patch_gentl_sdk,
+    gentl_settings_factory,
+):
+    gb = patch_gentl_sdk
+    be = gb.GenTLCameraBackend(gentl_settings_factory())
+
+    class Node:
+        symbolics = ["Line1", "Software", "Any"]
+
+    class NodeMap:
+        TriggerSource = Node()
+
+    with pytest.raises(RuntimeError, match="TriggerSource.*Line0"):
+        be._resolve_trigger_source(NodeMap(), "Line0", strict=True)

@@ -603,7 +603,7 @@ class _FakeNodeMap:
         self.AcquisitionMode = _FakeNode("Continuous", symbolics=["Continuous", "SingleFrame"])
         self.TriggerSelector = _FakeNode("FrameStart", symbolics=["FrameStart"])
         self.TriggerMode = _FakeNode("Off", symbolics=["Off", "On"])
-        self.TriggerSource = _FakeNode("Line0", symbolics=["Line0", "Line1", "Software"])
+        self.TriggerSource = _FakeNode("Line1", symbolics=["Line0", "Line1", "Software"])
         self.TriggerActivation = _FakeNode("RisingEdge", symbolics=["RisingEdge", "FallingEdge"])
 
         # GPIO output nodes for master/follower setups
