@@ -499,13 +499,8 @@ class ApplicationSettings(BaseModel):
         )
 
     def to_dict(self) -> dict[str, Any]:
+        camera = self.camera.with_save_defaults()
         multi_camera = self.multi_camera.with_save_defaults()
-        active_cameras = multi_camera.get_active_cameras()
-
-        if active_cameras:
-            camera = active_cameras[0].model_copy(deep=True)
-        else:
-            camera = self.camera.with_save_defaults()
 
         return {
             "version": self.version,
