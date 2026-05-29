@@ -5,7 +5,6 @@ from dlclivegui.cameras.factory import CameraFactory
 
 # from dlclivegui.config import CameraSettings
 from dlclivegui.config import CameraSettings
-from dlclivegui.services.multi_camera_controller import MultiCameraController, get_display_id
 from dlclivegui.services.multi_camera_controller import (
     MultiCameraController,
     _camera_start_priority,
