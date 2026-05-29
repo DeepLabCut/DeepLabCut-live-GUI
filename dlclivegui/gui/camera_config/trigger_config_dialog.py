@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
@@ -58,7 +59,8 @@ class TriggerConfigDialog(QDialog):
 
         info = QLabel(
             "Configure hardware trigger settings for this camera.\n"
-            "Unsupported fields are ignored by the backend unless strict mode is enabled."
+            "Use 'auto' for trigger source unless you know the exact GenICam line name. "
+            "In strict mode, unsupported trigger nodes fail camera open."
         )
         info.setWordWrap(True)
         root.addWidget(info)
@@ -78,7 +80,7 @@ class TriggerConfigDialog(QDialog):
         form.addRow("Trigger selector:", self.selector_edit)
 
         self.source_edit = QLineEdit()
-        self.source_edit.setPlaceholderText("Line0")
+        self.source_edit.setPlaceholderText("auto, Line0, Software, ...")
         form.addRow("Trigger source:", self.source_edit)
 
         self.activation_combo = QComboBox()
@@ -100,7 +102,7 @@ class TriggerConfigDialog(QDialog):
         self.timeout_spin.setSingleStep(0.1)
         self.timeout_spin.setSpecialValueText("Default")
         self.timeout_spin.setToolTip(
-            "Fetch poll timeout in seconds. For triggered cameras, 0.2–0.5s is usually responsive."
+            "Fetch poll timeout in seconds. The backend may cap individual fetches to keep preview shutdown responsive."
         )
         form.addRow("Read timeout:", self.timeout_spin)
 
@@ -123,7 +125,7 @@ class TriggerConfigDialog(QDialog):
         self.role_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
         self.selector_edit.setText(str(getattr(trigger, "selector", "FrameStart") or "FrameStart"))
-        self.source_edit.setText(str(getattr(trigger, "source", "Line0") or "Line0"))
+        self.source_edit.setText(str(getattr(trigger, "source", "auto") or "auto"))
 
         activation = str(getattr(trigger, "activation", "RisingEdge") or "RisingEdge")
         idx = self.activation_combo.findData(activation)
@@ -159,7 +161,7 @@ class TriggerConfigDialog(QDialog):
         payload = {
             "role": role,
             "selector": self.selector_edit.text().strip() or "FrameStart",
-            "source": self.source_edit.text().strip() or "Line0",
+            "source": self.source_edit.text().strip() or "auto",
             "activation": str(self.activation_combo.currentData() or "RisingEdge"),
             "output_line": self.output_line_edit.text().strip() or "Line2",
             "output_source": self.output_source_edit.text().strip() or "ExposureActive",
@@ -172,9 +174,13 @@ class TriggerConfigDialog(QDialog):
         elif role == "off":
             payload["timeout"] = None  # ensure timeout is cleared when disabling trigger
 
-        trigger = CameraTriggerSettings.from_any(payload)
+        try:
+            trigger = CameraTriggerSettings.from_any(payload)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to apply trigger settings: {e}")
+            return
 
         ns = _backend_namespace(self._cam)
-        ns["trigger"] = trigger.model_dump(exclude_none=True)
+        ns["trigger"] = trigger.to_properties()
 
         self.accept()
