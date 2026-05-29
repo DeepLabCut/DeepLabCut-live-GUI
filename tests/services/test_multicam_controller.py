@@ -5,7 +5,7 @@ from dlclivegui.cameras.factory import CameraFactory
 
 # from dlclivegui.config import CameraSettings
 from dlclivegui.config import CameraSettings
-from dlclivegui.services.multi_camera_controller import MultiCameraController, get_camera_id
+from dlclivegui.services.multi_camera_controller import MultiCameraController, get_display_id
 
 
 @pytest.mark.unit
@@ -60,7 +60,7 @@ def test_rotation_and_crop(qtbot, patch_factory):
     last_shape = {"shape": None}
 
     def on_ready(mfd):
-        f = mfd.frames.get(get_camera_id(cam))
+        f = mfd.frames.get(get_display_id(cam))
         if f is not None:
             last_shape["shape"] = f.shape
 
