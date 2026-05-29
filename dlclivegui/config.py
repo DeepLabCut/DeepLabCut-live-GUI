@@ -15,7 +15,8 @@ ModelType = Literal["pytorch", "tensorflow"]
 TriggerRole = Literal["off", "external", "master", "follower"]
 TriggerActivation = Literal["RisingEdge", "FallingEdge", "AnyEdge", "LevelHigh", "LevelLow"]
 
-SINGLE_CAMERA_WORKER_DO_LOG_TIMING = True
+SINGLE_CAMERA_WORKER_DO_LOG_TIMING = False
+MULTI_CAMERA_WORKER_DO_LOG_TIMING = True
 
 
 class CameraSettings(BaseModel):
