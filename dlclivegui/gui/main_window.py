@@ -773,7 +773,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Multi-camera controller signals (used for both single and multi-camera modes)
         self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_processing_ready)
-        self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_display_ready)
+        self.multi_camera_controller.display_ready.connect(self._on_multi_frame_display_ready)
         self.multi_camera_controller.all_started.connect(self._on_multi_camera_started)
         self.multi_camera_controller.all_stopped.connect(self._on_multi_camera_stopped)
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
