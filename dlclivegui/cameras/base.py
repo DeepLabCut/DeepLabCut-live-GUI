@@ -70,6 +70,7 @@ DEFAULT_CAPABILITIES: dict[str, SupportLevel] = {
     "set_gain": SupportLevel.UNSUPPORTED,
     "device_discovery": SupportLevel.UNSUPPORTED,
     "stable_identity": SupportLevel.UNSUPPORTED,
+    "hardware_trigger": SupportLevel.UNSUPPORTED,
 }
 
 

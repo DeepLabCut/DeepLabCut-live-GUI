@@ -31,6 +31,7 @@ def set_use_splash_false(monkeypatch):
 @pytest.mark.gui
 def test_main_with_splash(monkeypatch, set_use_splash_true):
     appmod = _import_fresh()
+    monkeypatch.setattr(appmod, "_maybe_allow_keyboard_interrupt", MagicMock(name="_maybe_allow_keyboard_interrupt"))
 
     # --- Patch Qt app & icon in the entry module's namespace ---
     QApplication_cls = MagicMock(name="QApplication")
@@ -101,6 +102,7 @@ def test_main_with_splash(monkeypatch, set_use_splash_true):
 @pytest.mark.gui
 def test_main_without_splash(monkeypatch, set_use_splash_false):
     appmod = _import_fresh()
+    monkeypatch.setattr(appmod, "_maybe_allow_keyboard_interrupt", MagicMock(name="_maybe_allow_keyboard_interrupt"))
 
     # Patch Qt app creation & window icon
     QApplication_cls = MagicMock(name="QApplication")
