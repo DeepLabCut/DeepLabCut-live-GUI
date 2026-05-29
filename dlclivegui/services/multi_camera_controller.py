@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import logging
-import time
 from dataclasses import dataclass
 from threading import Event, Lock
 
@@ -49,6 +48,7 @@ class SingleCameraWorker(QObject):
         self._backend: CameraBackend | None = None
         self._max_consecutive_errors = 5
         self._retry_delay = 0.1
+        self._trigger_timeout_delay = 0.05
 
     @Slot()
     def run(self) -> None:
@@ -93,7 +93,8 @@ class SingleCameraWorker(QObject):
                             self._camera_id, "Too many empty frames.\nWas the device disconnected ?"
                         )
                         break
-                    time.sleep(self._retry_delay)
+                    if self._stop_event.wait(self._retry_delay):
+                        break
                     continue
 
                 consecutive_errors = 0
@@ -113,13 +114,17 @@ class SingleCameraWorker(QObject):
                         exc,
                     )
                     consecutive_errors = 0
+
+                    if self._stop_event.wait(self._trigger_timeout_delay):
+                        break  # Stop event set during wait
                     continue
 
                 consecutive_errors += 1
                 if consecutive_errors >= self._max_consecutive_errors:
                     self.error_occurred.emit(self._camera_id, f"Camera read timeout: {exc}")
                     break
-                time.sleep(self._retry_delay)
+                if self._stop_event.wait(self._retry_delay):
+                    break
                 continue
 
             except Exception as exc:
@@ -129,7 +134,8 @@ class SingleCameraWorker(QObject):
                 if consecutive_errors >= self._max_consecutive_errors:
                     self.error_occurred.emit(self._camera_id, f"Camera read error: {exc}")
                     break
-                time.sleep(self._retry_delay)
+                if self._stop_event.wait(self._retry_delay):
+                    break
                 continue
 
         # Cleanup
