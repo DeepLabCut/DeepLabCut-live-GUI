@@ -18,7 +18,8 @@ from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import camera_identity_key
 
 # from dlclivegui.config import CameraSettings
-from dlclivegui.config import CameraSettings
+from dlclivegui.config import SINGLE_CAMERA_WORKER_DO_LOG_TIMING, CameraSettings
+from dlclivegui.utils.stats import WorkerTimingStats
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +56,11 @@ class SingleCameraWorker(QObject):
         self._retry_delay = 0.1
         self._trigger_timeout_delay = 0.05
 
+        # Performance logs
+        self._timing = WorkerTimingStats(
+            camera_id, logger=LOGGER, log_interval=1.0, enabled=SINGLE_CAMERA_WORKER_DO_LOG_TIMING
+        )
+
     @Slot()
     def run(self) -> None:
         self._stop_event.clear()
@@ -90,7 +96,8 @@ class SingleCameraWorker(QObject):
 
         while not self._stop_event.is_set():
             try:
-                frame, timestamp = self._backend.read()
+                with self._timing.measure("GenTL.read"):
+                    frame, timestamp = self._backend.read()
                 if frame is None or frame.size == 0:
                     consecutive_errors += 1
                     if consecutive_errors >= self._max_consecutive_errors:
@@ -103,9 +110,15 @@ class SingleCameraWorker(QObject):
                     continue
 
                 consecutive_errors = 0
-                self.frame_captured.emit(self._camera_id, frame, timestamp)
+                with self._timing.measure("GenTL.emit.frame_captured"):
+                    self.frame_captured.emit(self._camera_id, frame, timestamp)
+
+                self._timing.note_frame()
+                self._timing.maybe_log()
 
             except TimeoutError as exc:
+                self._timing.note_timeout()
+                self._timing.maybe_log()
                 if self._stop_event.is_set():
                     break
 
@@ -133,6 +146,8 @@ class SingleCameraWorker(QObject):
                 continue
 
             except Exception as exc:
+                self._timing.note_error()
+                self._timing.maybe_log()
                 consecutive_errors += 1
                 if self._stop_event.is_set():
                     break
