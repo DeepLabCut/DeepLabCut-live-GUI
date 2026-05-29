@@ -462,52 +462,57 @@ class MultiCameraController(QObject):
 
     def _on_frame_captured(self, camera_id: str, frame: np.ndarray, timestamp: float) -> None:
         """Handle a frame from one camera."""
-        # Apply rotation if configured
         timing = self._timing_for_camera(camera_id)
+        frame_data: MultiFrameData | None = None
 
         with timing.measure("Multi.slot.total"):
             settings = self._settings.get(camera_id)
-            with timing.measure("Multi.slot.apply_transforms"):
+
+            with timing.measure("Multi.apply_transforms"):
                 if settings and settings.rotation:
                     frame = MultiCameraController.apply_rotation(frame, settings.rotation)
 
-                # Apply cropping if configured
                 if settings:
                     crop_region = settings.get_crop_region()
                     if crop_region:
                         frame = MultiCameraController.apply_crop(frame, crop_region)
-            with timing.measure("Multi.update_latest"):
-                with self._frame_lock:
+
+            with self._frame_lock:
+                with timing.measure("Multi.store_latest"):
                     self._frames[camera_id] = frame
                     self._timestamps[camera_id] = timestamp
 
-                    # Emit frame data without tiling (tiling done in GUI for performance)
-                    if self._frames:
-                        ordered_frames: dict[str, np.ndarray] = {}
-                        ordered_timestamps: dict[str, float] = {}
+                with timing.measure("Multi.build_ordered"):
+                    ordered_frames: dict[str, np.ndarray] = {}
+                    ordered_timestamps: dict[str, float] = {}
 
-                        for cam_id in self._camera_display_order:
-                            if cam_id in self._frames:
-                                ordered_frames[cam_id] = self._frames[cam_id]
-                            if cam_id in self._timestamps:
-                                ordered_timestamps[cam_id] = self._timestamps[cam_id]
+                    for cam_id in self._camera_display_order:
+                        if cam_id in self._frames:
+                            ordered_frames[cam_id] = self._frames[cam_id]
+                        if cam_id in self._timestamps:
+                            ordered_timestamps[cam_id] = self._timestamps[cam_id]
 
-                        # Any unexpected/legacy IDs, appended deterministically.
-                        for cam_id in self._frames:
-                            if cam_id not in ordered_frames:
-                                ordered_frames[cam_id] = self._frames[cam_id]
-                        for cam_id in self._timestamps:
-                            if cam_id not in ordered_timestamps:
-                                ordered_timestamps[cam_id] = self._timestamps[cam_id]
+                    # Any unexpected/legacy IDs, appended deterministically.
+                    for cam_id in self._frames:
+                        if cam_id not in ordered_frames:
+                            ordered_frames[cam_id] = self._frames[cam_id]
+                    for cam_id in self._timestamps:
+                        if cam_id not in ordered_timestamps:
+                            ordered_timestamps[cam_id] = self._timestamps[cam_id]
 
-                frame_data = MultiFrameData(
-                    frames=ordered_frames,
-                    timestamps=ordered_timestamps,
-                    source_camera_id=camera_id,
-                    tiled_frame=None,
-                    display_ids=dict(self._display_ids),
-                )
-                self.frame_ready.emit(frame_data)
+                with timing.measure("Multi.construct_frame_data"):
+                    frame_data = MultiFrameData(
+                        frames=ordered_frames,
+                        timestamps=ordered_timestamps,
+                        source_camera_id=camera_id,
+                        tiled_frame=None,
+                        display_ids=dict(self._display_ids),
+                    )
+
+
+            if frame_data is not None:
+                with timing.measure("Multi.emit.frame_ready"):
+                    self.frame_ready.emit(frame_data)
 
         timing.note_frame()
         timing.maybe_log()
