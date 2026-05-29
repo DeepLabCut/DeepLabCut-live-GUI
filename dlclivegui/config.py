@@ -43,6 +43,27 @@ class CameraSettings(BaseModel):
     enabled: bool = True
     properties: dict[str, Any] = Field(default_factory=dict)
 
+    def pretty(self) -> str:
+        crop = (
+            "none"
+            if self.get_crop_region() is None
+            else f"({self.crop_x0}, {self.crop_y0}) -> ({self.crop_x1 or 'edge'}, {self.crop_y1 or 'edge'})"
+        )
+        return (
+            f"CameraSettings[\n"
+            f"  name={self.name!r}, index={self.index}, backend={self.backend!r}, enabled={self.enabled}\n"
+            f"  fps={self.fps}, size={self.width or 'auto'}x{self.height or 'auto'}, "
+            f"exposure={self.exposure or 'auto'}, gain={self.gain or 'auto'}\n"
+            f"  rotation={self.rotation}, crop={crop}\n"
+            f"]"
+        )
+
+    def __str__(self) -> str:
+        return self.pretty()
+
+    def __repr__(self) -> str:
+        return self.pretty()
+
     @field_validator("fps", mode="before")
     @classmethod
     def _coerce_fps(cls, v):
