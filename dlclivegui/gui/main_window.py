@@ -859,11 +859,15 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _current_config(self, *, allow_empty_model_path=False) -> ApplicationSettings:
         multi_camera = self._config.multi_camera
+        active_cameras = multi_camera.get_active_cameras()
         camera = (
-            multi_camera.cameras[0].model_copy(deep=True)
-            if multi_camera.cameras
-            else self._config.camera.model_copy(deep=True)
-        )
+            active_cameras[0].model_copy(deep=True)
+            if active_cameras
+            else (
+                multi_camera.cameras[0].model_copy(deep=True)
+                if multi_camera.cameras
+                else self._config.camera.model_copy(deep=True)
+            )
 
         return ApplicationSettings(
             camera=camera,
