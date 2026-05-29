@@ -865,6 +865,7 @@ class DLCLiveMainWindow(QMainWindow):
                 if multi_camera.cameras
                 else self._config.camera.model_copy(deep=True)
             )
+        )
 
         return ApplicationSettings(
             camera=camera,
