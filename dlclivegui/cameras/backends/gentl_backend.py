@@ -558,6 +558,15 @@ class GenTLCameraBackend(CameraBackend):
 
                     self._acquirer.start()
 
+                try:
+                    self._read_telemetry(node_map)
+                    self._debug_frame_rate_nodes(node_map, context="after starting acquisition")
+                except Exception:
+                    LOG.warning(
+                        "Failed to read telemetry after starting acquisition; some 'actual' values may be missing.",
+                        exc_info=True,
+                    )
+
                 LOG.debug(
                     "Opened GenTL camera index=%s serial=%s label=%s",
                     selected_index,
@@ -1126,6 +1135,48 @@ class GenTLCameraBackend(CameraBackend):
         except Exception:
             return []
 
+    @staticmethod
+    def _node_value(node_map, name: str, default=None):
+        """Best-effort read of a GenICam node value."""
+        try:
+            node = getattr(node_map, name)
+        except Exception:
+            return default
+
+        try:
+            return node.value
+        except Exception:
+            return default
+
+    @classmethod
+    def _node_float(cls, node_map, *names: str) -> float | None:
+        """Return the first positive float value from a list of GenICam node names."""
+        for name in names:
+            value = cls._node_value(node_map, name, None)
+            try:
+                fvalue = float(value)
+            except Exception:
+                continue
+
+            if fvalue > 0:
+                return fvalue
+
+        return None
+
+    @classmethod
+    def _node_str(cls, node_map, *names: str) -> str | None:
+        """Return the first non-empty string value from a list of GenICam node names."""
+        for name in names:
+            value = cls._node_value(node_map, name, None)
+            if value is None:
+                continue
+
+            text = str(value).strip()
+            if text:
+                return text
+
+        return None
+
     def _set_enum_node(self, node_map, name: str, value: str, *, strict: bool = False) -> bool:
         node = self._node(node_map, name)
         if node is None:
@@ -1605,21 +1656,48 @@ class GenTLCameraBackend(CameraBackend):
             return
 
         target = float(self.settings.fps)
+        LOG.info("Configuring GenTL frame rate: requested %.3f FPS", target)
+
         for attr in ("AcquisitionFrameRateEnable", "AcquisitionFrameRateControlEnable"):
             try:
-                getattr(node_map, attr).value = True
+                node = getattr(node_map, attr)
+                before = getattr(node, "value", None)
+                node.value = True
+                after = getattr(node, "value", None)
+                LOG.info("Enabled GenTL %s: before=%r after=%r", attr, before, after)
                 break
             except Exception:
                 pass
 
-        for attr in ("AcquisitionFrameRate", "ResultingFrameRate", "AcquisitionFrameRateAbs"):
+        for attr in ("AcquisitionFrameRate", "AcquisitionFrameRateAbs"):
             try:
-                getattr(node_map, attr).value = target
+                node = getattr(node_map, attr)
+                before = getattr(node, "value", None)
+                node.value = target
+                after = getattr(node, "value", None)
+
+                LOG.info(
+                    "Set GenTL %s: before=%r requested=%.3f after=%r",
+                    attr,
+                    before,
+                    target,
+                    after,
+                )
+
+                try:
+                    accepted = float(after)
+                    if accepted > 0:
+                        self._actual_fps = accepted
+                except Exception:
+                    pass
+
                 return
+
             except AttributeError:
                 continue
             except Exception as e:
                 LOG.warning("Failed to set frame rate via %s: %s", attr, e)
+
         LOG.warning("Could not set frame rate to %s FPS", target)
 
     def _read_telemetry(self, node_map) -> None:
@@ -1629,20 +1707,84 @@ class GenTLCameraBackend(CameraBackend):
         except Exception:
             pass
 
-        try:
-            self._actual_fps = float(node_map.ResultingFrameRate.value)
-        except Exception:
-            self._actual_fps = None
+        # Prefer true/resulting frame-rate readback nodes.
+        resulting_fps = self._node_float(
+            node_map,
+            "AcquisitionResultingFrameRate",
+            "ResultingFrameRate",
+            "AcquisitionFrameRateResulting",
+            "DeviceFrameRate",
+        )
 
-        try:
-            self._actual_exposure = float(node_map.ExposureTime.value)
-        except Exception:
-            self._actual_exposure = None
+        # Fallback to requested/accepted frame-rate nodes only if no resulting node exists.
+        requested_fps = self._node_float(
+            node_map,
+            "AcquisitionFrameRate",
+            "AcquisitionFrameRateAbs",
+        )
 
+        if resulting_fps is not None:
+            self._actual_fps = resulting_fps
+        elif requested_fps is not None:
+            self._actual_fps = requested_fps
+
+        exposure = self._node_float(
+            node_map,
+            "ExposureTime",
+            "ExposureTimeAbs",
+            "Exposure",
+        )
+        if exposure is not None:
+            self._actual_exposure = exposure
+
+        gain = self._node_float(
+            node_map,
+            "Gain",
+            "GainRaw",
+        )
+        if gain is not None:
+            self._actual_gain = gain
+
+        # Persist useful telemetry into properties["gentl"] for GUI/debugging.
         try:
-            self._actual_gain = float(node_map.Gain.value)
+            ns = self._ensure_settings_ns()
+
+            if self._actual_width and self._actual_height:
+                ns["actual_resolution"] = [int(self._actual_width), int(self._actual_height)]
+
+            if self._actual_fps is not None:
+                ns["actual_fps"] = float(self._actual_fps)
+
+            if resulting_fps is not None:
+                ns["actual_resulting_frame_rate"] = float(resulting_fps)
+
+            if requested_fps is not None:
+                ns["actual_acquisition_frame_rate"] = float(requested_fps)
+
+            if self._actual_exposure is not None:
+                ns["actual_exposure"] = float(self._actual_exposure)
+
+            if self._actual_gain is not None:
+                ns["actual_gain"] = float(self._actual_gain)
+
+            exposure_auto = self._node_str(node_map, "ExposureAuto")
+            if exposure_auto is not None:
+                ns["actual_exposure_auto"] = exposure_auto
+
+            throughput = self._node_float(node_map, "DeviceLinkThroughputLimit")
+            if throughput is not None:
+                ns["actual_device_link_throughput_limit"] = float(throughput)
+
+            throughput_mode = self._node_str(node_map, "DeviceLinkThroughputLimitMode")
+            if throughput_mode is not None:
+                ns["actual_device_link_throughput_limit_mode"] = throughput_mode
+
+            pixel_format = self._node_str(node_map, "PixelFormat")
+            if pixel_format is not None:
+                ns["actual_pixel_format"] = pixel_format
+
         except Exception:
-            self._actual_gain = None
+            pass
 
     # ------------------------------------------------------------------
     # Frame conversion / local helpers
