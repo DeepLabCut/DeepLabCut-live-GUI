@@ -116,10 +116,6 @@ class SingleCameraWorker(QObject):
                     continue
 
                 consecutive_errors = 0
-                # if True:  # TEMP FIXME REMOVE
-                # self._timing.note_frame()
-                # self._timing.maybe_log()
-                # continue
                 with self._timing.measure("Single.emit.frame_captured"):
                     self.frame_captured.emit(self._camera_id, frame, timestamp)
 
