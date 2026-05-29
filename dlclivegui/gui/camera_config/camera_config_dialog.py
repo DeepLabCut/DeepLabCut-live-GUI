@@ -1832,9 +1832,10 @@ class CameraConfigDialog(QDialog):
         self._preview.restart_scheduled = False
         self._preview.loader = None
 
-        if pending and self._preview.state == PreviewState.IDLE:
+        if pending and self._preview.state in (PreviewState.IDLE, PreviewState.ACTIVE):
             LOGGER.debug("[Loader] finished with pending restart for backend=%s idx=%s", pending.backend, pending.index)
             self._begin_preview_load(pending, reason="pending-restart-after-finish")
+            return  # UI sync is already handled in _begin_preview_load
 
         self._sync_preview_ui()
 

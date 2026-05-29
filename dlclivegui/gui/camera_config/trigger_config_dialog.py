@@ -40,7 +40,10 @@ class TriggerConfigDialog(QDialog):
         self._cam = cam.model_copy(deep=True)
 
         ns = _backend_namespace(self._cam)
-        self._trigger = CameraTriggerSettings.from_any(ns.get("trigger"))
+        try:
+            self._trigger = CameraTriggerSettings.from_any(ns.get("trigger"))
+        except Exception:
+            self._trigger = CameraTriggerSettings()
 
         self._setup_ui()
         self._load_from_trigger(self._trigger)
