@@ -769,7 +769,8 @@ class DLCLiveMainWindow(QMainWindow):
         self.bbox_color_combo.currentIndexChanged.connect(self._on_bbox_color_changed)
 
         # Multi-camera controller signals (used for both single and multi-camera modes)
-        self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_ready)
+        self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_processing_ready)
+        self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_display_ready)
         self.multi_camera_controller.all_started.connect(self._on_multi_camera_started)
         self.multi_camera_controller.all_stopped.connect(self._on_multi_camera_stopped)
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
@@ -1371,13 +1372,12 @@ class DLCLiveMainWindow(QMainWindow):
             )
         return output
 
-    def _on_multi_frame_ready(self, frame_data: MultiFrameData) -> None:
+    def _on_multi_frame_processing_ready(self, frame_data: MultiFrameData) -> None:
         """Handle frames from multiple cameras.
 
-        Priority order for performance:
+        Priority:
         1. DLC processing (highest priority - enqueue immediately, only for DLC camera)
         2. Recording (queued writes, non-blocking)
-        3. Display (lowest priority - tiled and updated on separate timer)
         """
         self._multi_camera_frames = frame_data.frames
         src_id = frame_data.source_camera_id
@@ -1434,7 +1434,12 @@ class DLCLiveMainWindow(QMainWindow):
             ts = frame_data.timestamps.get(src_id, time.time())
             self._rec_manager.write_frame(src_id, frame, ts)
 
-        # PRIORITY 3: Mark display dirty (tiling done in display timer)
+    def _on_multi_frame_display_ready(self, frame_data: MultiFrameData) -> None:
+        """Throttled UI/display path.
+
+        Called at GUI_MAX_DISPLAY_FPS, not at camera capture FPS for performance reasons.
+        """
+        self._multi_camera_frames = frame_data.frames
         self._display_dirty = True
 
     def _on_multi_camera_started(self) -> None:

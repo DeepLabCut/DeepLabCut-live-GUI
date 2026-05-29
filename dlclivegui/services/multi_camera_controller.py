@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import time
 from dataclasses import dataclass
 from threading import Event, Lock
 
@@ -17,7 +18,12 @@ from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import camera_identity_key
 
 # from dlclivegui.config import CameraSettings
-from dlclivegui.config import MULTI_CAMERA_WORKER_DO_LOG_TIMING, SINGLE_CAMERA_WORKER_DO_LOG_TIMING, CameraSettings
+from dlclivegui.config import (
+    GUI_MAX_DISPLAY_FPS,
+    MULTI_CAMERA_WORKER_DO_LOG_TIMING,
+    SINGLE_CAMERA_WORKER_DO_LOG_TIMING,
+    CameraSettings,
+)
 from dlclivegui.utils.stats import WorkerTimingStats
 
 LOGGER = logging.getLogger(__name__)
@@ -105,6 +111,10 @@ class SingleCameraWorker(QObject):
                     continue
 
                 consecutive_errors = 0
+                # if True:  # TEMP FIXME REMOVE
+                # self._timing.note_frame()
+                # self._timing.maybe_log()
+                # continue
                 with self._timing.measure("Single.emit.frame_captured"):
                     self.frame_captured.emit(self._camera_id, frame, timestamp)
 
@@ -226,7 +236,8 @@ class MultiCameraController(QObject):
     """Controller for managing multiple cameras simultaneously."""
 
     # Signals
-    frame_ready = Signal(object)  # MultiFrameData
+    frame_ready = Signal(object)  # MultiFrameData (full cam FPS; recording and inference only)
+    display_ready = Signal(object)  # MultiFrameData for GUI display (throttled to GUI_MAX_DISPLAY_FPS)
     camera_started = Signal(str, object)  # camera_id, settings
     camera_stopped = Signal(str)  # camera_id
     camera_error = Signal(str, str)  # camera_id, error_message
@@ -250,6 +261,9 @@ class MultiCameraController(QObject):
         self._failed_cameras: dict[str, str] = {}  # camera_id -> error message
         self._expected_cameras: int = 0  # Number of cameras we're trying to start
 
+        # GUI display max FPS (for throttling display updates when many cameras are active)
+        self._gui_display_max_fps: float = GUI_MAX_DISPLAY_FPS
+        self._gui_display_last_emit: float = 0.0
         # Performance logs
         self._timing_per_cam: dict[str, WorkerTimingStats] = {}
 
@@ -262,8 +276,6 @@ class MultiCameraController(QObject):
         return len(self._started_cameras)
 
     def _timing_for_camera(self, camera_id: str) -> WorkerTimingStats:
-        if not MULTI_CAMERA_WORKER_DO_LOG_TIMING:
-            return WorkerTimingStats(camera_id, enabled=False)
         timing = self._timing_per_cam.get(camera_id)
         if timing is None:
             timing = WorkerTimingStats(
@@ -274,6 +286,24 @@ class MultiCameraController(QObject):
             )
             self._timing_per_cam[camera_id] = timing
         return timing
+
+    def _should_emit_display_ready(self) -> bool:
+        """Return True when the UI/display path should be updated.
+
+        This only throttles display_ready. It must not throttle frame_ready,
+        because frame_ready is used for full-rate consumers such as recording.
+        """
+        if self._gui_display_max_fps <= 0:
+            return True
+
+        now = time.perf_counter()
+        min_interval = 1.0 / max(self._gui_display_max_fps, 1e-9)
+
+        if now - self._gui_display_last_emit < min_interval:
+            return False
+
+        self._gui_display_last_emit = now
+        return True
 
     def start(self, camera_settings: list[CameraSettings]) -> None:
         """Start multiple cameras; accepts dataclasses, pydantic models, or dicts."""
@@ -378,6 +408,8 @@ class MultiCameraController(QObject):
                     thread.quit()
                     thread.wait(5000)
 
+        self._timing_per_cam.clear()
+        self._gui_display_last_emit = 0.0
         self._workers.clear()
         self._threads.clear()
         self._settings.clear()
@@ -438,6 +470,11 @@ class MultiCameraController(QObject):
             if frame_data is not None:
                 with timing.measure("Multi.emit.frame_ready"):
                     self.frame_ready.emit(frame_data)
+
+                # GUI-only path: throttled display updates
+                if self._should_emit_display_ready():
+                    with timing.measure("Multi.emit.display_ready"):
+                        self.display_ready.emit(frame_data)
 
         timing.note_frame()
         timing.maybe_log()
