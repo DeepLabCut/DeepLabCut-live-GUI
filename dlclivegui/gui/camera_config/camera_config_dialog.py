@@ -1090,7 +1090,7 @@ class CameraConfigDialog(QDialog):
         self._load_camera_to_form(updated)
 
         # Trigger changes require reopening the camera preview/backend.
-        if self._preview.state == PreviewState.ACTIVE:
+        if self._is_preview_live():
             self._append_status("[Trigger] Restarting preview to apply trigger settings.")
             self._request_preview_restart(updated, reason="trigger-settings")
 
@@ -1153,9 +1153,7 @@ class CameraConfigDialog(QDialog):
                 old_settings = current_model
 
             restart = False
-            should_consider_restart = self._preview.state == PreviewState.ACTIVE and isinstance(
-                old_settings, CameraSettings
-            )
+            should_consider_restart = self._is_preview_live() and isinstance(old_settings, CameraSettings)
             if should_consider_restart:
                 restart = self._should_restart_preview(old_settings, new_model)
 
@@ -1167,7 +1165,7 @@ class CameraConfigDialog(QDialog):
                 new_model.index,
             )
 
-            if self._preview.state == PreviewState.ACTIVE and restart:
+            if self._is_preview_live() and restart:
                 self._append_status("[Apply] Restarting preview to apply camera settings changes.")
                 self._request_preview_restart(new_model, reason="apply-settings")
 

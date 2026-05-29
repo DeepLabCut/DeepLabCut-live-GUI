@@ -164,8 +164,10 @@ class TriggerConfigDialog(QDialog):
         }
 
         timeout = float(self.timeout_spin.value())
-        if timeout > 0:
+        if role in {"external", "follower"} and timeout > 0:
             payload["timeout"] = timeout
+        elif role == "off":
+            payload["timeout"] = None  # ensure timeout is cleared when disabling trigger
 
         trigger = CameraTriggerSettings.from_any(payload)
 
