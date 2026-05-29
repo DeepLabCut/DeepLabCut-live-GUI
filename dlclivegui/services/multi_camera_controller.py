@@ -121,6 +121,10 @@ class SingleCameraWorker(QObject):
         self._stop_event.set()
 
 
+def get_display_id(settings: CameraSettings) -> str:
+    return f"{settings.backend}:{settings.index}"
+
+
 def get_camera_id(settings: CameraSettings) -> str:
     """Generate a unique camera ID from stable backend identity."""
     backend = (settings.backend or "").lower()
@@ -223,7 +227,7 @@ class MultiCameraController(QObject):
     def _start_camera(self, settings: CameraSettings) -> None:
         """Start a single camera."""
         settings_copy = copy.deepcopy(settings)
-        cam_id = get_camera_id(settings_copy)
+        cam_id = get_display_id(settings_copy)
         if cam_id in self._workers:
             LOGGER.warning(f"Camera {cam_id} already has a worker")
             return
