@@ -11,6 +11,7 @@ from dlclivegui.services.multi_camera_controller import (
     _camera_start_priority,
     _trigger_role_from_settings,
     get_camera_id,
+    get_display_id,
 )
 
 
@@ -329,7 +330,7 @@ def test_frame_ready_emits_frames_in_user_configured_order(qtbot, patch_factory)
         properties={"opencv": {"device_id": "cam-b"}},
     ).apply_defaults()
 
-    expected_order = [get_camera_id(cam_a), get_camera_id(cam_b)]
+    expected_order = [get_display_id(cam_a), get_display_id(cam_b)]
     seen_orders: list[list[str]] = []
 
     def on_ready(mfd):
@@ -384,3 +385,87 @@ def test_hardware_trigger_timeouts_are_not_fatal(qtbot, monkeypatch):
         def __init__(self, settings):
             self.settings = settings
             self.opened = False
+            self.closed = False
+
+        def open(self):
+            self.opened = True
+
+        def read(self):
+            raise TimeoutError("waiting for hardware trigger")
+
+        def close(self):
+            self.closed = True
+
+    def _create(settings):
+        return WaitingTriggerBackend(settings)
+
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(_create))
+
+    mc = MultiCameraController()
+    cam = CameraSettings(
+        name="Triggered",
+        backend="gentl",
+        index=0,
+        enabled=True,
+        properties={
+            "gentl": {
+                "device_id": "serial:30220469",
+                "trigger": {"role": "external", "timeout": 0.1},
+            }
+        },
+    ).apply_defaults()
+
+    errors: list[tuple[str, str]] = []
+    mc.camera_error.connect(lambda cam_id, msg: errors.append((cam_id, msg)))
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([cam])
+
+        # Let several timeout cycles happen.
+        qtbot.wait(500)
+
+        assert mc.is_running()
+        assert errors == []
+
+    finally:
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_non_trigger_timeouts_are_fatal_after_retries(qtbot, monkeypatch):
+    class TimeoutBackend:
+        waits_for_hardware_trigger = False
+
+        def __init__(self, settings):
+            self.settings = settings
+
+        def open(self):
+            pass
+
+        def read(self):
+            raise TimeoutError("camera timeout")
+
+        def close(self):
+            pass
+
+    def _create(settings):
+        return TimeoutBackend(settings)
+
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(_create))
+
+    mc = MultiCameraController()
+    cam = CameraSettings(name="TimeoutCam", backend="opencv", index=0, enabled=True).apply_defaults()
+
+    with qtbot.waitSignal(mc.camera_error, timeout=3000) as blocker:
+        mc.start([cam])
+
+    cam_id, msg = blocker.args
+    assert cam_id == get_display_id(cam)
+    assert "Camera read timeout" in msg
+
+    # Cleanup if still running.
+    if mc.is_running():
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
