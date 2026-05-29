@@ -11,6 +11,7 @@ from dlclivegui.services.multi_camera_controller import (
     _camera_start_priority,
     _trigger_role_from_settings,
     get_camera_id,
+    get_display_id,
 )
 
 
@@ -256,7 +257,7 @@ def test_frame_ready_emits_frames_in_user_configured_order(qtbot, patch_factory)
         properties={"opencv": {"device_id": "cam-b"}},
     ).apply_defaults()
 
-    expected_order = [get_camera_id(cam_a), get_camera_id(cam_b)]
+    expected_order = [get_display_id(cam_a), get_display_id(cam_b)]
     seen_orders: list[list[str]] = []
 
     def on_ready(mfd):
@@ -388,7 +389,7 @@ def test_non_trigger_timeouts_are_fatal_after_retries(qtbot, monkeypatch):
         mc.start([cam])
 
     cam_id, msg = blocker.args
-    assert cam_id == get_camera_id(cam)
+    assert cam_id == get_display_id(cam)
     assert "Camera read timeout" in msg
 
     # Cleanup if still running.
