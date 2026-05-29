@@ -224,7 +224,7 @@ class CameraTriggerSettings(BaseModel):
 
     # Input trigger config: external/follower
     selector: str = "FrameStart"
-    source: str = "Line0"
+    source: str = "auto"
     activation: TriggerActivation | str = "RisingEdge"
 
     # Output config: master
@@ -271,6 +271,24 @@ class CameraTriggerSettings(BaseModel):
         except Exception:
             return None
         return fv if fv > 0 else None
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _coerce_source(cls, v):
+        if v is None:
+            return "auto"
+
+        s = str(v).strip()
+        if not s:
+            return "auto"
+
+        aliases = {
+            "default": "auto",
+            "automatic": "auto",
+            "device": "auto",
+            "camera": "auto",
+        }
+        return aliases.get(s.lower(), s)
 
     @classmethod
     def from_any(cls, value) -> CameraTriggerSettings:
