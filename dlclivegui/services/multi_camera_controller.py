@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import time
 from dataclasses import dataclass
 from threading import Event, Lock
 
@@ -17,7 +18,12 @@ from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import camera_identity_key
 
 # from dlclivegui.config import CameraSettings
-from dlclivegui.config import MULTI_CAMERA_WORKER_DO_LOG_TIMING, SINGLE_CAMERA_WORKER_DO_LOG_TIMING, CameraSettings
+from dlclivegui.config import (
+    GUI_MAX_DISPLAY_FPS,
+    MULTI_CAMERA_WORKER_DO_LOG_TIMING,
+    SINGLE_CAMERA_WORKER_DO_LOG_TIMING,
+    CameraSettings,
+)
 from dlclivegui.utils.stats import WorkerTimingStats
 
 LOGGER = logging.getLogger(__name__)
@@ -226,7 +232,8 @@ class MultiCameraController(QObject):
     """Controller for managing multiple cameras simultaneously."""
 
     # Signals
-    frame_ready = Signal(object)  # MultiFrameData
+    frame_ready = Signal(object)  # MultiFrameData (full cam FPS; recording and inference only)
+    display_ready = Signal(object)  # MultiFrameData for GUI display (throttled to GUI_MAX_DISPLAY_FPS)
     camera_started = Signal(str, object)  # camera_id, settings
     camera_stopped = Signal(str)  # camera_id
     camera_error = Signal(str, str)  # camera_id, error_message
@@ -250,6 +257,9 @@ class MultiCameraController(QObject):
         self._failed_cameras: dict[str, str] = {}  # camera_id -> error message
         self._expected_cameras: int = 0  # Number of cameras we're trying to start
 
+        # GUI display max FPS (for throttling display updates when many cameras are active)
+        self._gui_display_max_fps: float = GUI_MAX_DISPLAY_FPS
+        self._gui_display_last_emit: float = 0.0
         # Performance logs
         self._timing_per_cam: dict[str, WorkerTimingStats] = {}
 
@@ -262,8 +272,6 @@ class MultiCameraController(QObject):
         return len(self._started_cameras)
 
     def _timing_for_camera(self, camera_id: str) -> WorkerTimingStats:
-        if not MULTI_CAMERA_WORKER_DO_LOG_TIMING:
-            return WorkerTimingStats(camera_id, enabled=False)
         timing = self._timing_per_cam.get(camera_id)
         if timing is None:
             timing = WorkerTimingStats(
@@ -274,6 +282,24 @@ class MultiCameraController(QObject):
             )
             self._timing_per_cam[camera_id] = timing
         return timing
+
+    def _should_emit_display_ready(self) -> bool:
+        """Return True when the UI/display path should be updated.
+
+        This only throttles display_ready. It must not throttle frame_ready,
+        because frame_ready is used for full-rate consumers such as recording.
+        """
+        if self._gui_display_max_fps <= 0:
+            return True
+
+        now = time.perf_counter()
+        min_interval = 1.0 / max(self._gui_display_max_fps, 1e-9)
+
+        if now - self._gui_display_last_emit < min_interval:
+            return False
+
+        self._gui_display_last_emit = now
+        return True
 
     def start(self, camera_settings: list[CameraSettings]) -> None:
         """Start multiple cameras; accepts dataclasses, pydantic models, or dicts."""
@@ -378,6 +404,8 @@ class MultiCameraController(QObject):
                     thread.quit()
                     thread.wait(5000)
 
+        self._timing_per_cam.clear()
+        self._gui_display_last_emit = 0.0
         self._workers.clear()
         self._threads.clear()
         self._settings.clear()
@@ -389,51 +417,61 @@ class MultiCameraController(QObject):
 
     def _on_frame_captured(self, camera_id: str, frame: np.ndarray, timestamp: float) -> None:
         """Handle a frame from one camera."""
-        # Apply rotation if configured
         timing = self._timing_for_camera(camera_id)
+        frame_data: MultiFrameData | None = None
 
         with timing.measure("Multi.slot.total"):
             settings = self._settings.get(camera_id)
-            with timing.measure("Multi.slot.apply_transforms"):
+
+            with timing.measure("Multi.apply_transforms"):
                 if settings and settings.rotation:
                     frame = MultiCameraController.apply_rotation(frame, settings.rotation)
 
-                # Apply cropping if configured
                 if settings:
                     crop_region = settings.get_crop_region()
                     if crop_region:
                         frame = MultiCameraController.apply_crop(frame, crop_region)
-            with timing.measure("Multi.update_latest"):
-                with self._frame_lock:
+
+            with self._frame_lock:
+                with timing.measure("Multi.store_latest"):
                     self._frames[camera_id] = frame
                     self._timestamps[camera_id] = timestamp
 
-                    # Emit frame data without tiling (tiling done in GUI for performance)
-                    if self._frames:
-                        ordered_frames: dict[str, np.ndarray] = {}
-                        ordered_timestamps: dict[str, float] = {}
+                with timing.measure("Multi.build_ordered"):
+                    ordered_frames: dict[str, np.ndarray] = {}
+                    ordered_timestamps: dict[str, float] = {}
 
-                        for cam_id in self._camera_display_order:
-                            if cam_id in self._frames:
-                                ordered_frames[cam_id] = self._frames[cam_id]
-                            if cam_id in self._timestamps:
-                                ordered_timestamps[cam_id] = self._timestamps[cam_id]
+                    for cam_id in self._camera_display_order:
+                        if cam_id in self._frames:
+                            ordered_frames[cam_id] = self._frames[cam_id]
+                        if cam_id in self._timestamps:
+                            ordered_timestamps[cam_id] = self._timestamps[cam_id]
 
-                        # Any unexpected/legacy IDs, appended deterministically.
-                        for cam_id in self._frames:
-                            if cam_id not in ordered_frames:
-                                ordered_frames[cam_id] = self._frames[cam_id]
-                        for cam_id in self._timestamps:
-                            if cam_id not in ordered_timestamps:
-                                ordered_timestamps[cam_id] = self._timestamps[cam_id]
+                    # Any unexpected/legacy IDs, appended deterministically.
+                    for cam_id in self._frames:
+                        if cam_id not in ordered_frames:
+                            ordered_frames[cam_id] = self._frames[cam_id]
+                    for cam_id in self._timestamps:
+                        if cam_id not in ordered_timestamps:
+                            ordered_timestamps[cam_id] = self._timestamps[cam_id]
 
-                        frame_data = MultiFrameData(
-                            frames=ordered_frames,
-                            timestamps=ordered_timestamps,
-                            source_camera_id=camera_id,
-                            tiled_frame=None,
-                        )
+                with timing.measure("Multi.construct_frame_data"):
+                    frame_data = MultiFrameData(
+                        frames=ordered_frames,
+                        timestamps=ordered_timestamps,
+                        source_camera_id=camera_id,
+                        tiled_frame=None,
+                    )
+
+            if frame_data is not None:
+                with timing.measure("Multi.emit.frame_ready"):
                     self.frame_ready.emit(frame_data)
+
+                # GUI-only path: throttled display updates
+                if self._should_emit_display_ready():
+                    with timing.measure("Multi.emit.display_ready"):
+                        self.display_ready.emit(frame_data)
+
         timing.note_frame()
         timing.maybe_log()
 
