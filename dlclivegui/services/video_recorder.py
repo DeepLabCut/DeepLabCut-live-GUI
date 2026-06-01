@@ -228,7 +228,6 @@ class VideoRecorder:
             self._stop_event.set()
             q = self._queue
             t = self._writer_thread
-            writer = self._writer
 
         if q is not None:
             try:
@@ -255,12 +254,6 @@ class VideoRecorder:
                     "Timestamps were saved, but may be incomplete."
                 )
                 return
-
-        if writer is not None:
-            try:
-                writer.close()
-            except Exception:
-                logger.exception("Failed to close WriteGear cleanly")
 
         self._save_timestamps()
 
