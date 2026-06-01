@@ -1155,7 +1155,7 @@ class GenTLCameraBackend(CameraBackend):
             return default
 
     @classmethod
-    def _node_float(cls, node_map, *names: str) -> float | None:
+    def _node_float(cls, node_map, *names: str, allow_zero: bool = False) -> float | None:
         """Return the first positive float value from a list of GenICam node names."""
         for name in names:
             value = cls._node_value(node_map, name, None)
@@ -1164,7 +1164,7 @@ class GenTLCameraBackend(CameraBackend):
             except Exception:
                 continue
 
-            if fvalue > 0:
+            if fvalue > 0 or (allow_zero and fvalue == 0):
                 return fvalue
 
         return None
@@ -1761,6 +1761,7 @@ class GenTLCameraBackend(CameraBackend):
             "ExposureTime",
             "ExposureTimeAbs",
             "Exposure",
+            allow_zero=True,
         )
         if exposure is not None:
             self._actual_exposure = exposure
@@ -1769,6 +1770,7 @@ class GenTLCameraBackend(CameraBackend):
             node_map,
             "Gain",
             "GainRaw",
+            allow_zero=True,
         )
         if gain is not None:
             self._actual_gain = gain
@@ -1799,7 +1801,7 @@ class GenTLCameraBackend(CameraBackend):
             if exposure_auto is not None:
                 ns["actual_exposure_auto"] = exposure_auto
 
-            throughput = self._node_float(node_map, "DeviceLinkThroughputLimit")
+            throughput = self._node_float(node_map, "DeviceLinkThroughputLimit", allow_zero=True)
             if throughput is not None:
                 ns["actual_device_link_throughput_limit"] = float(throughput)
 
