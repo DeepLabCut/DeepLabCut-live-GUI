@@ -337,6 +337,9 @@ class GenTLCameraBackend(CameraBackend):
             cls._persist_serial_identity(settings, target_id_str)
             return settings
 
+        if target_id_str.startswith("fp:"):
+            return settings  # open() will match by fingerprint via _select_device → _match_device
+
         # Non-serial fallback retained for older configs / fingerprint IDs.
         harvester = None
         try:

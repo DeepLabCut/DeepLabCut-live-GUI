@@ -51,7 +51,7 @@ class SharedHarvesterEntry:
                 self.harvester.add_file(cti)
                 self.loaded_files.append(cti)
             except Exception as e:
-                logger.exception(f"Failed to load CTI file: {cti}. Skipping.")
+                logger.warning(f"Failed to load CTI file: {cti}. Skipping.")
                 self.failed_files[cti] = str(e)
 
         if not self.loaded_files:
