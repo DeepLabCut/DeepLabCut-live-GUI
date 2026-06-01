@@ -264,6 +264,20 @@ class MultiCameraController(QObject):
 
             if still_running:
                 self._started_cameras.clear()
+                self._failed_cameras.clear()
+                with self._frame_lock:
+                    self._frames.clear()
+                    self._timestamps.clear()
+                self._expected_cameras = 0
+
+                LOGGER.critical(
+                    "Force stop failed for camera threads: %s."
+                    "Sending all_stopped to leave GUI in running state,"
+                    "but background camera threads may still be active and interfere with future camera starts."
+                    "Application restart may be required.",
+                    still_running,
+                )
+                self.all_stopped.emit()
                 return
 
         self._started_cameras.clear()
