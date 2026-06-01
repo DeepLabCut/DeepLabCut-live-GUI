@@ -271,9 +271,9 @@ class MultiCameraController(QObject):
                 self._expected_cameras = 0
 
                 LOGGER.critical(
-                    "Force stop failed for camera threads: %s."
-                    "Sending all_stopped to leave GUI in running state,"
-                    "but background camera threads may still be active and interfere with future camera starts."
+                    "Force stop failed for camera threads: %s. "
+                    "Sending all_stopped to leave GUI in running state, "
+                    "but background camera threads may still be active and interfere with future camera starts. "
                     "Application restart may be required.",
                     still_running,
                 )

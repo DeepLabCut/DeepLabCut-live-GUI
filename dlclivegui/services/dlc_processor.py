@@ -21,7 +21,7 @@ from dlclivegui.processors.processor_utils import instantiate_from_scan
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
 
 logger = logging.getLogger(__name__)
-STOP_WORKER_TIMEOUT = 10.0  # seconds to wait for worker thread to stop before STOPPING state and reaping
+STOP_WORKER_TIMEOUT = 10.0  # # seconds to wait in STOPPING state before scheduling background reaping
 
 try:  # pragma: no cover - optional dependency
     from dlclive import (
