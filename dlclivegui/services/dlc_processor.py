@@ -33,7 +33,7 @@ except Exception as e:  # pragma: no cover - handled gracefully
 
 
 # Enable profiling to get more detailed timing metrics for debugging and optimization.
-ENABLE_PROFILING = True
+ENABLE_PROFILING = False
 
 
 class PoseBackends(Enum):
