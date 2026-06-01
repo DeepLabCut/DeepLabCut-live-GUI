@@ -318,11 +318,12 @@ def test_quick_ping_true_for_existing_false_for_missing(patch_gentl_sdk, gentl_i
     assert gb.GenTLCameraBackend.quick_ping(1) is False
 
 
-def test_rebind_settings_updates_index_using_device_id_with_attribute_entries(
+def test_rebind_settings_serial_device_id_persists_serial_without_enumeration(
     patch_gentl_sdk, gentl_settings_factory, gentl_inventory
 ):
     """
-    rebind_settings has some getattr(...) usage; feed attribute-like entries to match that path.
+    Serial GenTL IDs are handled directly by open(), so rebind_settings()
+    intentionally avoids Harvester enumeration and leaves index unchanged.
     """
     gb = patch_gentl_sdk
 
@@ -338,9 +339,12 @@ def test_rebind_settings_updates_index_using_device_id_with_attribute_entries(
     settings = gentl_settings_factory(index=0, properties={"gentl": {"device_id": "serial:SER1"}})
     out = gb.GenTLCameraBackend.rebind_settings(settings)
 
-    assert int(out.index) == 1
+    # New behavior: no enumeration/rebind for serial IDs.
+    assert int(out.index) == 0
+
     ns = out.properties.get("gentl", {})
     assert ns.get("device_id") == "serial:SER1"
+    assert ns.get("serial_number") == "SER1"
 
 
 def test_rebind_settings_no_device_id_no_change(patch_gentl_sdk, gentl_settings_factory, gentl_inventory):
@@ -468,102 +472,6 @@ def test__create_acquirer_index_kw_typeerror_falls_back_to_positional(patch_gent
     be._harvester = H()
     acq = be._create_acquirer(None, 2)
     assert acq == "ACQ_POS_INDEX"
-
-
-def test__create_acquirer_falls_back_to_create_image_acquirer_when_create_fails(
-    patch_gentl_sdk, gentl_settings_factory
-):
-    gb = patch_gentl_sdk
-
-    settings = gentl_settings_factory()
-    be = gb.GenTLCameraBackend(settings)
-
-    class H:
-        device_info_list = [{"serial_number": "SER0"}]
-
-        def create(self, *args, **kwargs):
-            raise RuntimeError("create fails")
-
-        def create_image_acquirer(self, selector=None, index=None):
-            # Succeeds here
-            if isinstance(selector, dict) and selector.get("serial_number") == "SERX":
-                return "ACQ_CIA_SERIAL"
-            if index == 1:
-                return "ACQ_CIA_INDEX"
-            return "ACQ_CIA_OTHER"
-
-    be._harvester = H()
-    acq = be._create_acquirer("SERX", 1)
-    assert acq == "ACQ_CIA_SERIAL"
-
-
-def test__create_acquirer_uses_device_info_fallback_when_available(patch_gentl_sdk, gentl_settings_factory):
-    gb = patch_gentl_sdk
-
-    settings = gentl_settings_factory()
-    be = gb.GenTLCameraBackend(settings)
-
-    device_info_obj = {"serial_number": "SER0", "id_": "ID0"}
-
-    class H:
-        device_info_list = [device_info_obj]
-
-        def create(self, *args, **kwargs):
-            # Fail index, succeed if given device_info object
-            if "index" in kwargs or (len(args) == 1 and isinstance(args[0], int)):
-                raise RuntimeError("index path fails")
-            if len(args) == 1 and args[0] is device_info_obj:
-                return "ACQ_DEVICE_INFO"
-            raise RuntimeError("unexpected call")
-
-    be._harvester = H()
-    acq = be._create_acquirer(None, 0)
-    assert acq == "ACQ_DEVICE_INFO"
-
-
-def test__create_acquirer_tries_default_create_when_index0_and_no_serial(patch_gentl_sdk, gentl_settings_factory):
-    gb = patch_gentl_sdk
-
-    settings = gentl_settings_factory()
-    be = gb.GenTLCameraBackend(settings)
-
-    class H:
-        device_info_list = [{"serial_number": "SER0"}]
-
-        def create(self, *args, **kwargs):
-            # Fail index attempts; succeed only on no-arg create()
-            if args or kwargs:
-                raise RuntimeError("only no-arg create works")
-            return "ACQ_DEFAULT"
-
-    be._harvester = H()
-    acq = be._create_acquirer(None, 0)
-    assert acq == "ACQ_DEFAULT"
-
-
-def test__create_acquirer_raises_runtimeerror_with_joined_errors(patch_gentl_sdk, gentl_settings_factory):
-    gb = patch_gentl_sdk
-
-    settings = gentl_settings_factory()
-    be = gb.GenTLCameraBackend(settings)
-
-    class H:
-        device_info_list = [{"serial_number": "SER0"}]
-
-        def create(self, *args, **kwargs):
-            raise RuntimeError("create boom")
-
-        def create_image_acquirer(self, *args, **kwargs):
-            raise RuntimeError("cia boom")
-
-    be._harvester = H()
-
-    with pytest.raises(RuntimeError) as ei:
-        be._create_acquirer("SERX", 0)
-
-    # Error message should include some context about attempted creation methods
-    msg = str(ei.value).lower()
-    assert "failed to initialise gentl image acquirer" in msg
 
 
 # ----------------------------------
@@ -767,3 +675,128 @@ def test_open_persists_cti_load_diagnostics_complete_failure(patch_gentl_sdk, ge
     assert sorted(d["cti"] for d in failed) == sorted([str(b1), str(b2)])
     for d in failed:
         assert isinstance(d.get("error"), str) and d["error"]
+
+
+def test_two_gentl_backends_share_same_harvester(patch_gentl_sdk, gentl_settings_factory, gentl_inventory):
+    gb = patch_gentl_sdk
+
+    gentl_inventory[:] = [
+        {"display_name": "Dev0", "serial_number": "SER0"},
+        {"display_name": "Dev1", "serial_number": "SER1"},
+    ]
+
+    s0 = gentl_settings_factory(index=0, properties={"gentl": {"device_id": "serial:SER0"}})
+    s1 = gentl_settings_factory(index=1, properties={"gentl": {"device_id": "serial:SER1"}})
+
+    b0 = gb.GenTLCameraBackend(s0)
+    b1 = gb.GenTLCameraBackend(s1)
+
+    b0.open()
+    b1.open()
+
+    assert b0._harvester is b1._harvester
+    assert b0._shared_entry is b1._shared_entry
+
+    b1.close()
+    b0.close()
+
+
+def test_second_open_reuses_shared_harvester_without_update(patch_gentl_sdk, gentl_settings_factory, gentl_inventory):
+    gb = patch_gentl_sdk
+
+    gentl_inventory[:] = [
+        {"display_name": "Dev0", "serial_number": "SER0"},
+        {"display_name": "Dev1", "serial_number": "SER1"},
+    ]
+
+    s0 = gentl_settings_factory(index=0, properties={"gentl": {"device_id": "serial:SER0"}})
+    s1 = gentl_settings_factory(index=1, properties={"gentl": {"device_id": "serial:SER1"}})
+
+    b0 = gb.GenTLCameraBackend(s0)
+    b1 = gb.GenTLCameraBackend(s1)
+
+    b0.open()
+    update_count_after_first = gb.update_count
+
+    b1.open()
+
+    assert gb.update_count == update_count_after_first
+
+    b1.close()
+    b0.close()
+
+
+def test_open_failure_releases_shared_harvester(patch_gentl_sdk, gentl_settings_factory, gentl_inventory):
+    gb = patch_gentl_sdk
+
+    gentl_inventory[:] = [{"display_name": "Dev0", "serial_number": "SER0"}]
+
+    settings = gentl_settings_factory(properties={"gentl": {"device_id": "serial:DOES_NOT_EXIST"}})
+    be = gb.GenTLCameraBackend(settings)
+
+    with pytest.raises(RuntimeError):
+        be.open()
+
+    assert be._harvester is None
+    assert be._shared_entry is None
+    assert be._acquirer is None
+
+
+def test__create_acquirer_serial_create_runtimeerror_propagates(patch_gentl_sdk, gentl_settings_factory):
+    gb = patch_gentl_sdk
+
+    be = gb.GenTLCameraBackend(gentl_settings_factory())
+
+    class H:
+        device_info_list = [{"serial_number": "SER0"}]
+
+        def create(self, *args, **kwargs):
+            raise RuntimeError("create fails")
+
+        def create_image_acquirer(self, *args, **kwargs):
+            return "SHOULD_NOT_BE_USED"
+
+    be._harvester = H()
+
+    with pytest.raises(RuntimeError, match="create fails"):
+        be._create_acquirer("SERX", 1)
+
+
+def test__create_acquirer_index_runtimeerror_propagates(patch_gentl_sdk, gentl_settings_factory):
+    gb = patch_gentl_sdk
+
+    be = gb.GenTLCameraBackend(gentl_settings_factory())
+
+    class H:
+        device_info_list = [{"serial_number": "SER0"}]
+
+        def create(self, *args, **kwargs):
+            if len(args) == 1 and args[0] == 0:
+                raise RuntimeError("index path fails")
+            return "UNEXPECTED"
+
+    be._harvester = H()
+
+    with pytest.raises(RuntimeError, match="index path fails"):
+        be._create_acquirer(None, 0)
+
+
+def test__create_acquirer_positional_typeerror_falls_back_to_index_keyword(patch_gentl_sdk, gentl_settings_factory):
+    gb = patch_gentl_sdk
+
+    be = gb.GenTLCameraBackend(gentl_settings_factory())
+
+    class H:
+        device_info_list = [{"serial_number": "SER0"}]
+
+        def create(self, *args, **kwargs):
+            if args:
+                raise TypeError("positional index not supported")
+            if kwargs.get("index") == 2:
+                return "ACQ_KW_INDEX"
+            raise RuntimeError("unexpected call")
+
+    be._harvester = H()
+
+    acq = be._create_acquirer(None, 2)
+    assert acq == "ACQ_KW_INDEX"

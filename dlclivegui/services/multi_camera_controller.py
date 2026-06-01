@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from PySide6.QtGui import QImage, QPixmap
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import CameraBackend
+from dlclivegui.cameras.factory import camera_identity_key
 
 # from dlclivegui.config import CameraSettings
 from dlclivegui.config import CameraSettings
@@ -29,6 +31,7 @@ class MultiFrameData:
     timestamps: dict[str, float]  # camera_id -> timestamp
     source_camera_id: str = ""  # ID of camera that triggered this emission
     tiled_frame: np.ndarray | None = None  # Combined tiled frame (deprecated, done in GUI)
+    display_ids: dict[str, str] = None  # camera_id -> display_id (for labeling)
 
 
 class SingleCameraWorker(QObject):
@@ -42,7 +45,7 @@ class SingleCameraWorker(QObject):
     def __init__(self, camera_id: str, settings: CameraSettings):
         super().__init__()
         self._camera_id = camera_id
-        self._settings = settings
+        self._settings = copy.deepcopy(settings)
         self._stop_event = Event()
         self._backend: CameraBackend | None = None
         self._max_consecutive_errors = 5
@@ -53,7 +56,24 @@ class SingleCameraWorker(QObject):
         self._stop_event.clear()
 
         try:
+            LOGGER.debug(
+                "[Worker %s] before create: backend=%s index=%s properties=%s",
+                self._camera_id,
+                self._settings.backend,
+                self._settings.index,
+                self._settings.properties,
+            )
+
             self._backend = CameraFactory.create(self._settings)
+
+            LOGGER.debug(
+                "[Worker %s] after create: backend=%s index=%s properties=%s",
+                self._camera_id,
+                self._backend.settings.backend,
+                self._backend.settings.index,
+                self._backend.settings.properties,
+            )
+
             self._backend.open()
         except Exception as exc:
             LOGGER.exception(f"Failed to initialize camera {self._camera_id}", exc_info=exc)
@@ -102,9 +122,25 @@ class SingleCameraWorker(QObject):
         self._stop_event.set()
 
 
-def get_camera_id(settings: CameraSettings) -> str:
-    """Generate a unique camera ID from settings."""
+def get_display_id(settings: CameraSettings) -> str:
     return f"{settings.backend}:{settings.index}"
+
+
+def get_camera_id(settings: CameraSettings) -> str:
+    """Generate a unique camera ID from stable backend identity."""
+    backend = (settings.backend or "").lower()
+    props = settings.properties if isinstance(settings.properties, dict) else {}
+    ns = props.get(backend, {}) if isinstance(props.get(backend), dict) else {}
+
+    device_id = ns.get("device_id")
+    if device_id:
+        return f"{backend}:{device_id}"
+
+    serial = ns.get("serial_number") or ns.get("device_serial_number") or ns.get("serial")
+    if serial:
+        return f"{backend}:serial:{serial}"
+
+    return f"{backend}:index:{int(settings.index)}"
 
 
 class MultiCameraController(QObject):
@@ -131,6 +167,7 @@ class MultiCameraController(QObject):
         self._frame_lock = Lock()
         self._running = False
         self._started_cameras: set = set()
+        self._display_ids: dict[str, str] = {}  # camera_id -> display_id (for labeling)
         self._failed_cameras: dict[str, str] = {}  # camera_id -> error message
         self._expected_cameras: int = 0  # Number of cameras we're trying to start
 
@@ -153,11 +190,38 @@ class MultiCameraController(QObject):
             LOGGER.warning("No active cameras to start")
             return
 
+        # Check for dupes
+        seen = {}
+        for s in active_settings:
+            camera_id = get_camera_id(s)
+            try:
+                key = camera_identity_key(s)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to compute camera identity key for %s; falling back to camera_id",
+                    camera_id,
+                )
+                key = camera_id
+
+            if key in seen:
+                self.initialization_failed.emit(
+                    [
+                        (
+                            camera_id,
+                            f"Duplicate camera configuration. Conflicts with {seen[key]}",
+                        )
+                    ]
+                )
+                return
+
+            seen[key] = camera_id
+
         self._running = True
         self._frames.clear()
         self._timestamps.clear()
         self._started_cameras.clear()
         self._failed_cameras.clear()
+        self._display_ids.clear()
         self._expected_cameras = len(active_settings)
 
         for settings in active_settings:
@@ -165,13 +229,19 @@ class MultiCameraController(QObject):
 
     def _start_camera(self, settings: CameraSettings) -> None:
         """Start a single camera."""
-        cam_id = get_camera_id(settings)
+        settings_copy = copy.deepcopy(settings)
+        cam_id = get_camera_id(settings_copy)
+        display_id = get_display_id(settings_copy)
+
         if cam_id in self._workers:
             LOGGER.warning(f"Camera {cam_id} already has a worker")
             return
 
+        LOGGER.info(f"[MultiCameraController] Starting {cam_id} with settings: {settings_copy}")
+
         # Normalize and store the dataclass once
-        self._settings[cam_id] = settings
+        self._settings[cam_id] = settings_copy
+        self._display_ids[cam_id] = display_id
         dc = self._settings[cam_id]
         worker = SingleCameraWorker(cam_id, dc)
         thread = QThread()
@@ -211,6 +281,7 @@ class MultiCameraController(QObject):
         self._settings.clear()
         self._started_cameras.clear()
         self._failed_cameras.clear()
+        self._display_ids.clear()
         self._expected_cameras = 0
         self.all_stopped.emit()
 
@@ -238,6 +309,7 @@ class MultiCameraController(QObject):
                     timestamps=dict(self._timestamps),
                     source_camera_id=camera_id,  # Track which camera triggered this
                     tiled_frame=None,
+                    display_ids=dict(self._display_ids),
                 )
                 self.frame_ready.emit(frame_data)
 
@@ -425,6 +497,7 @@ class MultiCameraController(QObject):
         # Check if this camera never started (initialization failure)
         was_started = camera_id in self._started_cameras
         self._started_cameras.discard(camera_id)
+        self._display_ids.pop(camera_id, None)
         self.camera_stopped.emit(camera_id)
         LOGGER.info(f"Camera {camera_id} stopped (was_started={was_started})")
 
