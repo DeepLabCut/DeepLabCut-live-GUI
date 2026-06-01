@@ -3,8 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from dlclivegui.config import CameraSettings
 from dlclivegui.gui.recording_manager import RecordingManager
-from dlclivegui.services.multi_camera_controller import get_camera_id
+from dlclivegui.services.multi_camera_controller import get_camera_id, get_display_id
 from dlclivegui.services.video_recorder import RecorderStats
 
 
@@ -277,3 +278,103 @@ def test_get_stats_summary_multi_aggregates(
     assert "30 frames" in summary  # 10 + 20
     assert "dropped 4" in summary  # 1 + 3
     assert "queue 6" in summary  # 2 + 4
+
+
+@pytest.mark.unit
+def test_recording_manager_uses_stable_camera_id_not_display_id(
+    recording_settings,
+    patch_video_recorder,
+    patch_build_run_dir,
+):
+    mgr = RecordingManager()
+
+    cam = CameraSettings(
+        name="GenTL cam",
+        backend="gentl",
+        index=0,
+        fps=30.0,
+        enabled=True,
+        properties={
+            "gentl": {
+                "device_id": "serial:SER0",
+                "serial_number": "SER0",
+            }
+        },
+    ).apply_defaults()
+
+    stable_id = get_camera_id(cam)
+    display_id = get_display_id(cam)
+
+    assert stable_id == "gentl:serial:SER0"
+    assert display_id == "gentl:0"
+    assert stable_id != display_id
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    current_frames = {stable_id: frame}
+
+    run_dir = mgr.start_all(
+        recording_settings,
+        [cam],
+        current_frames,
+        session_name="Sess",
+    )
+
+    assert run_dir is not None
+    assert stable_id in mgr.recorders
+    assert display_id not in mgr.recorders
+
+    rec = mgr.recorders[stable_id]
+    assert rec.frame_size == (480, 640)
+
+    mgr.write_frame(stable_id, frame, timestamp=123.0)
+    assert len(rec.write_calls) == 1
+    assert rec.write_calls[-1][1] == 123.0
+
+    # Display ID is GUI-only and must not route frames internally.
+    mgr.write_frame(display_id, frame, timestamp=456.0)
+    assert len(rec.write_calls) == 1
+
+
+@pytest.mark.unit
+def test_start_all_does_not_infer_frame_size_from_display_id(
+    recording_settings,
+    patch_video_recorder,
+    patch_build_run_dir,
+):
+    mgr = RecordingManager()
+
+    cam = CameraSettings(
+        name="GenTL cam",
+        backend="gentl",
+        index=0,
+        fps=30.0,
+        enabled=True,
+        properties={
+            "gentl": {
+                "device_id": "serial:SER0",
+                "serial_number": "SER0",
+            }
+        },
+    ).apply_defaults()
+
+    stable_id = get_camera_id(cam)
+    display_id = get_display_id(cam)
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    # Simulate the buggy situation: frames are keyed by display ID.
+    current_frames = {display_id: frame}
+
+    mgr.start_all(
+        recording_settings,
+        [cam],
+        current_frames,
+        session_name="Sess",
+    )
+
+    assert stable_id in mgr.recorders
+    assert display_id not in mgr.recorders
+
+    # Since RecordingManager uses stable IDs internally, it should not find this frame.
+    rec = mgr.recorders[stable_id]
+    assert rec.frame_size is None
