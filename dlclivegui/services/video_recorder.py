@@ -243,13 +243,18 @@ class VideoRecorder:
                     self._encode_error = RuntimeError(
                         "Failed to stop VideoRecorder within timeout; thread is still alive."
                     )
-                    with self._lifecycle_lock:
-                        self._abandoned = True
-                    logger.critical(
-                        "Failed to stop VideoRecorder within timeout; thread is still alive. "
-                        "Marking recorder as abandoned to prevent restart."
-                    )
-                    return
+
+                with self._lifecycle_lock:
+                    self._abandoned = True
+
+                self._save_timestamps()
+
+                logger.critical(
+                    "Failed to stop VideoRecorder within timeout; thread is still alive. "
+                    "Marking recorder as abandoned to prevent restart. "
+                    "Timestamps were saved, but may be incomplete."
+                )
+                return
 
         if writer is not None:
             try:

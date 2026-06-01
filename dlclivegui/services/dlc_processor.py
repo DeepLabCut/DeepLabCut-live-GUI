@@ -383,9 +383,13 @@ class DLCLiveProcessor(QObject):
                             self._dlc = None
                             self._initialized = False
                             self._pending_reset = False
+
+                        logger.warning("DLC worker thread stopped after the timeout and was cleaned up late.")
+
             finally:
                 with self._lifecycle_lock:
                     self._reaping = False
+
             logger.debug("[Stop worker] DLC worker thread reaped; processor is STOPPED again")
 
         threading.Thread(target=reap, name="DLCLiveReaper", daemon=True).start()
