@@ -14,6 +14,8 @@ Precision = Literal["FP32", "FP16"]
 ModelType = Literal["pytorch", "tensorflow"]
 TriggerRole = Literal["off", "external", "master", "follower"]
 TriggerActivation = Literal["RisingEdge", "FallingEdge", "AnyEdge", "LevelHigh", "LevelLow"]
+TriggerStrobePolarity = Literal["ActiveHigh", "ActiveLow"]
+TriggerStrobeOperation = Literal["Exposure", "FixedDuration"]
 
 SINGLE_CAMERA_WORKER_DO_LOG_TIMING = False
 MULTI_CAMERA_WORKER_DO_LOG_TIMING = True
@@ -239,9 +241,13 @@ class CameraTriggerSettings(BaseModel):
     Generic hardware-trigger settings.
 
     Backend-specific code may ignore fields that are unsupported by a given
-    camera/SDK. For GenTL, these map to common GenICam nodes such as:
-    TriggerMode, TriggerSelector, TriggerSource, TriggerActivation,
-    LineSelector, LineMode, and LineSource.
+    camera/SDK.
+
+    For GenTL/TIS DMK 37BUX287:
+      - follower/external maps mainly to TriggerMode, TriggerSelector,
+        TriggerActivation. TriggerSource may be read-only and is best-effort.
+      - master output maps primarily to StrobeEnable, StrobePolarity,
+        StrobeOperation, StrobeDuration, and StrobeDelay.
     """
 
     role: TriggerRole = "off"
@@ -251,9 +257,15 @@ class CameraTriggerSettings(BaseModel):
     source: str = "auto"
     activation: TriggerActivation | str = "RisingEdge"
 
-    # Output config: master
+    # Generic/SFNC output config: master fallback for cameras exposing Line* nodes.
     output_line: str = "Line2"
     output_source: str = "ExposureActive"
+
+    # Strobe output config: master path for TIS/DMK 37U cameras.
+    strobe_polarity: TriggerStrobePolarity | str = "ActiveHigh"
+    strobe_operation: TriggerStrobeOperation | str = "Exposure"
+    strobe_duration: int | None = None  # µs, used when strobe_operation=FixedDuration
+    strobe_delay: int | None = None  # µs
 
     # Runtime behavior
     timeout: float | None = None
@@ -295,6 +307,17 @@ class CameraTriggerSettings(BaseModel):
         except Exception:
             return None
         return fv if fv > 0 else None
+
+    @field_validator("strobe_duration", "strobe_delay", mode="before")
+    @classmethod
+    def _coerce_optional_nonnegative_int(cls, v):
+        if v in (None, ""):
+            return None
+        try:
+            iv = int(float(v))
+        except Exception:
+            return None
+        return iv if iv >= 0 else None
 
     @field_validator("source", mode="before")
     @classmethod
