@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -73,6 +74,38 @@ def rgb_frame():
 @pytest.fixture
 def gray_frame():
     return np.zeros((48, 64), dtype=np.uint8)
+
+
+class BlockingWriteGear(FakeWriteGear):
+    """
+    Fake WriteGear that blocks inside write() to simulate a hung encoder/IO stall.
+    """
+
+    instances = []
+
+    def __init__(self, output: str, **kwargs):
+        super().__init__(output, **kwargs)
+        self.entered_write = threading.Event()
+        self.release_write = threading.Event()
+        BlockingWriteGear.instances.append(self)
+
+    def write(self, frame):
+        # Signal that the writer thread is now stuck inside write()
+        self.entered_write.set()
+        # Block until the test releases us (long timeout as safety, but test releases explicitly)
+        self.release_write.wait(timeout=60.0)
+        # If released, behave like normal FakeWriteGear
+        return super().write(frame)
+
+
+@pytest.fixture
+def patch_blocking_writegear(monkeypatch):
+    """
+    Patch module-level WriteGear to BlockingWriteGear for the hung-thread test.
+    """
+    BlockingWriteGear.instances.clear()
+    monkeypatch.setattr(vr_mod, "WriteGear", BlockingWriteGear)
+    return BlockingWriteGear
 
 
 # ----------------------------
@@ -294,4 +327,48 @@ def test_overlay_frame_size_mismatch_still_detected(patch_writegear, output_path
     with pytest.raises(RuntimeError):
         rec.write(np.zeros((48, 64, 3), dtype=np.uint8), timestamp=2.0)
 
+    rec.stop()
+
+
+def test_stop_timeout_marks_abandoned_and_prevents_restart(
+    patch_blocking_writegear, monkeypatch, output_path, rgb_frame
+):
+    # Make stop timeout tiny so the test is fast.
+    monkeypatch.setattr(vr_mod, "STOP_JOIN_TIMEOUT", 0.01)
+
+    rec = vr_mod.VideoRecorder(output_path, frame_size=(48, 64), buffer_size=10)
+    rec.start()
+    assert rec.is_running is True
+
+    # Enqueue one frame so writer thread enters BlockingWriteGear.write() and blocks.
+    assert rec.write(rgb_frame, timestamp=1.0) is True
+
+    wg = patch_blocking_writegear.instances[0]
+    wait_until(lambda: wg.entered_write.is_set(), timeout=1.0)
+
+    # Now stop: should time out and mark abandoned
+    rec.stop()
+
+    assert rec._abandoned is True
+    err = rec._current_error()
+    assert err is not None
+    assert "Failed to stop VideoRecorder within timeout" in str(err)
+
+    # Thread should still be alive (blocked in write)
+    assert rec.is_running is True
+
+    # Restart should be prevented while abandoned
+    with pytest.raises(RuntimeError, match="Cannot restart VideoRecorder"):
+        rec.start()
+
+    # ---- Cleanup to avoid leaking a blocked daemon thread into other tests ----
+    wg.release_write.set()  # let write() return
+    wait_until(lambda: not rec.is_running, timeout=2.0)
+
+    # Call stop again to clear resources / reset flags (now it can join cleanly)
+    rec.stop()
+    # After the writer thread has exited, a second stop() should fully reset state
+    # so that the recorder is no longer marked as abandoned and can be restarted.
+    assert rec._abandoned is False
+    rec.start()
     rec.stop()
