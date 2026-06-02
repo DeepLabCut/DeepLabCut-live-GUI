@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -59,7 +60,9 @@ class TriggerConfigDialog(QDialog):
 
         info = QLabel(
             "Configure hardware trigger settings for this camera.\n"
-            "Use 'auto' for trigger source unless you know the exact GenICam line name. "
+            "Follower/external mode arms the camera and waits for electrical pulses on TRIGGER_IN.\n"
+            "Master mode enables STROBE_OUT pulses. For TIS/DMK 37U cameras this uses Strobe settings; "
+            "Line output settings are kept as a generic fallback.\n"
             "In strict mode, unsupported trigger nodes fail camera open."
         )
         info.setWordWrap(True)
@@ -90,11 +93,56 @@ class TriggerConfigDialog(QDialog):
 
         self.output_line_edit = QLineEdit()
         self.output_line_edit.setPlaceholderText("Line2")
+        self.output_line_edit.setToolTip(
+            "Generic Line* output selector for cameras exposing LineSelector/LineSource. "
+            "Ignored by TIS/DMK 37U strobe-based output."
+        )
         form.addRow("Output line:", self.output_line_edit)
 
         self.output_source_edit = QLineEdit()
         self.output_source_edit.setPlaceholderText("ExposureActive")
+        self.output_source_edit.setToolTip(
+            "Generic LineSource value for cameras exposing LineSource. "
+            "For TIS/DMK 37U cameras, use Strobe operation instead."
+        )
         form.addRow("Output source:", self.output_source_edit)
+
+        self.strobe_polarity_combo = QComboBox()
+        self.strobe_polarity_combo.addItem("Active high", "ActiveHigh")
+        self.strobe_polarity_combo.addItem("Active low", "ActiveLow")
+        self.strobe_polarity_combo.setToolTip(
+            "Polarity of STROBE_OUT. If the follower does not trigger, also try changing the follower activation edge."
+        )
+        form.addRow("Strobe polarity:", self.strobe_polarity_combo)
+
+        self.strobe_operation_combo = QComboBox()
+        self.strobe_operation_combo.addItem("Exposure duration", "Exposure")
+        self.strobe_operation_combo.addItem("Fixed duration", "FixedDuration")
+        self.strobe_operation_combo.setToolTip(
+            "Exposure: strobe pulse length follows exposure time. "
+            "FixedDuration: strobe pulse length is set by Strobe duration."
+        )
+        form.addRow("Strobe operation:", self.strobe_operation_combo)
+
+        self.strobe_duration_spin = QSpinBox()
+        self.strobe_duration_spin.setRange(0, 32767)
+        self.strobe_duration_spin.setSingleStep(100)
+        self.strobe_duration_spin.setSuffix(" µs")
+        self.strobe_duration_spin.setSpecialValueText("Default")
+        self.strobe_duration_spin.setToolTip(
+            "Used only when Strobe operation is FixedDuration. 0 means backend/device default."
+        )
+        form.addRow("Strobe duration:", self.strobe_duration_spin)
+
+        self.strobe_delay_spin = QSpinBox()
+        self.strobe_delay_spin.setRange(0, 32767)
+        self.strobe_delay_spin.setSingleStep(100)
+        self.strobe_delay_spin.setSuffix(" µs")
+        self.strobe_delay_spin.setSpecialValueText("Default")
+        self.strobe_delay_spin.setToolTip(
+            "Delay between start of exposure and STROBE_OUT pulse. 0 means no delay/device default."
+        )
+        form.addRow("Strobe delay:", self.strobe_delay_spin)
 
         self.timeout_spin = QDoubleSpinBox()
         self.timeout_spin.setRange(0.0, 3600.0)
@@ -118,6 +166,7 @@ class TriggerConfigDialog(QDialog):
         root.addWidget(buttons)
 
         self.role_combo.currentIndexChanged.connect(self._sync_role_ui)
+        self.strobe_operation_combo.currentIndexChanged.connect(self._sync_role_ui)
 
     def _load_from_trigger(self, trigger: CameraTriggerSettings) -> None:
         role = str(getattr(trigger, "role", "off") or "off").lower()
@@ -134,6 +183,20 @@ class TriggerConfigDialog(QDialog):
         self.output_line_edit.setText(str(getattr(trigger, "output_line", "Line2") or "Line2"))
         self.output_source_edit.setText(str(getattr(trigger, "output_source", "ExposureActive") or "ExposureActive"))
 
+        strobe_polarity = str(getattr(trigger, "strobe_polarity", "ActiveHigh") or "ActiveHigh")
+        idx = self.strobe_polarity_combo.findData(strobe_polarity)
+        self.strobe_polarity_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        strobe_operation = str(getattr(trigger, "strobe_operation", "Exposure") or "Exposure")
+        idx = self.strobe_operation_combo.findData(strobe_operation)
+        self.strobe_operation_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        strobe_duration = getattr(trigger, "strobe_duration", None)
+        self.strobe_duration_spin.setValue(int(strobe_duration) if strobe_duration is not None else 0)
+
+        strobe_delay = getattr(trigger, "strobe_delay", None)
+        self.strobe_delay_spin.setValue(int(strobe_delay) if strobe_delay is not None else 0)
+
         timeout = getattr(trigger, "timeout", None)
         self.timeout_spin.setValue(float(timeout) if timeout else 0.0)
 
@@ -143,14 +206,25 @@ class TriggerConfigDialog(QDialog):
         role = str(self.role_combo.currentData() or "off")
 
         input_enabled = role in {"external", "follower"}
-        output_enabled = role == "master"
 
         self.selector_edit.setEnabled(input_enabled)
         self.source_edit.setEnabled(input_enabled)
         self.activation_combo.setEnabled(input_enabled)
 
+        output_enabled = role == "master"
+        # Generic Line* fallback fields.
         self.output_line_edit.setEnabled(output_enabled)
         self.output_source_edit.setEnabled(output_enabled)
+
+        # TIS/DMK 37U Strobe* fields.
+        self.strobe_polarity_combo.setEnabled(output_enabled)
+        self.strobe_operation_combo.setEnabled(output_enabled)
+
+        fixed_duration = (
+            output_enabled and str(self.strobe_operation_combo.currentData() or "Exposure") == "FixedDuration"
+        )
+        self.strobe_duration_spin.setEnabled(fixed_duration)
+        self.strobe_delay_spin.setEnabled(output_enabled)
 
         # Timeout is mostly useful for external/follower, but harmless for any role.
         self.timeout_spin.setEnabled(role in {"external", "follower"})
@@ -163,8 +237,12 @@ class TriggerConfigDialog(QDialog):
             "selector": self.selector_edit.text().strip() or "FrameStart",
             "source": self.source_edit.text().strip() or "auto",
             "activation": str(self.activation_combo.currentData() or "RisingEdge"),
+            # Generic/SFNC Line* fallback output settings.
             "output_line": self.output_line_edit.text().strip() or "Line2",
             "output_source": self.output_source_edit.text().strip() or "ExposureActive",
+            # Strobe output settings used by TIS/DMK 37U cameras.
+            "strobe_polarity": str(self.strobe_polarity_combo.currentData() or "ActiveHigh"),
+            "strobe_operation": str(self.strobe_operation_combo.currentData() or "Exposure"),
             "strict": bool(self.strict_checkbox.isChecked()),
         }
 
@@ -173,6 +251,13 @@ class TriggerConfigDialog(QDialog):
             payload["timeout"] = timeout
         elif role == "off":
             payload["timeout"] = None  # ensure timeout is cleared when disabling trigger
+        strobe_duration = int(self.strobe_duration_spin.value())
+        if role == "master" and strobe_duration > 0:
+            payload["strobe_duration"] = strobe_duration
+
+        strobe_delay = int(self.strobe_delay_spin.value())
+        if role == "master" and strobe_delay > 0:
+            payload["strobe_delay"] = strobe_delay
 
         try:
             trigger = CameraTriggerSettings.from_any(payload)
