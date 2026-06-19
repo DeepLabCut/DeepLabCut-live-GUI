@@ -9,10 +9,6 @@ import os
 import time
 from pathlib import Path
 
-# NOTE @C-Achard: his could be added in settings eventually
-# Forces pypylon to create 2 emulation virtual cameras,
-# mostly for testing. This shold not be enabled for release.
-# os.environ["PYLON_CAMEMU"] = "2"
 import cv2
 import numpy as np
 from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl
