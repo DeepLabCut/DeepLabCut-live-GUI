@@ -83,7 +83,9 @@ def compute_tiling_geometry(
     return cam_ids, rows, cols, tile_w, tile_h
 
 
-def create_tiled_frame(frames: dict[str, np.ndarray], max_canvas: tuple[int, int] = (1200, 800)) -> np.ndarray:
+def create_tiled_frame(
+    frames: dict[str, np.ndarray], max_canvas: tuple[int, int] = (1200, 800), labels: dict[str, str] = None
+) -> np.ndarray:
     """Create a tiled canvas (1x1, 1x2, or 2x2) with camera-id labels.
 
     Uses compute_tiling_geometry() so tile_w/tile_h are consistent with compute_tile_info().
@@ -105,10 +107,11 @@ def create_tiled_frame(frames: dict[str, np.ndarray], max_canvas: tuple[int, int
             frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
         resized = cv2.resize(frame, (tile_w, tile_h), interpolation=cv2.INTER_AREA)
+        label = labels.get(cam_id, cam_id) if labels else cam_id
 
         cv2.putText(
             resized,
-            cam_id,
+            label,
             (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
