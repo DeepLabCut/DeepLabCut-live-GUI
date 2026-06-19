@@ -1094,6 +1094,32 @@ class GenTLCameraBackend(CameraBackend):
             return None
 
     @staticmethod
+    def _node_value(node_map, name: str, default=None):
+        """Best-effort read of a GenICam node value.
+
+        Debug helpers must not make open() fail just because a value cannot be read.
+        Harvesters-style fake/test nodes usually expose `.value`; some SDK-style
+        nodes may expose `GetValue()`.
+        """
+        node = GenTLCameraBackend._node(node_map, name)
+        if node is None:
+            return default
+
+        try:
+            return node.value
+        except Exception:
+            pass
+
+        try:
+            getter = getattr(node, "GetValue", None)
+            if getter is not None:
+                return getter()
+        except Exception:
+            pass
+
+        return default
+
+    @staticmethod
     def _node_symbolics(node) -> list[str]:
         try:
             return list(getattr(node, "symbolics", []) or [])
