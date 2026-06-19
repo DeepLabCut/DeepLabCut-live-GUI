@@ -1303,35 +1303,44 @@ class GenTLCameraBackend(CameraBackend):
         self._set_enum_node(node_map, "TriggerMode", "Off", strict=False)
 
         selector_ok = self._set_enum_node(node_map, "TriggerSelector", selector, strict=strict)
-        activation_ok = self._set_enum_node(node_map, "TriggerActivation", activation, strict=strict)
+
+        resolved_source, source_supported = self._resolve_trigger_source(
+            node_map,
+            source,
+            strict=strict,
+        )
 
         source_ok = False
-        if source and source.lower() not in {"", "auto", "none"}:
-            source_node = self._node(node_map, "TriggerSource")
-            source_symbolics = self._node_symbolics(source_node)
+        if source_supported:
+            source_ok = self._set_enum_node(
+                node_map,
+                "TriggerSource",
+                resolved_source,
+                strict=strict,
+            )
 
-            if source_node is not None:
-                if source in source_symbolics:
-                    source_ok = self._set_enum_node(node_map, "TriggerSource", source, strict=False)
-                    if not source_ok:
-                        LOG.warning(
-                            "GenTL TriggerSource=%s is supported but not writable; "
-                            "continuing without changing TriggerSource. Available: %s",
-                            source,
-                            source_symbolics,
-                        )
-                else:
-                    LOG.warning(
-                        "Requested GenTL TriggerSource=%s not in available sources %s; "
-                        "continuing without changing TriggerSource.",
-                        source,
-                        source_symbolics,
-                    )
+        activation_ok = self._set_enum_node(
+            node_map,
+            "TriggerActivation",
+            activation,
+            strict=False,
+        )
 
-        if not selector_ok:
+        # TriggerSelector and TriggerSource are required routing nodes.
+        # If either failed in non-strict mode, do not arm TriggerMode=On.
+        # Otherwise the camera may wait on a previous/default input line.
+        if not (selector_ok and source_ok):
             LOG.warning(
-                "Could not apply GenTL TriggerSelector=%s; disabling trigger.",
+                "Could not apply GenTL trigger input routing "
+                "(selector_ok=%s, source_ok=%s); disabling trigger. "
+                "requested role=%s selector=%s source=%s resolved_source=%s activation=%s",
+                selector_ok,
+                source_ok,
+                role,
                 selector,
+                source,
+                resolved_source,
+                activation,
             )
             self._configure_trigger_off(node_map, strict=False)
             self._trigger = CameraTriggerSettings()
@@ -1352,15 +1361,16 @@ class GenTLCameraBackend(CameraBackend):
             return
 
         LOG.info(
-            "GenTL trigger input configured: role=%s selector=%s activation=%s "
-            "selector_ok=%s activation_ok=%s source_requested=%s source_ok=%s",
+            "GenTL trigger input configured: role=%s selector=%s source_requested=%s "
+            "source=%s activation=%s selector_ok=%s source_ok=%s activation_ok=%s",
             role,
             selector,
+            source,
+            resolved_source,
             activation,
             selector_ok,
-            activation_ok,
-            source,
             source_ok,
+            activation_ok,
         )
 
     def _configure_trigger_master(self, node_map, cfg, *, strict: bool = False) -> None:
