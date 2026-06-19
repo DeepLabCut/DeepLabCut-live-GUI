@@ -57,8 +57,6 @@ class SingleCameraWorker(QObject):
         self._retry_delay = 0.1
         self._trigger_timeout_delay = 0.05
 
-        # Hardware-trigger wait logging can be noisy because timeouts are expected
-        # while no trigger pulse is arriving. Log only occasionally.
         self._trigger_wait_log_interval = 2.0
         self._last_trigger_wait_log = 0.0
         self._trigger_wait_suppressed_count = 0
