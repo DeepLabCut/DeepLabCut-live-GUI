@@ -168,7 +168,7 @@ class FakeDLCLive:
 
     def get_pose(self, frame, frame_time=None):
         self.pose_calls += 1
-        return np.ones((2, 2), dtype=float)
+        return np.ones((2, 3), dtype=float)
 
 
 @pytest.fixture
