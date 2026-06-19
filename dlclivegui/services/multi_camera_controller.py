@@ -62,6 +62,7 @@ class SingleCameraWorker(QObject):
         self._max_consecutive_errors = 5
         self._retry_delay = 0.1
         self._trigger_timeout_delay = 0.05
+        self._log_interval_while_waiting_for_trigger_s = 2.0
 
         # Performance logs
         self._timing = WorkerTimingStats(
@@ -133,11 +134,7 @@ class SingleCameraWorker(QObject):
                 # "no trigger pulse arrived during this poll interval".
                 # This is expected and should not count as a camera failure.
                 if bool(getattr(self._backend, "waits_for_hardware_trigger", False)):
-                    LOGGER.debug(
-                        "[Worker %s] waiting for hardware trigger: %s",
-                        self._camera_id,
-                        exc,
-                    )
+                    self._log_trigger_wait_throttled(exc)
                     consecutive_errors = 0
 
                     if self._stop_event.wait(self._trigger_timeout_delay):
@@ -295,6 +292,35 @@ class MultiCameraController(QObject):
 
         self._gui_display_last_emit = now
         return True
+    def _log_trigger_wait_throttled(self, exc: BaseException) -> None:
+        """Log hardware-trigger wait timeouts at a controlled rate.
+
+        In trigger-waiting modes, read timeouts are expected polling misses.
+        Without throttling, the log can be flooded at ~10-20 messages/sec/camera.
+        """
+        now = time.monotonic()
+
+        if now - self._last_trigger_wait_log < self._trigger_wait_log_interval:
+            self._trigger_wait_suppressed_count += 1
+            return
+
+        suppressed = self._trigger_wait_suppressed_count
+        self._trigger_wait_suppressed_count = 0
+        self._last_trigger_wait_log = now
+
+        if suppressed:
+            LOGGER.debug(
+                "[Worker %s] waiting for hardware trigger: %s (suppressed %d repeated timeout logs)",
+                self._camera_id,
+                exc,
+                suppressed,
+            )
+        else:
+            LOGGER.debug(
+                "[Worker %s] waiting for hardware trigger: %s",
+                self._camera_id,
+                exc,
+            )
 
     def start(self, camera_settings: list[CameraSettings]) -> None:
         """Start multiple cameras."""
