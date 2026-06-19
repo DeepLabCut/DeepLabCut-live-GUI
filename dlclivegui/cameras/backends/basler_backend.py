@@ -9,9 +9,20 @@ from typing import ClassVar
 
 import numpy as np
 
+from ...config import CameraTriggerSettings
 from ..base import CameraBackend, SupportLevel, register_backend
 
 LOG = logging.getLogger(__name__)
+
+
+# NOTE @C-Achard: This could be added in settings eventually
+# Forces pypylon to create N emulation virtual cameras,
+# mostly for testing. This should not be enabled for release.
+ENABLE_PYLON_EMU = True
+if ENABLE_PYLON_EMU:
+    import os
+
+    os.environ["PYLON_CAMEMU"] = "4"
 
 try:  # pragma: no cover - optional dependency
     from pypylon import pylon
@@ -25,6 +36,10 @@ class BaslerCameraBackend(CameraBackend):
 
     OPTIONS_KEY: ClassVar[str] = "basler"
 
+    # Keep RetrieveResult calls short enough that controller shutdown can stop
+    # worker threads promptly while waiting for external hardware triggers.
+    _MAX_HARDWARE_TRIGGER_RETRIEVE_TIMEOUT_MS: ClassVar[int] = 1000
+
     def __init__(self, settings):
         super().__init__(settings)
 
@@ -33,6 +48,37 @@ class BaslerCameraBackend(CameraBackend):
         # Optional fast-start hint for probe workers
         # (may skip StartGrabbing and converter setup for faster capability probing; not suitable for normal capture)
         self._fast_start: bool = bool(self.ns.get("fast_start", False))
+        self._retrieve_timeout_ms: int = 100  # default; may be overridden by trigger settings
+
+        # ---- Trigger settings ----
+        raw_trigger = self.ns.get("trigger", self._props.get("trigger"))
+        raw_trigger_strict = isinstance(raw_trigger, dict) and bool(raw_trigger.get("strict", False))
+
+        try:
+            self._trigger = CameraTriggerSettings.from_any(raw_trigger)
+        except Exception as exc:
+            if raw_trigger_strict:
+                raise ValueError(f"Strict mode failure - Invalid Basler trigger configuration: {exc}") from exc
+
+            LOG.warning(
+                "Invalid Basler trigger config; falling back to trigger role=off: %s. "
+                "Enable strict mode to force this to raise.",
+                exc,
+            )
+            self._trigger = CameraTriggerSettings()
+
+        trigger_timeout = self._positive_float(self._trigger_attr(self._trigger, "timeout", None))
+        if trigger_timeout is not None:
+            # pypylon RetrieveResult timeout is milliseconds.
+            self._retrieve_timeout_ms = max(1, int(float(trigger_timeout) * 1000.0))
+        else:
+            self._retrieve_timeout_ms = 100
+
+        if self.waits_for_hardware_trigger:
+            self._retrieve_timeout_ms = min(
+                self._retrieve_timeout_ms,
+                self._MAX_HARDWARE_TRIGGER_RETRIEVE_TIMEOUT_MS,
+            )
 
         # Stable identity (serial-based). Prefer new namespace; fall back to legacy keys read-only.
         self._device_id: str | None = None
@@ -95,6 +141,7 @@ class BaslerCameraBackend(CameraBackend):
                 "set_gain": SupportLevel.SUPPORTED,
                 "device_discovery": SupportLevel.BEST_EFFORT,
                 "stable_identity": SupportLevel.SUPPORTED,
+                "hardware_trigger": SupportLevel.BEST_EFFORT,
             }
         )
         return caps
@@ -314,6 +361,26 @@ class BaslerCameraBackend(CameraBackend):
         except Exception:
             return None
 
+    def trigger_once(self) -> None:
+        if self._camera is None:
+            raise RuntimeError("Basler camera not opened")
+
+        # pypylon commonly exposes ExecuteSoftwareTrigger on InstantCamera.
+        method = getattr(self._camera, "ExecuteSoftwareTrigger", None)
+        if method is not None:
+            method()
+            return
+
+        command = self._feature("TriggerSoftware")
+        if command is not None:
+            try:
+                command.Execute()
+                return
+            except Exception as exc:
+                raise RuntimeError(f"Failed to execute Basler software trigger: {exc}") from exc
+
+        raise RuntimeError("Basler software trigger command is not available")
+
     def open(self) -> None:
         if pylon is None:
             raise RuntimeError("pypylon is required for the Basler backend but is not installed")
@@ -373,6 +440,19 @@ class BaslerCameraBackend(CameraBackend):
                 self._camera.AcquisitionFrameRate.SetValue(fps)
             except Exception:
                 LOG.debug("Frame rate not writable or not supported", exc_info=True)
+
+        # ----------------------------
+        # Trigger configuration
+        # ----------------------------
+        self._debug_trigger_nodes(context="before configuration")
+        self._configure_trigger()
+        self._debug_trigger_nodes(context="after configuration")
+
+        try:
+            ns = self._ensure_mutable_ns()
+            ns["trigger_actual"] = self._trigger_to_dict(self._trigger)
+        except Exception:
+            pass
 
         # ----------------------------
         # Read back actual values (telemetry for GUI / probe)
@@ -443,6 +523,7 @@ class BaslerCameraBackend(CameraBackend):
             getattr(self.settings, "exposure", None),
             getattr(self.settings, "gain", None),
         )
+
         # ----------------------------
         # Persist stable identity into namespace (migration-safe)
         # ----------------------------
@@ -464,8 +545,13 @@ class BaslerCameraBackend(CameraBackend):
         if self._converter is None:
             raise RuntimeError("Basler camera opened in fast-start probe mode; cannot read frames")
         try:
-            grab_result = self._camera.RetrieveResult(100, pylon.TimeoutHandling_ThrowException)
+            grab_result = self._camera.RetrieveResult(
+                int(getattr(self, "_retrieve_timeout_ms", 100)),
+                pylon.TimeoutHandling_ThrowException,
+            )
         except Exception as exc:
+            if self.waits_for_hardware_trigger:
+                raise TimeoutError(f"Basler timeout while waiting for hardware trigger: {exc}") from exc
             raise RuntimeError("Failed to retrieve image from Basler camera.") from exc
         if not grab_result.GrabSucceeded():
             grab_result.Release()
@@ -494,7 +580,13 @@ class BaslerCameraBackend(CameraBackend):
                     self._camera.StopGrabbing()
                 except Exception:
                     pass
+
             if self._camera.IsOpen():
+                try:
+                    self._restore_trigger_idle()
+                except Exception:
+                    pass
+
                 self._camera.Close()
             self._camera = None
         self._converter = None
@@ -570,6 +662,365 @@ class BaslerCameraBackend(CameraBackend):
             pass
 
         return int(v)
+
+    @property
+    def waits_for_hardware_trigger(self) -> bool:
+        role = str(self._trigger_attr(getattr(self, "_trigger", None), "role", "off") or "off").lower()
+        return role in {"external", "follower"}
+
+    @staticmethod
+    def _trigger_attr(trigger, name: str, default=None):
+        if isinstance(trigger, dict):
+            return trigger.get(name, default)
+        return getattr(trigger, name, default)
+
+    @staticmethod
+    def _trigger_to_dict(trigger) -> dict:
+        if trigger is None:
+            return {}
+        if isinstance(trigger, dict):
+            return dict(trigger)
+        if hasattr(trigger, "model_dump"):
+            try:
+                return trigger.model_dump(exclude_none=True)
+            except Exception:
+                pass
+        return {}
+
+    def _feature(self, name: str):
+        if self._camera is None:
+            return None
+        try:
+            return getattr(self._camera, name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _feature_value(feature, default=None):
+        if feature is None:
+            return default
+        try:
+            return feature.GetValue()
+        except Exception:
+            return default
+
+    @staticmethod
+    def _feature_symbolics(feature) -> list[str]:
+        if feature is None:
+            return []
+
+        for method_name in ("GetSymbolics", "GetEntries"):
+            try:
+                method = getattr(feature, method_name, None)
+                if method is None:
+                    continue
+
+                values = method()
+                out = []
+
+                for value in values:
+                    try:
+                        if hasattr(value, "GetSymbolic"):
+                            out.append(str(value.GetSymbolic()))
+                        else:
+                            out.append(str(value))
+                    except Exception:
+                        continue
+
+                return [v for v in out if v]
+            except Exception:
+                continue
+
+        return []
+
+    def _set_enum_feature(self, name: str, value: str, *, strict: bool = False) -> bool:
+        feature = self._feature(name)
+
+        if feature is None:
+            if strict:
+                raise RuntimeError(f"Basler feature '{name}' is not available")
+            LOG.debug("Basler feature '%s' is not available; skipping", name)
+            return False
+
+        symbolics = self._feature_symbolics(feature)
+        if symbolics and value not in symbolics:
+            if strict:
+                raise RuntimeError(f"Basler feature '{name}' does not support '{value}'. Available: {symbolics}")
+            LOG.warning("Basler feature '%s' does not support '%s'. Available: %s", name, value, symbolics)
+            return False
+
+        try:
+            feature.SetValue(value)
+            return True
+        except Exception as exc:
+            if strict:
+                raise RuntimeError(f"Failed to set Basler feature '{name}' to '{value}': {exc}") from exc
+            LOG.warning("Failed to set Basler feature '%s' to '%s': %s", name, value, exc)
+            return False
+
+    def _set_numeric_feature(self, name: str, value, *, strict: bool = False) -> bool:
+        feature = self._feature(name)
+
+        if feature is None:
+            if strict:
+                raise RuntimeError(f"Basler feature '{name}' is not available")
+            LOG.debug("Basler feature '%s' is not available; skipping", name)
+            return False
+
+        try:
+            feature.SetValue(value)
+            return True
+        except Exception as exc:
+            if strict:
+                raise RuntimeError(f"Failed to set Basler feature '{name}' to '{value}': {exc}") from exc
+            LOG.warning("Failed to set Basler feature '%s' to '%s': %s", name, value, exc)
+            return False
+
+    def _debug_trigger_nodes(self, *, context: str = "") -> None:
+        names = (
+            "TriggerSelector",
+            "TriggerMode",
+            "TriggerSource",
+            "TriggerActivation",
+            "TriggerDelay",
+            "TriggerDelayAbs",
+            "AcquisitionMode",
+            "LineSelector",
+            "LineMode",
+            "LineSource",
+            "LineInverter",
+        )
+
+        label = f"Basler trigger debug {context}".strip()
+
+        for name in names:
+            feature = self._feature(name)
+            if feature is None:
+                continue
+
+            value = self._feature_value(feature, None)
+            symbolics = self._feature_symbolics(feature)
+
+            extras = []
+            if symbolics:
+                extras.append(f"symbolics={symbolics}")
+
+            for method_name in ("IsReadable", "IsWritable"):
+                try:
+                    method = getattr(feature, method_name, None)
+                    if method is not None:
+                        extras.append(f"{method_name}={method()}")
+                except Exception:
+                    pass
+
+            LOG.debug("%s: %s=%r %s", label, name, value, " ".join(extras))
+
+    def _resolve_trigger_source(self, requested: str, *, strict: bool) -> tuple[str, bool]:
+        requested = str(requested or "auto").strip()
+        feature = self._feature("TriggerSource")
+        available = self._feature_symbolics(feature)
+
+        if not available:
+            if strict:
+                raise RuntimeError("Basler feature 'TriggerSource' is not available or has no symbolics")
+            LOG.warning("Basler feature 'TriggerSource' is not available; disabling trigger input.")
+            return requested, False
+
+        if requested in available:
+            return requested, True
+
+        if requested.lower() == "auto":
+            for candidate in ("Line1", "Line2", "Line3", "Line4", "Line0", "Software", "Action1"):
+                if candidate in available:
+                    LOG.info("Basler TriggerSource auto-selected '%s'. Available: %s", candidate, available)
+                    return candidate, True
+
+            LOG.warning("Could not auto-select a Basler TriggerSource. Available: %s", available)
+            return requested, False
+
+        if strict:
+            raise RuntimeError(f"Basler feature 'TriggerSource' does not support '{requested}'. Available: {available}")
+
+        LOG.warning("Basler TriggerSource '%s' is not available. Available: %s", requested, available)
+        return requested, False
+
+    def _configure_trigger(self) -> None:
+        cfg = getattr(self, "_trigger", CameraTriggerSettings())
+        self._trigger = cfg
+        role = str(self._trigger_attr(cfg, "role", "off") or "off").strip().lower()
+        strict = bool(self._trigger_attr(cfg, "strict", False))
+
+        if role in {"off", "disabled"}:
+            self._configure_trigger_off(strict=strict)
+            return
+
+        if role in {"external", "follower"}:
+            self._configure_trigger_input(cfg, strict=strict)
+            return
+
+        if role == "software":
+            self._configure_trigger_software(cfg, strict=strict)
+            return
+
+        if role == "master":
+            self._configure_trigger_master(cfg, strict=strict)
+            return
+
+        if strict:
+            raise RuntimeError(f"Unsupported Basler trigger role: {role!r}")
+
+        LOG.warning("Unsupported Basler trigger role '%s'; disabling trigger.", role)
+        self._configure_trigger_off(strict=False)
+
+    def _configure_trigger_off(self, *, strict: bool = False) -> None:
+        # Select FrameStart first when possible so TriggerMode=Off applies to
+        # the frame-start trigger path.
+        self._set_enum_feature("TriggerSelector", "FrameStart", strict=False)
+        self._set_enum_feature("TriggerMode", "Off", strict=strict)
+
+    def _configure_trigger_input(self, cfg, *, strict: bool = False) -> None:
+        role = str(self._trigger_attr(cfg, "role", "external") or "external").strip().lower()
+        selector = str(self._trigger_attr(cfg, "selector", "FrameStart") or "FrameStart")
+        activation = str(self._trigger_attr(cfg, "activation", "RisingEdge") or "RisingEdge")
+        source = str(self._trigger_attr(cfg, "source", "auto") or "auto").strip()
+        delay = self._trigger_attr(cfg, "delay", None)
+
+        # Disable trigger while changing trigger-related parameters.
+        self._set_enum_feature("TriggerMode", "Off", strict=False)
+
+        selector_ok = self._set_enum_feature("TriggerSelector", selector, strict=strict)
+
+        resolved_source, source_supported = self._resolve_trigger_source(source, strict=strict)
+        source_ok = False
+        if source_supported:
+            source_ok = self._set_enum_feature("TriggerSource", resolved_source, strict=strict)
+
+        activation_ok = self._set_enum_feature("TriggerActivation", activation, strict=False)
+
+        if delay is not None:
+            delay_value = float(delay)
+            if not self._set_numeric_feature("TriggerDelay", delay_value, strict=False):
+                self._set_numeric_feature("TriggerDelayAbs", delay_value, strict=False)
+
+        self._set_enum_feature("AcquisitionMode", "Continuous", strict=False)
+
+        if not selector_ok:
+            LOG.warning("Could not apply Basler TriggerSelector=%s; disabling trigger.", selector)
+            self._configure_trigger_off(strict=False)
+            self._trigger = CameraTriggerSettings()
+            return
+
+        if not source_ok:
+            LOG.warning(
+                "Could not apply Basler TriggerSource=%s resolved=%s; disabling trigger.",
+                source,
+                resolved_source,
+            )
+            self._configure_trigger_off(strict=False)
+            self._trigger = CameraTriggerSettings()
+            return
+
+        if not self._set_enum_feature("TriggerMode", "On", strict=strict):
+            LOG.warning("Could not enable Basler TriggerMode=On; disabling trigger.")
+            self._configure_trigger_off(strict=False)
+            self._trigger = CameraTriggerSettings()
+            return
+
+        LOG.info(
+            "Basler trigger input configured: role=%s selector=%s source=%s activation=%s "
+            "selector_ok=%s source_ok=%s activation_ok=%s",
+            role,
+            selector,
+            resolved_source,
+            activation,
+            selector_ok,
+            source_ok,
+            activation_ok,
+        )
+
+    def _configure_trigger_software(self, cfg, *, strict: bool = False) -> None:
+        selector = str(self._trigger_attr(cfg, "selector", "FrameStart") or "FrameStart")
+        delay = self._trigger_attr(cfg, "delay", None)
+
+        self._set_enum_feature("TriggerMode", "Off", strict=False)
+
+        selector_ok = self._set_enum_feature("TriggerSelector", selector, strict=strict)
+        source_ok = self._set_enum_feature("TriggerSource", "Software", strict=strict)
+
+        if delay is not None:
+            delay_value = float(delay)
+            if not self._set_numeric_feature("TriggerDelay", delay_value, strict=False):
+                self._set_numeric_feature("TriggerDelayAbs", delay_value, strict=False)
+
+        self._set_enum_feature("AcquisitionMode", "Continuous", strict=False)
+
+        if not selector_ok or not source_ok:
+            LOG.warning(
+                "Could not configure Basler software trigger selector_ok=%s source_ok=%s; disabling trigger.",
+                selector_ok,
+                source_ok,
+            )
+            self._configure_trigger_off(strict=False)
+            self._trigger = CameraTriggerSettings()
+            return
+
+        if not self._set_enum_feature("TriggerMode", "On", strict=strict):
+            LOG.warning("Could not enable Basler software TriggerMode=On; disabling trigger.")
+            self._configure_trigger_off(strict=False)
+            self._trigger = CameraTriggerSettings()
+            return
+
+        LOG.info("Basler software trigger configured: selector=%s source=Software", selector)
+
+    def _configure_trigger_master(self, cfg, *, strict: bool = False) -> None:
+        output_line = str(self._trigger_attr(cfg, "output_line", "Line2") or "Line2")
+        output_source = str(self._trigger_attr(cfg, "output_source", "ExposureActive") or "ExposureActive")
+
+        # Master camera should acquire freely.
+        self._configure_trigger_off(strict=False)
+
+        selected = self._set_enum_feature("LineSelector", output_line, strict=strict)
+        if not selected:
+            msg = f"Could not select Basler output line '{output_line}'"
+            if strict:
+                raise RuntimeError(msg)
+            LOG.warning("%s; skipping master output configuration.", msg)
+            return
+
+        mode_ok = self._set_enum_feature("LineMode", "Output", strict=strict)
+        source_ok = self._set_enum_feature("LineSource", output_source, strict=strict)
+
+        if mode_ok and source_ok:
+            LOG.info(
+                "Basler trigger master configured via Line*: output_line=%s output_source=%s",
+                output_line,
+                output_source,
+            )
+            return
+
+        msg = (
+            "Could not configure Basler trigger master output completely "
+            f"(LineMode ok={mode_ok}, LineSource ok={source_ok})."
+        )
+
+        if strict:
+            raise RuntimeError(msg)
+
+        LOG.warning(msg)
+
+    def _restore_trigger_idle(self) -> None:
+        role = str(self._trigger_attr(getattr(self, "_trigger", None), "role", "off") or "off").lower()
+
+        try:
+            if role in {"external", "follower", "software"}:
+                self._set_enum_feature("TriggerMode", "Off", strict=False)
+
+            elif role == "master":
+                self._set_enum_feature("LineSource", "Off", strict=False)
+                self._set_enum_feature("LineMode", "Input", strict=False)
+
+        except Exception:
+            LOG.debug("Best-effort Basler trigger restore failed", exc_info=True)
 
     def _configure_resolution(self) -> None:
         """
