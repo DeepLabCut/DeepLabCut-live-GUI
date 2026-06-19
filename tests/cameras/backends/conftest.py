@@ -381,31 +381,114 @@ def fake_aravis_stream():
 # -----------------------------------------------------------------------------
 
 
-class FakePylon:
-    """Minimal fake for 'from pypylon import pylon' usage in basler_backend."""
+class FakePylonTimeoutException(RuntimeError):
+    pass
 
-    # Constants used by Basler backend
+
+class FakePylon:
+    """Fake for 'from pypylon import pylon' used by BaslerCameraBackend."""
+
     GrabStrategy_LatestImageOnly = 1
     TimeoutHandling_ThrowException = 1
-    PixelType_BGR8packed = 0x02180014  # arbitrary token
+    PixelType_BGR8packed = 0x02180014
     OutputBitAlignment_MsbAligned = 1
 
+    class _EnumEntry:
+        def __init__(self, symbolic: str):
+            self._symbolic = symbolic
+
+        def GetSymbolic(self):
+            return self._symbolic
+
     class _Feature:
-        def __init__(self, value=0):
+        def __init__(
+            self,
+            value=0,
+            *,
+            symbolics: list[str] | None = None,
+            minimum=None,
+            maximum=None,
+            increment=1,
+            writable=True,
+            readable=True,
+        ):
             self._value = value
+            self._symbolics = list(symbolics or [])
+            self._min = minimum
+            self._max = maximum
+            self._inc = increment
+            self._writable = writable
+            self._readable = readable
+            self.set_calls: list[object] = []
 
         def SetValue(self, v):
+            if not self._writable:
+                raise RuntimeError("feature is not writable")
+            if self._symbolics and v not in self._symbolics:
+                raise RuntimeError(f"unsupported symbolic {v!r}; available={self._symbolics}")
             self._value = v
+            self.set_calls.append(v)
 
         def GetValue(self):
+            if not self._readable:
+                raise RuntimeError("feature is not readable")
             return self._value
 
+        def GetSymbolics(self):
+            return list(self._symbolics)
+
+        def GetEntries(self):
+            return [FakePylon._EnumEntry(s) for s in self._symbolics]
+
+        def IsWritable(self):
+            return bool(self._writable)
+
+        def IsReadable(self):
+            return bool(self._readable)
+
+        def GetMin(self):
+            if self._min is None:
+                raise RuntimeError("no min")
+            return self._min
+
+        def GetMax(self):
+            if self._max is None:
+                raise RuntimeError("no max")
+            return self._max
+
+        def GetInc(self):
+            return self._inc
+
     class _DeviceInfo:
-        def __init__(self, serial: str):
+        def __init__(
+            self,
+            serial: str,
+            *,
+            vendor: str = "Basler",
+            model: str = "FakeBasler",
+            friendly: str | None = None,
+            full_name: str | None = None,
+        ):
             self._serial = serial
+            self._vendor = vendor
+            self._model = model
+            self._friendly = friendly or f"{vendor} {model} ({serial})"
+            self._full_name = full_name or f"FakeFullName-{serial}"
 
         def GetSerialNumber(self):
             return self._serial
+
+        def GetVendorName(self):
+            return self._vendor
+
+        def GetModelName(self):
+            return self._model
+
+        def GetFriendlyName(self):
+            return self._friendly
+
+        def GetFullName(self):
+            return self._full_name
 
     class _Device:
         def __init__(self, info):
@@ -433,12 +516,13 @@ class FakePylon:
         def __init__(self, ok=True, array=None):
             self._ok = ok
             self._array = array
+            self.released = False
 
         def GrabSucceeded(self):
             return bool(self._ok)
 
         def Release(self):
-            return None
+            self.released = True
 
     class InstantCamera:
         def __init__(self, device):
@@ -446,36 +530,106 @@ class FakePylon:
             self._open = False
             self._grabbing = False
 
-            # Feature nodes the backend uses
+            self.retrieve_calls: list[int] = []
+            self.start_calls = 0
+            self.stop_calls = 0
+            self.close_calls = 0
+            self.software_trigger_calls = 0
+            self._software_trigger_pending = 0
+
+            # General camera controls.
+            self.ExposureAuto = FakePylon._Feature("Off", symbolics=["Off", "Once", "Continuous"])
             self.ExposureTime = FakePylon._Feature(1000.0)
+            self.GainAuto = FakePylon._Feature("Off", symbolics=["Off", "Once", "Continuous"])
             self.Gain = FakePylon._Feature(0.0)
-            self.Width = FakePylon._Feature(1920)
-            self.Height = FakePylon._Feature(1080)
+
+            self.Width = FakePylon._Feature(1920, minimum=64, maximum=4096, increment=2)
+            self.Height = FakePylon._Feature(1080, minimum=64, maximum=4096, increment=2)
 
             self.AcquisitionFrameRateEnable = FakePylon._Feature(False)
             self.AcquisitionFrameRate = FakePylon._Feature(30.0)
+
+            self.MaxNumBuffer = FakePylon._Feature(10)
+
+            # Basler/pypylon trigger features.
+            self.AcquisitionMode = FakePylon._Feature("Continuous", symbolics=["Continuous", "SingleFrame"])
+            self.TriggerSelector = FakePylon._Feature("FrameStart", symbolics=["FrameStart"])
+            self.TriggerMode = FakePylon._Feature("Off", symbolics=["Off", "On"])
+            self.TriggerSource = FakePylon._Feature(
+                "Software",
+                symbolics=[
+                    "Software",
+                    "Line1",
+                    "Line2",
+                    "Line3",
+                    "PeriodicSignal1",
+                    "Action1",
+                ],
+            )
+            self.TriggerActivation = FakePylon._Feature(
+                "RisingEdge",
+                symbolics=["RisingEdge", "FallingEdge", "AnyEdge", "LevelHigh", "LevelLow"],
+            )
+            self.TriggerDelay = FakePylon._Feature(0.0)
+
+            # Generic output line features.
+            self.LineSelector = FakePylon._Feature("Line1", symbolics=["Line1", "Line2", "Line3"])
+            self.LineMode = FakePylon._Feature("Input", symbolics=["Input", "Output"])
+            self.LineSource = FakePylon._Feature(
+                "Off",
+                symbolics=["Off", "ExposureActive", "AcquisitionActive"],
+            )
+            self.LineInverter = FakePylon._Feature(False)
+
+            # Test knobs.
+            self.allow_hardware_trigger_frame = False
+            self.force_failed_grab = False
 
         def Open(self):
             self._open = True
 
         def Close(self):
+            self.close_calls += 1
             self._open = False
 
         def IsOpen(self):
             return bool(self._open)
 
         def StartGrabbing(self, *_args, **_kwargs):
+            self.start_calls += 1
             self._grabbing = True
 
         def StopGrabbing(self):
+            self.stop_calls += 1
             self._grabbing = False
 
         def IsGrabbing(self):
             return bool(self._grabbing)
 
-        def RetrieveResult(self, *_args, **_kwargs):
-            # Always succeed with a small dummy image (BGR)
-            import numpy as np
+        def ExecuteSoftwareTrigger(self):
+            self.software_trigger_calls += 1
+            self._software_trigger_pending += 1
+
+        def RetrieveResult(self, timeout_ms, *_args, **_kwargs):
+            self.retrieve_calls.append(int(timeout_ms))
+
+            if not self._grabbing:
+                raise FakePylonTimeoutException("Grab timed out: acquisition not started")
+
+            if self.force_failed_grab:
+                return FakePylon._GrabResult(ok=False, array=None)
+
+            trigger_on = self.TriggerMode.GetValue() == "On"
+            source = self.TriggerSource.GetValue()
+
+            if trigger_on:
+                if source == "Software":
+                    if self._software_trigger_pending <= 0:
+                        raise FakePylonTimeoutException("Grab timed out: waiting for software trigger")
+                    self._software_trigger_pending -= 1
+                else:
+                    if not self.allow_hardware_trigger_frame:
+                        raise FakePylonTimeoutException("Grab timed out: waiting for hardware trigger")
 
             frame = np.zeros((10, 10, 3), dtype=np.uint8)
             return FakePylon._GrabResult(ok=True, array=frame)
@@ -498,23 +652,59 @@ class FakePylon:
 
 @pytest.fixture()
 def fake_pylon_module():
-    """
-    Returns the FakePylon 'module' and resets singleton devices for isolation.
-    """
-    # reset singleton factory so devices list resets per test
+    """Returns fake pylon module and resets fake device inventory."""
     FakePylon.TlFactory._instance = None
+    factory = FakePylon.TlFactory.GetInstance()
+    factory._devices = [
+        FakePylon._DeviceInfo("FAKE-BASLER-0"),
+        FakePylon._DeviceInfo("FAKE-BASLER-1"),
+    ]
     return FakePylon
 
 
 @pytest.fixture()
 def patch_basler_sdk(monkeypatch, fake_pylon_module):
-    """
-    Patch Basler backend to behave as if pypylon is installed, using FakePylon.
-    """
+    """Patch Basler backend to use FakePylon."""
     import dlclivegui.cameras.backends.basler_backend as bb
 
     monkeypatch.setattr(bb, "pylon", fake_pylon_module, raising=False)
     return fake_pylon_module
+
+
+@pytest.fixture()
+def basler_settings_factory():
+    from dlclivegui.config import CameraSettings
+
+    def _make(
+        *,
+        index=0,
+        name="BaslerTestCam",
+        width=0,
+        height=0,
+        fps=0.0,
+        exposure=0,
+        gain=0.0,
+        enabled=True,
+        properties=None,
+    ):
+        props = properties if isinstance(properties, dict) else {}
+        props.setdefault("basler", {})
+        props["basler"] = dict(props["basler"])
+
+        return CameraSettings(
+            name=name,
+            index=index,
+            backend="basler",
+            width=width,
+            height=height,
+            fps=fps,
+            exposure=exposure,
+            gain=gain,
+            enabled=enabled,
+            properties=props,
+        )
+
+    return _make
 
 
 # -----------------------------------------------------------------------------
