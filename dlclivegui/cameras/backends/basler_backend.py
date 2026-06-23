@@ -9,7 +9,8 @@ from typing import ClassVar
 
 import numpy as np
 
-from ...config import CameraTriggerSettings
+from ...config import SINGLE_CAMERA_WORKER_DO_LOG_TIMING, CameraTriggerSettings
+from ...utils.stats import WorkerTimingStats
 from ..base import CameraBackend, SupportLevel, register_backend
 
 LOG = logging.getLogger(__name__)
@@ -107,6 +108,16 @@ class BaslerCameraBackend(CameraBackend):
         self._actual_fps: float | None = None
         self._actual_exposure: float | None = None
         self._actual_gain: float | None = None
+
+        # ---- Timing stats for logging (optional) ----
+        msg = self._device_id or f"index:{getattr(settings, 'index', '?')}"
+        timing_id = f"Basler {msg}"
+        self._timing = WorkerTimingStats(
+            timing_id,
+            logger=LOG,
+            log_interval=1.0,
+            enabled=SINGLE_CAMERA_WORKER_DO_LOG_TIMING,
+        )
 
     @property
     def actual_resolution(self) -> tuple[int, int] | None:
@@ -381,6 +392,66 @@ class BaslerCameraBackend(CameraBackend):
 
         raise RuntimeError("Basler software trigger command is not available")
 
+    def _configure_frame_rate(self) -> None:
+        if self._camera is None:
+            return
+
+        fps = self._positive_float(getattr(self.settings, "fps", 0.0))
+        if fps is None:
+            LOG.info("[Basler] FPS: auto/free-run, not forcing AcquisitionFrameRate")
+            return
+
+        enable = self._feature("AcquisitionFrameRateEnable")
+        rate = self._feature("AcquisitionFrameRate")
+
+        try:
+            if enable is not None:
+                enable.SetValue(True)
+
+            if rate is None:
+                LOG.warning("[Basler] AcquisitionFrameRate node not available; cannot set FPS=%s", fps)
+                return
+
+            try:
+                min_v = rate.GetMin()
+                max_v = rate.GetMax()
+                LOG.info("[Basler] AcquisitionFrameRate range: min=%s max=%s requested=%s", min_v, max_v, fps)
+            except Exception:
+                pass
+
+            rate.SetValue(float(fps))
+
+        except Exception as exc:
+            LOG.warning("[Basler] Failed to set AcquisitionFrameRate=%s: %s", fps, exc, exc_info=True)
+
+        # Readbacks
+        readbacks = {}
+        for name in (
+            "AcquisitionFrameRateEnable",
+            "AcquisitionFrameRate",
+            "ResultingFrameRate",
+            "ResultingAcquisitionFrameRate",
+            "AcquisitionResultingFrameRate",
+            "BslResultingAcquisitionFrameRate",
+            "ExposureAuto",
+            "ExposureTime",
+            "Width",
+            "Height",
+            "PixelFormat",
+            "TestImageSelector",
+            "ImageFileMode",
+        ):
+            feature = self._feature(name)
+            if feature is not None:
+                readbacks[name] = self._feature_value(feature, None)
+
+        LOG.info("[Basler] FPS readback requested=%s values=%s", fps, readbacks)
+
+        try:
+            self._actual_fps = float(readbacks.get("AcquisitionFrameRate"))
+        except Exception:
+            self._actual_fps = None
+
     def open(self) -> None:
         if pylon is None:
             raise RuntimeError("pypylon is required for the Basler backend but is not installed")
@@ -427,19 +498,7 @@ class BaslerCameraBackend(CameraBackend):
         # ----------------------------
         # Frame rate (0.0 = Auto → do not set)
         # ----------------------------
-        fps = self._positive_float(getattr(self.settings, "fps", 0.0))
-
-        if fps is not None:
-            try:
-                # Some models require enable flag to be writable
-                if hasattr(self._camera, "AcquisitionFrameRateEnable"):
-                    try:
-                        self._camera.AcquisitionFrameRateEnable.SetValue(True)
-                    except Exception:
-                        pass
-                self._camera.AcquisitionFrameRate.SetValue(fps)
-            except Exception:
-                LOG.debug("Frame rate not writable or not supported", exc_info=True)
+        self._configure_frame_rate()
 
         # ----------------------------
         # Trigger configuration
@@ -544,28 +603,59 @@ class BaslerCameraBackend(CameraBackend):
             raise RuntimeError("Basler camera not opened")
         if self._converter is None:
             raise RuntimeError("Basler camera opened in fast-start probe mode; cannot read frames")
+
+        grab_result = None
+
         try:
-            grab_result = self._camera.RetrieveResult(
-                int(getattr(self, "_retrieve_timeout_ms", 100)),
-                pylon.TimeoutHandling_ThrowException,
-            )
+            with self._timing.measure("Basler.retrieve"):
+                grab_result = self._camera.RetrieveResult(
+                    int(getattr(self, "_retrieve_timeout_ms", 100)),
+                    pylon.TimeoutHandling_ThrowException,
+                )
+
+            with self._timing.measure("Basler.check_result"):
+                if not grab_result.GrabSucceeded():
+                    grab_result.Release()
+                    grab_result = None
+                    self._timing.note_error()
+                    self._timing.maybe_log()
+                    raise RuntimeError("Basler camera did not return an image")
+
+            with self._timing.measure("Basler.convert"):
+                image = self._converter.Convert(grab_result)
+
+            with self._timing.measure("Basler.get_array"):
+                frame = image.GetArray()
+
+            with self._timing.measure("Basler.release"):
+                grab_result.Release()
+                grab_result = None
+
+            if self._actual_width is None or self._actual_height is None:
+                h, w = frame.shape[:2]
+                self._actual_width = int(w)
+                self._actual_height = int(h)
+
+            self._timing.note_frame()
+            self._timing.maybe_log()
+
+            return frame, time.time()
+
         except Exception as exc:
+            if grab_result is not None:
+                try:
+                    grab_result.Release()
+                except Exception:
+                    pass
+
             if self.waits_for_hardware_trigger:
+                self._timing.note_timeout()
+                self._timing.maybe_log()
                 raise TimeoutError(f"Basler timeout while waiting for hardware trigger: {exc}") from exc
+
+            self._timing.note_error()
+            self._timing.maybe_log()
             raise RuntimeError("Failed to retrieve image from Basler camera.") from exc
-        if not grab_result.GrabSucceeded():
-            grab_result.Release()
-            raise RuntimeError("Basler camera did not return an image")
-        image = self._converter.Convert(grab_result)
-        frame = image.GetArray()
-        grab_result.Release()
-
-        if self._actual_width is None or self._actual_height is None:
-            h, w = frame.shape[:2]
-            self._actual_width = int(w)
-            self._actual_height = int(h)
-
-        return frame, time.time()
 
     def close(self) -> None:
         LOG.info(
