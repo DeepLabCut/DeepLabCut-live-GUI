@@ -17,8 +17,16 @@ TriggerActivation = Literal["RisingEdge", "FallingEdge", "AnyEdge", "LevelHigh",
 TriggerStrobePolarity = Literal["ActiveHigh", "ActiveLow"]
 TriggerStrobeOperation = Literal["Exposure", "FixedDuration"]
 
-SINGLE_CAMERA_WORKER_DO_LOG_TIMING = False
-MULTI_CAMERA_WORKER_DO_LOG_TIMING = True
+# Global settings
+## GUI
+GUI_MAX_DISPLAY_FPS: float = 30.0
+
+
+## Debug
+### Timing logs
+SINGLE_CAMERA_WORKER_DO_LOG_TIMING: bool = True
+MULTI_CAMERA_WORKER_DO_LOG_TIMING: bool = True
+# MAIN_WINDOW_DO_LOG_TIMING: bool = False
 
 
 class CameraSettings(BaseModel):
