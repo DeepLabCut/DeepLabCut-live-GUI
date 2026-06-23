@@ -867,6 +867,9 @@ class BaslerCameraBackend(CameraBackend):
             return False
 
     def _debug_trigger_nodes(self, *, context: str = "") -> None:
+        if not LOG.isEnabledFor(logging.DEBUG):
+            return
+
         names = (
             "TriggerSelector",
             "TriggerMode",
