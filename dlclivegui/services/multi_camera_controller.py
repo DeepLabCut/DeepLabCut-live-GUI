@@ -207,6 +207,22 @@ class SingleCameraWorker(QObject):
 
 
 def get_display_id(settings: CameraSettings) -> str:
+    """Return the human-friendly camera label used for GUI display.
+    Intentionally different from get_camera_id(), which should return a stable
+    internal, reliable and unambiguous identity and may contain serials or machine paths.
+    """
+    name = str(getattr(settings, "name", "") or "").strip()
+    if name:
+        return name
+
+    backend = (settings.backend or "").lower()
+    props = settings.properties if isinstance(settings.properties, dict) else {}
+    ns = props.get(backend, {}) if isinstance(props.get(backend), dict) else {}
+
+    device_name = str(ns.get("device_name", "") or "").strip()
+    if device_name:
+        return device_name
+
     return f"{settings.backend}:{settings.index}"
 
 

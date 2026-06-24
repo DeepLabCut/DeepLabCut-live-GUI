@@ -65,7 +65,7 @@ from ..processors.processor_utils import (
     scan_processor_package,
 )
 from ..services.dlc_processor import DLCLiveProcessor, PoseResult
-from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
+from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id, get_display_id
 from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import format_dlc_stats
@@ -164,6 +164,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Multi-camera state
         self._multi_camera_mode = False
         self._multi_camera_frames: dict[str, np.ndarray] = {}
+        self._multi_camera_display_ids: dict[str, str] = {}  # camera_id -> display_id (for labeling)
         # DLC pose rendering info for tiled view
         self._dlc_tile_offset: tuple[int, int] = (0, 0)  # (x, y) offset in tiled frame
         self._dlc_tile_scale: tuple[float, float] = (1.0, 1.0)  # (scale_x, scale_y)
@@ -1379,6 +1380,7 @@ class DLCLiveMainWindow(QMainWindow):
         2. Recording (queued writes, non-blocking)
         """
         self._multi_camera_frames = frame_data.frames
+        self._multi_camera_display_ids = frame_data.display_ids or {}
         src_id = frame_data.source_camera_id
         if src_id:
             self._fps_tracker.note_frame(src_id)  # Track FPS
@@ -1439,6 +1441,7 @@ class DLCLiveMainWindow(QMainWindow):
         Called at GUI_MAX_DISPLAY_FPS, not at camera capture FPS for performance reasons.
         """
         self._multi_camera_frames = frame_data.frames
+        self._multi_camera_display_ids = frame_data.display_ids or {}
         self._display_dirty = True
 
     def _on_multi_camera_started(self) -> None:
@@ -1459,6 +1462,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.stop_preview_button.setEnabled(False)
         self._current_frame = None
         self._multi_camera_frames.clear()
+        self._multi_camera_display_ids.clear()
         self.video_label.setPixmap(QPixmap())
         self.video_label.setText("Camera preview not started")
         self.statusBar().showMessage("Multi-camera preview stopped", 3000)
@@ -1593,6 +1597,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._raw_frame = None
         self._last_pose = None
         self._multi_camera_frames.clear()
+        self._multi_camera_display_ids.clear()
         self._fps_tracker.clear()
         self._last_display_time = 0.0
 
@@ -1735,7 +1740,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._display_dirty = False
 
         # Create tiled frame on demand (moved from camera thread for performance)
-        tiled = create_tiled_frame(self._multi_camera_frames)
+        tiled = create_tiled_frame(self._multi_camera_frames, labels=self._multi_camera_display_ids)
         if tiled is not None:
             self._current_frame = tiled
             self._update_video_display(tiled)
@@ -1751,10 +1756,11 @@ class DLCLiveMainWindow(QMainWindow):
                 active_cams = self._config.multi_camera.get_active_cameras()
                 lines = []
                 for cam in active_cams:
-                    cam_id = get_camera_id(cam)  # e.g., "opencv:0" or "pylon:1"
+                    cam_id = get_camera_id(cam)
+                    display_id = get_display_id(cam)
                     fps = self._fps_tracker.fps(cam_id)
                     # Make a compact label: name [backend:index] @ fps
-                    label = f"{cam.name or cam_id} [{cam.backend}:{cam.index}]"
+                    label = f"{display_id} [{cam.backend}:{cam.index}]"
                     if fps > 0:
                         lines.append(f"{label} @ {fps:.1f} fps")
                     else:
