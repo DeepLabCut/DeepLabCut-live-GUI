@@ -1369,7 +1369,7 @@ class GenTLCameraBackend(CameraBackend):
 
             pixel_format_node.value = selected
             self._pixel_format = str(pixel_format_node.value)
-            self._actual_pixel_format = self._pixel_format
+            self._camera_pixel_format = self._pixel_format
 
             LOG.debug("GenTL pixel format selected: %s", self._pixel_format)
 
