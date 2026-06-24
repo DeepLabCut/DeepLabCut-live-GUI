@@ -52,6 +52,8 @@ class AravisCameraBackend(CameraBackend):
         self._actual_width: int | None = None
         self._actual_height: int | None = None
         self._actual_fps: float | None = None
+        self._camera_pixel_format: str | None = None
+        self._actual_output_format: str | None = None
 
         self._camera = None
         self._stream = None
