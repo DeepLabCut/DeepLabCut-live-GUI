@@ -50,6 +50,7 @@ class SingleCameraWorker(QObject):
 
     frame_captured = Signal(str, object, float)  # camera_id, frame, timestamp
     error_occurred = Signal(str, str)  # camera_id, error_message
+    runtime_info = Signal(str, object)  # camera_id, dict of runtime info
     started = Signal(str)  # camera_id
     stopped = Signal(str)  # camera_id
 
@@ -96,6 +97,15 @@ class SingleCameraWorker(QObject):
             )
 
             self._backend.open()
+            self.runtime_info.emit(
+                self._camera_id,
+                {
+                    "actual_fps": getattr(self._backend, "actual_fps", None),
+                    "actual_resolution": getattr(self._backend, "actual_resolution", None),
+                    "actual_pixel_format": getattr(self._backend, "actual_pixel_format", None),
+                    "actual_output_format": getattr(self._backend, "actual_output_format", None),
+                },
+            )
         except Exception as exc:
             LOGGER.exception(f"Failed to initialize camera {self._camera_id}", exc_info=exc)
             self.error_occurred.emit(self._camera_id, f"Failed to initialize camera: {exc}")
@@ -288,6 +298,7 @@ class MultiCameraController(QObject):
         self._workers: dict[str, SingleCameraWorker] = {}
         self._threads: dict[str, QThread] = {}
         self._settings: dict[str, CameraSettings] = {}
+        self._runtime_info: dict[str, dict] = {}
         self._frames: dict[str, np.ndarray] = {}
         self._timestamps: dict[str, float] = {}
         self._frame_lock = Lock()
@@ -433,6 +444,7 @@ class MultiCameraController(QObject):
 
         # Connections unchanged
         thread.started.connect(worker.run)
+        worker.runtime_info.connect(self._on_camera_runtime_info)
         worker.frame_captured.connect(self._on_frame_captured)
         worker.started.connect(self._on_camera_started)
         worker.stopped.connect(self._on_camera_stopped)
@@ -632,6 +644,36 @@ class MultiCameraController(QObject):
 
         timing.note_frame()
         timing.maybe_log()
+
+    def _on_camera_runtime_info(self, camera_id: str, info: object) -> None:
+        if not isinstance(info, dict):
+            return
+
+        self._runtime_info[camera_id] = dict(info)
+
+        actual_fps = info.get("actual_fps")
+        LOGGER.info(
+            "Camera %s runtime info: actual_fps=%s actual_resolution=%s pixel_format=%s output_format=%s",
+            camera_id,
+            actual_fps,
+            info.get("actual_resolution"),
+            info.get("actual_pixel_format"),
+            info.get("actual_output_format"),
+        )
+
+    def actual_fps_by_camera_id(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+
+        for camera_id, info in self._runtime_info.items():
+            try:
+                fps = float(info.get("actual_fps") or 0.0)
+            except Exception:
+                fps = 0.0
+
+            if fps > 0.0:
+                out[camera_id] = fps
+
+        return out
 
     @staticmethod
     def apply_rotation(frame: np.ndarray, degrees: int) -> np.ndarray:

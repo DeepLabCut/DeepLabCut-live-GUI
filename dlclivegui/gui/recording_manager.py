@@ -39,6 +39,55 @@ class RecordingManager:
     def run_dir(self) -> Path | None:
         return self._run_dir
 
+    @staticmethod
+    def _backend_ns(cam: CameraSettings) -> dict:
+        backend = (cam.backend or "").lower()
+        props = cam.properties if isinstance(cam.properties, dict) else {}
+        ns = props.get(backend, {})
+        return ns if isinstance(ns, dict) else {}
+
+    @classmethod
+    def _resolve_recording_fps(
+        cls,
+        cam: CameraSettings,
+        cam_id: str,
+        frame_rates: dict[str, float] | None,
+    ) -> float | None:
+        """Resolve writer FPS.
+
+        Prefer runtime measured FPS, then backend-probed detected_fps,
+        then explicit requested cam.fps. Auto/unknown returns None.
+        """
+        measured_fps = 0.0
+        if frame_rates:
+            try:
+                measured_fps = float(frame_rates.get(cam_id, 0.0) or 0.0)
+            except Exception:
+                measured_fps = 0.0
+
+        if measured_fps > 0.0:
+            return measured_fps
+
+        ns = cls._backend_ns(cam)
+
+        try:
+            detected_fps = float(ns.get("detected_fps", 0.0) or 0.0)
+        except Exception:
+            detected_fps = 0.0
+
+        if detected_fps > 0.0:
+            return detected_fps
+
+        try:
+            requested_fps = float(getattr(cam, "fps", 0.0) or 0.0)
+        except Exception:
+            requested_fps = 0.0
+
+        if requested_fps > 0.0:
+            return requested_fps
+
+        return None
+
     def pop(self, cam_id: str, default=None) -> VideoRecorder | None:
         return self._recorders.pop(cam_id, default)
 
@@ -48,6 +97,7 @@ class RecordingManager:
         active_cams: list[CameraSettings],
         current_frames: dict[str, np.ndarray],
         *,
+        frame_rates: dict[str, float] | None = None,
         session_name: str = "session",
         use_timestamp: bool = True,
         all_or_nothing: bool = False,
@@ -97,11 +147,22 @@ class RecordingManager:
 
             frame = current_frames.get(cam_id)
             frame_size = (frame.shape[0], frame.shape[1]) if frame is not None else None
+            recorder_fps = self._resolve_recording_fps(cam, cam_id, frame_rates)
+
+            log.debug(
+                "Starting recorder %s -> %s frame_size=%s requested_fps=%s detected_fps=%s recorder_fps=%s",
+                cam_id,
+                cam_path,
+                frame_size,
+                getattr(cam, "fps", None),
+                self._backend_ns(cam).get("detected_fps"),
+                f"{recorder_fps:.3f}" if recorder_fps else "auto/fallback",
+            )
 
             recorder = VideoRecorder(
                 cam_path,
                 frame_size=frame_size,
-                frame_rate=float(cam.fps),
+                frame_rate=recorder_fps,
                 codec=recording.codec,
                 crf=recording.crf,
                 convert_grayscale_to_rgb=not bool(getattr(cam, "preserve_mono", False)),
