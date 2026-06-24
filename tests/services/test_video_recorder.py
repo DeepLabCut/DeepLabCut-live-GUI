@@ -372,3 +372,49 @@ def test_stop_timeout_marks_abandoned_and_prevents_restart(
     assert rec._abandoned is False
     rec.start()
     rec.stop()
+
+
+def test_video_recorder_preserves_gray_when_requested(monkeypatch, tmp_path):
+    written = []
+
+    class FakeWriter:
+        def write(self, frame):
+            written.append(frame)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("dlclivegui.services.video_recorder.WriteGear", lambda *a, **k: FakeWriter())
+
+    rec = vr_mod.VideoRecorder(
+        tmp_path / "out.mp4",
+        frame_size=(10, 20),
+        frame_rate=100,
+        convert_grayscale_to_rgb=False,
+    )
+    rec.start()
+    rec.write(np.zeros((10, 20), dtype=np.uint8))
+    rec.stop()
+
+    assert written
+    assert written[0].shape == (10, 20)
+
+
+def test_video_recorder_expands_gray_by_default(monkeypatch, tmp_path):
+    written = []
+
+    class FakeWriter:
+        def write(self, frame):
+            written.append(frame)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("dlclivegui.services.video_recorder.WriteGear", lambda *a, **k: FakeWriter())
+
+    rec = vr_mod.VideoRecorder(tmp_path / "out.mp4", frame_size=(10, 20), frame_rate=100)
+    rec.start()
+    rec.write(np.zeros((10, 20), dtype=np.uint8))
+    rec.stop()
+
+    assert written[0].shape == (10, 20, 3)
