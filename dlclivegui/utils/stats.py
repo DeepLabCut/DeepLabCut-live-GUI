@@ -4,8 +4,10 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from dlclivegui.services.dlc_processor import ProcessorStats
+if TYPE_CHECKING:
+    from dlclivegui.services.dlc_processor import ProcessorStats
 
 
 @dataclass
