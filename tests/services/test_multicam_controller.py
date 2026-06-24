@@ -205,6 +205,25 @@ def test_get_camera_id_falls_back_to_index_without_stable_identity():
 
 
 @pytest.mark.unit
+def test_get_display_id_is_human_index_label():
+    cam = CameraSettings(
+        name="GenTL Cam",
+        backend="gentl",
+        index=3,
+        properties={
+            "gentl": {
+                "device_id": "serial:30220469",
+                "serial_number": "30220469",
+            }
+        },
+    ).apply_defaults()
+
+    assert get_camera_id(cam) == "gentl:serial:30220469"
+    assert get_display_id(cam) == "GenTL Cam"
+    assert get_camera_id(cam) != get_display_id(cam)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("role", "expected"),
     [
@@ -234,6 +253,23 @@ def test_trigger_role_from_settings_aliases(role, expected):
     ).apply_defaults()
 
     assert _trigger_role_from_settings(cam) == expected
+
+
+@pytest.mark.unit
+def test_get_display_id_falls_back_to_backend_index_without_name():
+    cam = CameraSettings(
+        name="",
+        backend="gentl",
+        index=3,
+        properties={
+            "gentl": {
+                "device_id": "serial:30220469",
+                "serial_number": "30220469",
+            }
+        },
+    ).apply_defaults()
+
+    assert get_display_id(cam) == "gentl:3"
 
 
 @pytest.mark.unit
@@ -345,6 +381,62 @@ def test_frame_ready_emits_frames_in_user_configured_order(qtbot, patch_factory)
         qtbot.waitUntil(lambda: bool(seen_orders), timeout=2500)
 
         assert seen_orders[-1] == expected_order
+
+    finally:
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_controller_uses_stable_camera_id_not_display_id(qtbot, patch_factory):
+    mc = MultiCameraController()
+
+    cam = CameraSettings(
+        name="C1",
+        backend="gentl",
+        index=0,
+        fps=30.0,
+        enabled=True,
+        properties={
+            "gentl": {
+                "device_id": "serial:SER0",
+                "serial_number": "SER0",
+            }
+        },
+    ).apply_defaults()
+
+    stable_id = get_camera_id(cam)
+    display_id = get_display_id(cam)
+
+    assert stable_id == "gentl:serial:SER0"
+    assert display_id == "C1"
+    assert stable_id != display_id
+    seen = []
+
+    def on_ready(mfd):
+        seen.append(mfd)
+
+    mc.frame_ready.connect(on_ready)
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([cam])
+
+        qtbot.waitUntil(lambda: bool(seen), timeout=2000)
+
+        mfd = seen[-1]
+
+        assert stable_id in mfd.frames
+        assert mfd.display_ids[stable_id] == "C1"
+        assert mfd.source_camera_id == stable_id
+        assert stable_id in mfd.frames
+        assert stable_id in mfd.timestamps
+
+        assert display_id not in mfd.frames
+        assert display_id not in mfd.timestamps
+
+        assert mfd.display_ids is not None
+        assert mfd.display_ids[stable_id] == display_id
 
     finally:
         with qtbot.waitSignal(mc.all_stopped, timeout=2000):
