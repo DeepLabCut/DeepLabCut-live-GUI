@@ -232,7 +232,7 @@ def test_basler_exposure_gain_fps_are_applied_when_nonzero(
 # ---------------------------------------------------------------------
 
 
-def test_basler_static_capabilities_advertises_hardware_trigger_best_effort(
+def test_basler_static_capabilities_advertises_hardware_trigger_best_effort_and_mono(
     patch_basler_sdk,
 ):
     import dlclivegui.cameras.backends.basler_backend as bb
@@ -240,6 +240,7 @@ def test_basler_static_capabilities_advertises_hardware_trigger_best_effort(
 
     caps = bb.BaslerCameraBackend.static_capabilities()
     assert caps["hardware_trigger"] == SupportLevel.BEST_EFFORT
+    assert caps["preserve_mono"] == SupportLevel.SUPPORTED
 
 
 def test_basler_default_trigger_is_off_and_free_runs(
