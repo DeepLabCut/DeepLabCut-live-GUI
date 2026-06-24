@@ -9,7 +9,7 @@ from typing import ClassVar
 
 import numpy as np
 
-from ...config import SINGLE_CAMERA_WORKER_DO_LOG_TIMING, CameraTriggerSettings
+from ...config import BASLER_DO_LOG_TIMING, CameraTriggerSettings
 from ...utils.stats import WorkerTimingStats
 from ..base import CameraBackend, SupportLevel, register_backend
 
@@ -45,6 +45,12 @@ class BaslerCameraBackend(CameraBackend):
         super().__init__(settings)
 
         self._props: dict = settings.properties if isinstance(settings.properties, dict) else {}
+        self._preserve_mono: bool = bool(
+            getattr(settings, "preserve_mono", False) or self.ns.get("preserve_mono", False)
+        )
+        self._output_is_mono: bool = False
+        self._source_pixel_format: str | None = None
+        self._logged_first_frame: bool = False
 
         # Optional fast-start hint for probe workers
         # (may skip StartGrabbing and converter setup for faster capability probing; not suitable for normal capture)
@@ -116,7 +122,7 @@ class BaslerCameraBackend(CameraBackend):
             timing_id,
             logger=LOG,
             log_interval=1.0,
-            enabled=SINGLE_CAMERA_WORKER_DO_LOG_TIMING,
+            enabled=BASLER_DO_LOG_TIMING,
         )
 
     @property
@@ -452,6 +458,42 @@ class BaslerCameraBackend(CameraBackend):
         except Exception:
             self._actual_fps = None
 
+    def _configure_converter(self) -> None:
+        """Configure pypylon image converter.
+
+        Default behavior remains BGR8 for compatibility.
+
+        If properties.basler.preserve_mono=true and the source PixelFormat is Mono*,
+        return Mono8 frames as 2D arrays to avoid 3x BGR expansion in the grab thread.
+        """
+        if self._camera is None:
+            return
+
+        pixel_format = self._feature_value(self._feature("PixelFormat"), "")
+        self._source_pixel_format = str(pixel_format or "")
+
+        self._converter = pylon.ImageFormatConverter()
+        self._converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+
+        is_mono_source = self._source_pixel_format.startswith("Mono")
+
+        if self._preserve_mono and is_mono_source:
+            self._converter.OutputPixelFormat = pylon.PixelType_Mono8
+            self._output_is_mono = True
+            LOG.info(
+                "[Basler] Converter configured for Mono8 output (source PixelFormat=%s preserve_mono=%s)",
+                self._source_pixel_format,
+                self._preserve_mono,
+            )
+        else:
+            self._converter.OutputPixelFormat = pylon.PixelType_BGR8packed
+            self._output_is_mono = False
+            LOG.info(
+                "[Basler] Converter configured for BGR8 output (source PixelFormat=%s preserve_mono=%s)",
+                self._source_pixel_format,
+                self._preserve_mono,
+            )
+
     def open(self) -> None:
         if pylon is None:
             raise RuntimeError("pypylon is required for the Basler backend but is not installed")
@@ -549,9 +591,7 @@ class BaslerCameraBackend(CameraBackend):
                 pass
 
             # Converter BEFORE StartGrabbing
-            self._converter = pylon.ImageFormatConverter()
-            self._converter.OutputPixelFormat = pylon.PixelType_BGR8packed
-            self._converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+            self._configure_converter()
 
             # Force stream configuration reset
             try:
@@ -626,6 +666,20 @@ class BaslerCameraBackend(CameraBackend):
 
             with self._timing.measure("Basler.get_array"):
                 frame = image.GetArray()
+
+            if not self._logged_first_frame:
+                self._logged_first_frame = True
+                LOG.info(
+                    "[Basler] first frame device_id=%s shape=%s dtype=%s nbytes=%.2f MB "
+                    "source_pixel_format=%s output_is_mono=%s, preserve_mono=%s",
+                    self._device_id,
+                    frame.shape,
+                    frame.dtype,
+                    frame.nbytes / (1024 * 1024),
+                    self._source_pixel_format,
+                    self._output_is_mono,
+                    self._preserve_mono,
+                )
 
             with self._timing.measure("Basler.release"):
                 grab_result.Release()
