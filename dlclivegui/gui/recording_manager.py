@@ -104,6 +104,7 @@ class RecordingManager:
                 frame_rate=float(cam.fps),
                 codec=recording.codec,
                 crf=recording.crf,
+                convert_grayscale_to_rgb=not bool(getattr(cam, "preserve_mono", False)),
             )
             try:
                 recorder.start()
