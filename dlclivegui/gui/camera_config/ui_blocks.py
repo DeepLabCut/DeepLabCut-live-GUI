@@ -277,13 +277,6 @@ def build_settings_group(dlg: CameraConfigDialog) -> QGroupBox:
     dlg.settings_form.addRow(detected_row)
 
     # --- Requested resolution/output format controls (Auto = 0) ---
-    dlg.cam_preserve_mono_checkbox = QCheckBox("Preserve Mono output")
-    dlg.cam_preserve_mono_checkbox.setToolTip(
-        "For monochrome cameras, keep frames as single-channel Mono8 instead of converting to BGR. "
-        "This reduces memory bandwidth and recording overhead. Display/overlay/DLC may convert later if needed."
-    )
-    dlg.settings_form.addRow(dlg.cam_preserve_mono_checkbox)
-
     dlg.cam_width = QSpinBox()
     dlg.cam_width.setRange(0, 10000)
     dlg.cam_width.setValue(0)
@@ -296,6 +289,30 @@ def build_settings_group(dlg: CameraConfigDialog) -> QGroupBox:
 
     res_row = make_two_field_row("W", dlg.cam_width, "H", dlg.cam_height, key_width=30)
     dlg.settings_form.addRow("Resolution:", res_row)
+
+    # --- Output format controls ---
+    dlg.cam_preserve_mono_checkbox = QCheckBox("Preserve mono output")
+    dlg.cam_preserve_mono_checkbox.setToolTip(
+        "For monochrome cameras, keep frames as single-channel Mono8 instead of converting to BGR. "
+        "This reduces memory bandwidth and recording overhead. Display/overlay/DLC may convert later if needed."
+    )
+
+    dlg.detected_output_format_label = QLabel("—")
+    dlg.detected_output_format_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    dlg.detected_output_format_label.setToolTip(
+        "Backend-reported output frame format emitted to the app, for example Mono8 or BGR8."
+    )
+
+    output_widget = QWidget()
+    output_layout = QHBoxLayout(output_widget)
+    output_layout.setContentsMargins(0, 0, 0, 0)
+    output_layout.setSpacing(8)
+    output_layout.addWidget(dlg.cam_preserve_mono_checkbox)
+    output_layout.addStretch(1)
+    output_layout.addWidget(QLabel("Detected output:"))
+    output_layout.addWidget(dlg.detected_output_format_label)
+
+    dlg.settings_form.addRow("Output:", output_widget)
 
     # --- FPS + Rotation grouped ---
     dlg.cam_fps = QDoubleSpinBox()
