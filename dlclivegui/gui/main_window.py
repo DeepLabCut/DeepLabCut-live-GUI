@@ -1500,11 +1500,13 @@ class DLCLiveMainWindow(QMainWindow):
 
         session_name = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
         use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
+        actual_fps_by_camera = self.multi_camera_controller.actual_fps_by_camera_id()
 
         run_dir = self._rec_manager.start_all(
             recording,
             active_cams,
             self._multi_camera_frames,
+            frame_rates=actual_fps_by_camera,
             session_name=session_name,
             use_timestamp=use_ts,
             all_or_nothing=False,
