@@ -48,8 +48,7 @@ class BaslerCameraBackend(CameraBackend):
         self._preserve_mono: bool = bool(
             getattr(settings, "preserve_mono", False) or self.ns.get("preserve_mono", False)
         )
-        self._output_is_mono: bool = False
-        self._source_pixel_format: str | None = None
+        self._camera_pixel_format: str | None = None
         self._logged_first_frame: bool = False
 
         # Optional fast-start hint for probe workers
@@ -145,13 +144,21 @@ class BaslerCameraBackend(CameraBackend):
 
     @property
     def actual_pixel_format(self) -> str | None:
-        return self._source_pixel_format
+        """Camera/native pixel format reported by Basler, e.g. 'Mono8'."""
+        return self._camera_pixel_format
+
+    @property
+    def actual_output_format(self) -> str | None:
+        """Backend output frame format emitted to the app, e.g. 'Mono8' or 'BGR8'."""
+        if not self._camera_pixel_format:
+            return None
+        return "Mono8" if self._should_output_mono() else "BGR8"
 
     @property
     def recommended_preserve_mono(self) -> bool | None:
-        if not self._source_pixel_format:
+        if not self._camera_pixel_format:
             return None
-        return self._source_pixel_format.startswith("Mono")
+        return self._is_camera_mono()
 
     @classmethod
     def is_available(cls) -> bool:
@@ -195,6 +202,17 @@ class BaslerCameraBackend(CameraBackend):
             ns = {}
             self.settings.properties[self.OPTIONS_KEY] = ns
         return ns
+
+    def _read_camera_pixel_format(self) -> str:
+        pixel_format = self._feature_value(self._feature("PixelFormat"), "")
+        self._camera_pixel_format = str(pixel_format or "")
+        return self._camera_pixel_format
+
+    def _is_camera_mono(self) -> bool:
+        return bool(self._camera_pixel_format and self._camera_pixel_format.startswith("Mono"))
+
+    def _should_output_mono(self) -> bool:
+        return bool(self._preserve_mono and self._is_camera_mono())
 
     @classmethod
     def _enumerate_devices_cls(cls):
@@ -469,46 +487,34 @@ class BaslerCameraBackend(CameraBackend):
         except Exception:
             self._actual_fps = None
 
-    def _read_source_pixel_format(self) -> str:
-        pixel_format = self._feature_value(self._feature("PixelFormat"), "")
-        return str(pixel_format or "")
-
     def _configure_converter(self) -> None:
         """Configure pypylon image converter.
 
         Default behavior remains BGR8 for compatibility.
 
-        If properties.basler.preserve_mono=true and the source PixelFormat is Mono*,
-        return Mono8 frames as 2D arrays to avoid 3x BGR expansion in the grab thread.
+        If preserve_mono=True and the camera PixelFormat is Mono*,
+        return Mono8 frames as 2D arrays to avoid 3x BGR expansion.
         """
         if self._camera is None:
             return
 
-        if not self._source_pixel_format:
-            self._read_source_pixel_format()
-
-        pixel_format = self._feature_value(self._feature("PixelFormat"), "")
-        self._source_pixel_format = str(pixel_format or "")
+        camera_pixel_format = self._camera_pixel_format or self._read_camera_pixel_format()
 
         self._converter = pylon.ImageFormatConverter()
         self._converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
 
-        is_mono_source = self._source_pixel_format.startswith("Mono")
-
-        if self._preserve_mono and is_mono_source:
+        if self._should_output_mono():
             self._converter.OutputPixelFormat = pylon.PixelType_Mono8
-            self._output_is_mono = True
             LOG.info(
-                "[Basler] Converter configured for Mono8 output (source PixelFormat=%s preserve_mono=%s)",
-                self._source_pixel_format,
+                "[Basler] Converter configured for Mono8 output (camera PixelFormat=%s preserve_mono=%s)",
+                camera_pixel_format,
                 self._preserve_mono,
             )
         else:
             self._converter.OutputPixelFormat = pylon.PixelType_BGR8packed
-            self._output_is_mono = False
             LOG.info(
-                "[Basler] Converter configured for BGR8 output (source PixelFormat=%s preserve_mono=%s)",
-                self._source_pixel_format,
+                "[Basler] Converter configured for BGR8 output (camera PixelFormat=%s preserve_mono=%s)",
+                camera_pixel_format,
                 self._preserve_mono,
             )
 
@@ -596,6 +602,8 @@ class BaslerCameraBackend(CameraBackend):
             self._actual_gain = float(self._camera.Gain.GetValue())
         except Exception:
             self._actual_gain = None
+
+        self._read_camera_pixel_format()
 
         # ----------------------------
         # Start acquisition (skip for fast probe)
@@ -689,13 +697,13 @@ class BaslerCameraBackend(CameraBackend):
                 self._logged_first_frame = True
                 LOG.info(
                     "[Basler] first frame device_id=%s shape=%s dtype=%s nbytes=%.2f MB "
-                    "source_pixel_format=%s output_is_mono=%s, preserve_mono=%s",
+                    "camera_pixel_format=%s output_format=%s preserve_mono=%s",
                     self._device_id,
                     frame.shape,
                     frame.dtype,
                     frame.nbytes / (1024 * 1024),
-                    self._source_pixel_format,
-                    self._output_is_mono,
+                    self._camera_pixel_format,
+                    self.actual_output_format,
                     self._preserve_mono,
                 )
 
