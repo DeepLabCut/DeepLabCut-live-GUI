@@ -303,16 +303,10 @@ def build_settings_group(dlg: CameraConfigDialog) -> QGroupBox:
         "Backend-reported output frame format emitted to the app, for example Mono8 or BGR8."
     )
 
-    output_widget = QWidget()
-    output_layout = QHBoxLayout(output_widget)
-    output_layout.setContentsMargins(0, 0, 0, 0)
-    output_layout.setSpacing(8)
-    output_layout.addWidget(dlg.cam_preserve_mono_checkbox)
-    output_layout.addStretch(1)
-    output_layout.addWidget(QLabel("Detected output:"))
-    output_layout.addWidget(dlg.detected_output_format_label)
-
-    dlg.settings_form.addRow("Output:", output_widget)
+    output_row = make_two_field_row(
+        None, dlg.cam_preserve_mono_checkbox, "Detected:", dlg.detected_output_format_label, key_width=60, gap=40
+    )
+    dlg.settings_form.addRow("Output:", output_row)
 
     # --- FPS + Rotation grouped ---
     dlg.cam_fps = QDoubleSpinBox()
