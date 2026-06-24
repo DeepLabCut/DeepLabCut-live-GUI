@@ -68,6 +68,7 @@ DEFAULT_CAPABILITIES: dict[str, SupportLevel] = {
     "set_fps": SupportLevel.UNSUPPORTED,
     "set_exposure": SupportLevel.UNSUPPORTED,
     "set_gain": SupportLevel.UNSUPPORTED,
+    "preserve_mono": SupportLevel.UNSUPPORTED,
     "device_discovery": SupportLevel.UNSUPPORTED,
     "stable_identity": SupportLevel.UNSUPPORTED,
     "hardware_trigger": SupportLevel.UNSUPPORTED,
@@ -97,6 +98,14 @@ class CameraBackend(ABC):
     def static_capabilities(cls) -> dict[str, SupportLevel]:
         """Return a dict describing supported features for UI purposes."""
         return DEFAULT_CAPABILITIES
+
+    @property
+    def actual_pixel_format(self) -> str | None:
+        return None
+
+    @property
+    def recommended_preserve_mono(self) -> bool | None:
+        return None
 
     @classmethod
     def options_key(cls) -> str:
