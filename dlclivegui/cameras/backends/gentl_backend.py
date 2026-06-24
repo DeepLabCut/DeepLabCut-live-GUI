@@ -99,6 +99,9 @@ class GenTLCameraBackend(CameraBackend):
 
         self._pixel_format: str = ns.get("pixel_format") or props.get("pixel_format", "auto")
         self._pixel_format = str(self._pixel_format).strip()
+        self._camera_pixel_format: str | None = None
+        self._actual_output_format: str | None = None
+
         self._rotate: int = int(ns.get("rotate", props.get("rotate", 0))) % 360
         self._crop: tuple[int, int, int, int] | None = self._parse_crop(ns.get("crop", props.get("crop")))
 
@@ -168,6 +171,16 @@ class GenTLCameraBackend(CameraBackend):
     @property
     def actual_gain(self) -> float | None:
         return self._actual_gain
+
+    @property
+    def actual_pixel_format(self) -> str | None:
+        """Camera/native pixel format selected on the GenICam PixelFormat node."""
+        return self._camera_pixel_format or (self._pixel_format if self._pixel_format != "auto" else None)
+
+    @property
+    def actual_output_format(self) -> str | None:
+        """Current GenTL backend emits OpenCV-native BGR uint8 frames."""
+        return self._actual_output_format or "BGR8"
 
     @classmethod
     def is_available(cls) -> bool:
@@ -593,6 +606,21 @@ class GenTLCameraBackend(CameraBackend):
         role = str(self._trigger_attr(getattr(self, "_trigger", None), "role", "off") or "off").lower()
         return role in {"external", "follower"}
 
+    @staticmethod
+    def _output_format_for_frame(frame: np.ndarray) -> str:
+        if frame.ndim == 2:
+            if frame.dtype == np.uint8:
+                return "Mono8"
+            return f"Mono{frame.dtype}"
+        if frame.ndim == 3:
+            channels = frame.shape[2]
+            if channels == 3 and frame.dtype == np.uint8:
+                return "BGR8"
+            if channels == 4 and frame.dtype == np.uint8:
+                return "BGRA8"
+            return f"{channels}ch-{frame.dtype}"
+        return str(frame.dtype)
+
     def read(self) -> tuple[np.ndarray, float]:
         if self._acquirer is None:
             raise RuntimeError("GenTL image acquirer not initialised")
@@ -631,6 +659,7 @@ class GenTLCameraBackend(CameraBackend):
                 self._read_telemetry(self._acquirer.remote_device.node_map)
             except Exception:
                 pass
+        self._actual_output_format = self._output_format_for_frame(frame)
 
         return frame, timestamp
 
@@ -1340,11 +1369,14 @@ class GenTLCameraBackend(CameraBackend):
 
             pixel_format_node.value = selected
             self._pixel_format = str(pixel_format_node.value)
+            self._actual_pixel_format = self._pixel_format
 
             LOG.debug("GenTL pixel format selected: %s", self._pixel_format)
 
         except Exception as e:
             LOG.warning("Failed to configure pixel format '%s': %s", self._pixel_format, e)
+            if self._pixel_format and self._pixel_format.lower() != "auto":
+                self._camera_pixel_format = self._pixel_format
 
     def _configure_trigger(self, node_map) -> None:
         cfg = self._trigger
@@ -1811,7 +1843,13 @@ class GenTLCameraBackend(CameraBackend):
 
             pixel_format = self._node_str(node_map, "PixelFormat")
             if pixel_format is not None:
+                self._camera_pixel_format = pixel_format
                 ns["actual_pixel_format"] = pixel_format
+                ns["detected_pixel_format"] = pixel_format
+
+            output_format = self.actual_output_format
+            if output_format is not None:
+                ns["actual_output_format"] = output_format
 
         except Exception:
             pass

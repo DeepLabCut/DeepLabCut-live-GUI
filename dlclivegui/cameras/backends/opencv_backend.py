@@ -254,6 +254,16 @@ class OpenCVCameraBackend(CameraBackend):
         """Not supported by OpenCV backend."""
         return None
 
+    @property
+    def actual_pixel_format(self) -> str | None:
+        """OpenCV does not reliably expose native camera pixel format."""
+        return None
+
+    @property
+    def actual_output_format(self) -> str | None:
+        """OpenCV VideoCapture returns BGR frames in this backend."""
+        return "BGR8"
+
     # ----------------------------
     # Internal helpers
     # ----------------------------
