@@ -143,6 +143,16 @@ class BaslerCameraBackend(CameraBackend):
     def actual_gain(self) -> float | None:
         return self._actual_gain
 
+    @property
+    def actual_pixel_format(self) -> str | None:
+        return self._source_pixel_format
+
+    @property
+    def recommended_preserve_mono(self) -> bool | None:
+        if not self._source_pixel_format:
+            return None
+        return self._source_pixel_format.startswith("Mono")
+
     @classmethod
     def is_available(cls) -> bool:
         return pylon is not None
@@ -159,6 +169,7 @@ class BaslerCameraBackend(CameraBackend):
                 "device_discovery": SupportLevel.BEST_EFFORT,
                 "stable_identity": SupportLevel.SUPPORTED,
                 "hardware_trigger": SupportLevel.BEST_EFFORT,
+                "preserve_mono": SupportLevel.SUPPORTED,
             }
         )
         return caps
@@ -458,6 +469,10 @@ class BaslerCameraBackend(CameraBackend):
         except Exception:
             self._actual_fps = None
 
+    def _read_source_pixel_format(self) -> str:
+        pixel_format = self._feature_value(self._feature("PixelFormat"), "")
+        return str(pixel_format or "")
+
     def _configure_converter(self) -> None:
         """Configure pypylon image converter.
 
@@ -468,6 +483,9 @@ class BaslerCameraBackend(CameraBackend):
         """
         if self._camera is None:
             return
+
+        if not self._source_pixel_format:
+            self._read_source_pixel_format()
 
         pixel_format = self._feature_value(self._feature("PixelFormat"), "")
         self._source_pixel_format = str(pixel_format or "")
