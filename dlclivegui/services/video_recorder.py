@@ -387,8 +387,8 @@ class VideoRecorder:
                                 self._encode_error = exc
                             logger.exception("Video encoding failed while writing frame", exc_info=exc)
                             self._stop_event.set()
-                            self._process_timing.note_error()
-                            self._process_timing.maybe_log()
+                            self._writer_timing.note_error()
+                            self._writer_timing.maybe_log()
                             break
                         else:
                             elapsed = time.perf_counter() - start
