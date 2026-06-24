@@ -157,7 +157,7 @@ def test_get_display_id_is_human_index_label():
     ).apply_defaults()
 
     assert get_camera_id(cam) == "gentl:serial:30220469"
-    assert get_display_id(cam) == "gentl:3"
+    assert get_display_id(cam) == "GenTL Cam"
     assert get_camera_id(cam) != get_display_id(cam)
 
 
@@ -191,6 +191,23 @@ def test_trigger_role_from_settings_aliases(role, expected):
     ).apply_defaults()
 
     assert _trigger_role_from_settings(cam) == expected
+
+
+@pytest.mark.unit
+def test_get_display_id_falls_back_to_backend_index_without_name():
+    cam = CameraSettings(
+        name="",
+        backend="gentl",
+        index=3,
+        properties={
+            "gentl": {
+                "device_id": "serial:30220469",
+                "serial_number": "30220469",
+            }
+        },
+    ).apply_defaults()
+
+    assert get_display_id(cam) == "gentl:3"
 
 
 @pytest.mark.unit
@@ -330,9 +347,8 @@ def test_controller_uses_stable_camera_id_not_display_id(qtbot, patch_factory):
     display_id = get_display_id(cam)
 
     assert stable_id == "gentl:serial:SER0"
-    assert display_id == "gentl:0"
+    assert display_id == "C1"
     assert stable_id != display_id
-
     seen = []
 
     def on_ready(mfd):
@@ -348,6 +364,8 @@ def test_controller_uses_stable_camera_id_not_display_id(qtbot, patch_factory):
 
         mfd = seen[-1]
 
+        assert stable_id in mfd.frames
+        assert mfd.display_ids[stable_id] == "C1"
         assert mfd.source_camera_id == stable_id
         assert stable_id in mfd.frames
         assert stable_id in mfd.timestamps
