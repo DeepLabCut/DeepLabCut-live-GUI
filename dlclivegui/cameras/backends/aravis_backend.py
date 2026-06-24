@@ -69,6 +69,16 @@ class AravisCameraBackend(CameraBackend):
         """Return the actual frame rate of the camera after opening."""
         return self._actual_fps
 
+    @property
+    def actual_pixel_format(self) -> str | None:
+        """Camera/native pixel format requested/reported for Aravis."""
+        return self._camera_pixel_format or self._pixel_format
+
+    @property
+    def actual_output_format(self) -> str | None:
+        """Current Aravis backend emits BGR uint8 frames."""
+        return self._actual_output_format or "BGR8"
+
     @classmethod
     def is_available(cls) -> bool:
         """Check if Aravis is available on this system."""
@@ -615,10 +625,12 @@ class AravisCameraBackend(CameraBackend):
 
             if self._pixel_format in format_map:
                 self._camera.set_pixel_format(format_map[self._pixel_format])
+                self._camera_pixel_format = self._pixel_format
                 LOG.info(f"Pixel format set to '{self._pixel_format}'")
             else:
                 # Try setting as string
                 self._camera.set_pixel_format_from_string(self._pixel_format)
+                self._camera_pixel_format = self._pixel_format
                 LOG.info(f"Pixel format set to '{self._pixel_format}' (from string)")
         except Exception as e:
             LOG.warning(f"Failed to set pixel format '{self._pixel_format}': {e}")
