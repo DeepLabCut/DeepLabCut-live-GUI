@@ -359,6 +359,7 @@ class CameraConfigDialog(QDialog):
 
         self.cam_rotation.currentIndexChanged.connect(lambda *_: _mark_dirty())
         self.cam_enabled_checkbox.stateChanged.connect(lambda *_: _mark_dirty())
+        self.cam_preserve_mono_checkbox.stateChanged.connect(lambda *_: _mark_dirty())
 
     # -------------------------------
     # UI state updates
@@ -528,6 +529,9 @@ class CameraConfigDialog(QDialog):
         # Exposure / Gain
         apply(self.cam_exposure, "set_exposure", "Exposure")
         apply(self.cam_gain, "set_gain", "Gain")
+
+        # Output format / preserve mono
+        apply(self.cam_preserve_mono_checkbox, "preserve_mono", "Preserve mono output")
 
         # Hardware trigger / sync
         apply(self.trigger_settings_btn, "hardware_trigger", "Hardware trigger")
@@ -959,6 +963,7 @@ class CameraConfigDialog(QDialog):
                 "crop_y0": int(self.cam_crop_y0.value()),
                 "crop_x1": int(self.cam_crop_x1.value()),
                 "crop_y1": int(self.cam_crop_y1.value()),
+                "preserve_mono": bool(self.cam_preserve_mono_checkbox.isChecked()),
             }
         )
         #  Validate and coerce; if invalid, Pydantic will raise
@@ -977,6 +982,7 @@ class CameraConfigDialog(QDialog):
             self.cam_crop_y0,
             self.cam_crop_x1,
             self.cam_crop_y1,
+            self.cam_preserve_mono_checkbox,
         ]
         for widget in block:
             if hasattr(widget, "blockSignals"):
@@ -991,6 +997,7 @@ class CameraConfigDialog(QDialog):
             self.cam_index_label.setText(str(cam.index))
             self.cam_backend_label.setText(cam.backend)
             self._update_controls_for_backend(cam.backend)
+            self.cam_preserve_mono_checkbox.setChecked(bool(getattr(cam, "preserve_mono", False)))
             self.cam_width.setValue(cam.width)
             self.cam_height.setValue(cam.height)
             self.cam_fps.setValue(cam.fps)
@@ -1026,6 +1033,7 @@ class CameraConfigDialog(QDialog):
         cam.crop_y0 = int(self.cam_crop_y0.value())
         cam.crop_x1 = int(self.cam_crop_x1.value())
         cam.crop_y1 = int(self.cam_crop_y1.value())
+        cam.preserve_mono = bool(self.cam_preserve_mono_checkbox.isChecked())
 
     def _commit_pending_edits(self, *, reason: str = "") -> bool:
         """
@@ -1196,6 +1204,7 @@ class CameraConfigDialog(QDialog):
         self.cam_crop_y0.setValue(0)
         self.cam_crop_x1.setValue(0)
         self.cam_crop_y1.setValue(0)
+        self.cam_preserve_mono_checkbox.setChecked(False)
         self.apply_settings_btn.setEnabled(False)
         self.reset_settings_btn.setEnabled(False)
 
@@ -1394,6 +1403,8 @@ class CameraConfigDialog(QDialog):
 
             actual_res = getattr(be, "actual_resolution", None)
             actual_fps = getattr(be, "actual_fps", None)
+            actual_pixel_format = getattr(be, "actual_pixel_format", None)
+            recommended_preserve_mono = getattr(be, "recommended_preserve_mono", None)
 
             try:
                 be.close()
@@ -1421,7 +1432,23 @@ class CameraConfigDialog(QDialog):
 
                     if isinstance(actual_fps, (int, float)) and float(actual_fps) > 0:
                         ns["detected_fps"] = float(actual_fps)
-                        self._append_status(f"[Probe] actual_res={actual_res}, actual_fps={actual_fps}")
+
+                    if actual_pixel_format:
+                        ns["detected_pixel_format"] = str(actual_pixel_format)
+                        self._append_status(f"[Probe] PixelFormat={actual_pixel_format}")
+
+                    if recommended_preserve_mono is not None:
+                        ns["recommended_preserve_mono"] = bool(recommended_preserve_mono)
+
+                    # ---- Generic capability-driven recommendation ----
+                    caps = CameraFactory.backend_capabilities(backend)
+                    preserve_mono_cap = caps.get("preserve_mono")
+                    preserve_mono_supported = preserve_mono_cap is not None and preserve_mono_cap.value != "unsupported"
+
+                    if preserve_mono_supported and recommended_preserve_mono is True:
+                        if not bool(getattr(c, "preserve_mono", False)):
+                            c.preserve_mono = True
+                            self._append_status("[Probe] Mono pixel format detected; enabled Preserve mono frames.")
 
                     # ---- Apply detected -> requested (Reset behavior) ----
                     if self._probe_apply_to_requested and self._probe_target_row == i:
@@ -1450,7 +1477,9 @@ class CameraConfigDialog(QDialog):
 
                     # Always refresh detected labels if currently selected
                     if self._current_edit_index == i:
+                        self._load_camera_to_form(c)
                         self._set_detected_labels(c)
+
                     break
 
         except Exception as exc:
@@ -1678,7 +1707,7 @@ class CameraConfigDialog(QDialog):
         Backend-agnostic for now (no OpenCV special casing).
         """
         # Restart on these changes
-        for key in ("width", "height", "fps", "exposure", "gain"):
+        for key in ("width", "height", "fps", "exposure", "gain", "preserve_mono"):
             try:
                 if getattr(old, key, None) != getattr(new, key, None):
                     return True

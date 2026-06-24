@@ -276,7 +276,14 @@ def build_settings_group(dlg: CameraConfigDialog) -> QGroupBox:
     )
     dlg.settings_form.addRow(detected_row)
 
-    # --- Requested resolution controls (Auto = 0) ---
+    # --- Requested resolution/output format controls (Auto = 0) ---
+    dlg.cam_preserve_mono_checkbox = QCheckBox("Preserve Mono output")
+    dlg.cam_preserve_mono_checkbox.setToolTip(
+        "For monochrome cameras, keep frames as single-channel Mono8 instead of converting to BGR. "
+        "This reduces memory bandwidth and recording overhead. Display/overlay/DLC may convert later if needed."
+    )
+    dlg.settings_form.addRow(dlg.cam_preserve_mono_checkbox)
+
     dlg.cam_width = QSpinBox()
     dlg.cam_width.setRange(0, 10000)
     dlg.cam_width.setValue(0)
