@@ -3,9 +3,23 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 
 from dlclivegui.services.dlc_processor import ProcessorStats
-from dlclivegui.services.video_recorder import RecorderStats
+
+
+@dataclass
+class RecorderStats:
+    """Snapshot of recorder throughput metrics."""
+
+    frames_enqueued: int = 0
+    frames_written: int = 0
+    dropped_frames: int = 0
+    queue_size: int = 0
+    average_latency: float = 0.0
+    last_latency: float = 0.0
+    write_fps: float = 0.0
+    buffer_seconds: float = 0.0
 
 
 class WorkerTimingStats:
