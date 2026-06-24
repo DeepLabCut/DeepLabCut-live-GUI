@@ -6,7 +6,7 @@ import pytest
 from dlclivegui.config import CameraSettings
 from dlclivegui.gui.recording_manager import RecordingManager
 from dlclivegui.services.multi_camera_controller import get_camera_id, get_display_id
-from dlclivegui.services.video_recorder import RecorderStats
+from dlclivegui.utils.stats import RecorderStats
 
 
 @pytest.fixture

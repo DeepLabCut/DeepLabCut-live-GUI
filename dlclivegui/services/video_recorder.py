@@ -9,11 +9,12 @@ import queue
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from dlclivegui.utils.stats import RecorderStats
 
 try:
     from vidgear.gears import WriteGear
@@ -24,20 +25,6 @@ except ImportError:  # pragma: no cover - handled at runtime
 logger = logging.getLogger(__name__)
 
 STOP_JOIN_TIMEOUT = 5.0  # seconds
-
-
-@dataclass
-class RecorderStats:
-    """Snapshot of recorder throughput metrics."""
-
-    frames_enqueued: int = 0
-    frames_written: int = 0
-    dropped_frames: int = 0
-    queue_size: int = 0
-    average_latency: float = 0.0
-    last_latency: float = 0.0
-    write_fps: float = 0.0
-    buffer_seconds: float = 0.0
 
 
 _SENTINEL = object()

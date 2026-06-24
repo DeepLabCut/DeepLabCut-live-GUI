@@ -8,7 +8,8 @@ import numpy as np
 
 from dlclivegui.config import CameraSettings, RecordingSettings
 from dlclivegui.services.multi_camera_controller import get_camera_id
-from dlclivegui.services.video_recorder import RecorderStats, VideoRecorder
+from dlclivegui.services.video_recorder import VideoRecorder
+from dlclivegui.utils.stats import RecorderStats
 from dlclivegui.utils.utils import build_run_dir, sanitize_name
 
 log = logging.getLogger(__name__)
