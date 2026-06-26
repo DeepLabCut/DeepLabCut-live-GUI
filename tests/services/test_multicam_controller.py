@@ -500,3 +500,51 @@ def test_non_trigger_timeouts_are_fatal_after_retries(qtbot, monkeypatch):
     if mc.is_running():
         with qtbot.waitSignal(mc.all_stopped, timeout=2000):
             mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_recording_frame_ready_only_emits_when_enabled(qtbot, patch_factory):
+    mc = MultiCameraController()
+
+    cam = CameraSettings(
+        name="C",
+        backend="opencv",
+        index=0,
+        enabled=True,
+        properties={"opencv": {"device_id": "cam-0"}},
+    ).apply_defaults()
+
+    cam_id = get_camera_id(cam)
+    seen: list[tuple[str, tuple, float]] = []
+
+    def on_recording_frame(camera_id, frame, timestamp):
+        seen.append((camera_id, frame.shape, timestamp))
+
+    mc.recording_frame_ready.connect(on_recording_frame)
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([cam])
+
+        # Disabled by default: should not emit recording frames.
+        qtbot.wait(300)
+        assert seen == []
+
+        mc.set_recording_frame_do_emit(True)
+
+        qtbot.waitUntil(lambda: bool(seen), timeout=2000)
+
+        camera_id, shape, timestamp = seen[-1]
+        assert camera_id == cam_id
+        assert isinstance(timestamp, float)
+        assert len(shape) in (2, 3)
+
+        mc.set_recording_frame_do_emit(False)
+        count_after_disable = len(seen)
+
+        qtbot.wait(300)
+        assert len(seen) == count_after_disable
+
+    finally:
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)

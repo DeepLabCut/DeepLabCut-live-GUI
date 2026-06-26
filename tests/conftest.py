@@ -349,12 +349,28 @@ def fake_processor():
 class FakeVideoRecorder:
     """Lightweight test double for VideoRecorder (no threads/ffmpeg)."""
 
-    def __init__(self, output, frame_size=None, frame_rate=None, codec="libx264", crf=23, **kwargs):
+    def __init__(
+        self,
+        output,
+        frame_size=None,
+        frame_rate=None,
+        codec="libx264",
+        crf=23,
+        buffer_size=240,
+        convert_grayscale_to_rgb=True,
+        writer_options=None,
+        **kwargs,
+    ):
         self.output = Path(output)
         self.frame_size = frame_size
         self.frame_rate = frame_rate
         self.codec = codec
         self.crf = crf
+        self.buffer_size = buffer_size
+        self.convert_grayscale_to_rgb = convert_grayscale_to_rgb
+        self.writer_options = dict(writer_options) if writer_options is not None else None
+        self.extra_kwargs = dict(kwargs)
+
         self.started = False
         self.stopped = False
         self.write_calls = []
@@ -370,6 +386,7 @@ class FakeVideoRecorder:
         if self.raise_on_start:
             raise RuntimeError("start failed")
         self.started = True
+        self.stopped = False
 
     def stop(self):
         self.stopped = True

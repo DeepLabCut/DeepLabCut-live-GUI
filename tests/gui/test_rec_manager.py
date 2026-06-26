@@ -266,18 +266,36 @@ def test_get_stats_summary_multi_aggregates(
     mgr.start_all(recording_settings, _active_cams_two, current_frames, session_name="Sess")
 
     ids = [get_camera_id(c) for c in _active_cams_two]
+
     mgr.recorders[ids[0]]._stats = RecorderStats(
-        frames_written=10, dropped_frames=1, queue_size=2, average_latency=0.01, last_latency=0.02
+        frames_enqueued=12,
+        frames_written=10,
+        dropped_frames=1,
+        queue_size=2,
+        buffer_size=10,
+        average_latency=0.01,
+        last_latency=0.02,
+        write_fps=25.0,
     )
     mgr.recorders[ids[1]]._stats = RecorderStats(
-        frames_written=20, dropped_frames=3, queue_size=4, average_latency=0.03, last_latency=0.05
+        frames_enqueued=24,
+        frames_written=20,
+        dropped_frames=3,
+        queue_size=4,
+        buffer_size=10,
+        average_latency=0.03,
+        last_latency=0.05,
+        write_fps=30.0,
     )
 
     summary = mgr.get_stats_summary()
+
     assert "2 cams" in summary
-    assert "30 frames" in summary  # 10 + 20
-    assert "dropped 4" in summary  # 1 + 3
-    assert "queue 6" in summary  # 2 + 4
+    assert "30/36 frames" in summary
+    assert "writer 55.0 fps" in summary
+    assert "dropped 4" in summary
+    assert "queue 6/20" in summary
+    assert "backlog 6" in summary
 
 
 @pytest.mark.unit
@@ -378,3 +396,29 @@ def test_start_all_does_not_infer_frame_size_from_display_id(
     # Since RecordingManager uses stable IDs internally, it should not find this frame.
     rec = mgr.recorders[stable_id]
     assert rec.frame_size is None
+
+
+@pytest.mark.unit
+def test_start_all_passes_writegear_options(
+    recording_settings,
+    _active_cams_two,
+    current_frames,
+    patch_video_recorder,
+    patch_build_run_dir,
+):
+    recording_settings.codec = "libx264"
+    recording_settings.crf = 23
+    recording_settings.fast_encoding = True
+
+    mgr = RecordingManager()
+    mgr.start_all(recording_settings, _active_cams_two, current_frames, session_name="Sess")
+
+    for cam in _active_cams_two:
+        cam_id = get_camera_id(cam)
+        rec = mgr.recorders[cam_id]
+
+        assert rec.writer_options is not None
+        assert rec.writer_options["-vcodec"] == "libx264"
+        assert rec.writer_options["-crf"] == "23"
+        assert rec.writer_options["-preset"] == "ultrafast"
+        assert rec.writer_options["-tune"] == "zerolatency"
