@@ -113,3 +113,8 @@ venv.bak/
 !dlclivegui/config.py
 # uv package files
 uv.lock
+
+# profiling
+profile*.svg
+scalene*.json
+scalene*.html
