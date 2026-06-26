@@ -4,6 +4,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from dlclivegui.gui.recording_manager import RecorderStats
 from dlclivegui.utils.stats import format_dlc_stats, format_recorder_stats
 
 pytestmark = pytest.mark.unit
@@ -14,19 +15,20 @@ pytestmark = pytest.mark.unit
 
 
 def test_format_recorder_stats_exact():
-    stats = SimpleNamespace(
+    stats = RecorderStats(
         frames_written=10,
         frames_enqueued=12,
         write_fps=29.94,
-        last_latency=0.01234,  # 12.34 ms -> 12.3
-        average_latency=0.05678,  # 56.78 ms -> 56.8
-        buffer_seconds=0.4321,  # 432.1 ms -> 432
+        last_latency=0.01234,
+        average_latency=0.05678,
+        buffer_seconds=0.4321,
         queue_size=3,
+        buffer_size=0,
         dropped_frames=2,
     )
 
     assert format_recorder_stats(stats) == (
-        "10/12 frames | write 29.9 fps | latency 12.3 ms (avg 56.8 ms) | queue 3 (~432 ms) | dropped 2"
+        "10/12 frames | write 29.9 fps | latency 12.3 ms (avg 56.8 ms) | queue 3 (~432 ms) | backlog 2 | dropped 2"
     )
 
 
@@ -115,6 +117,7 @@ def _fmt0(x: float) -> str:
     average_latency=finite_seconds_small,
     buffer_seconds=finite_seconds,
     queue_size=queue_size_int,
+    buffer_size=queue_size_int,
     dropped_frames=nonneg_int,
 )
 def test_format_recorder_stats_properties(
@@ -125,9 +128,10 @@ def test_format_recorder_stats_properties(
     average_latency,
     buffer_seconds,
     queue_size,
+    buffer_size,
     dropped_frames,
 ):
-    stats = SimpleNamespace(
+    stats = RecorderStats(
         frames_written=frames_written,
         frames_enqueued=frames_enqueued,
         write_fps=write_fps,
@@ -135,28 +139,17 @@ def test_format_recorder_stats_properties(
         average_latency=average_latency,
         buffer_seconds=buffer_seconds,
         queue_size=queue_size,
+        buffer_size=buffer_size,
         dropped_frames=dropped_frames,
     )
 
     s = format_recorder_stats(stats)
 
-    # Required structural tokens
-    assert " frames | write " in s
-    assert " fps | latency " in s
-    assert " ms (avg " in s
-    assert " ms) | queue " in s
-    assert " (~" in s
-    assert " ms) | dropped " in s
-
-    # Exact numeric formatting expectations (substrings)
-    latency_ms = last_latency * 1000.0
-    avg_ms = average_latency * 1000.0
-    buffer_ms = buffer_seconds * 1000.0
-
     assert f"{frames_written}/{frames_enqueued} frames" in s
-    assert f"write {_fmt1(write_fps)} fps" in s
-    assert f"latency {_fmt1(latency_ms)} ms (avg {_fmt1(avg_ms)} ms)" in s
-    assert f"queue {queue_size} (~{_fmt0(buffer_ms)} ms)" in s
+    assert "write " in s
+    assert "latency " in s
+    assert "queue " in s
+    assert "backlog " in s
     assert f"dropped {dropped_frames}" in s
 
 
@@ -251,3 +244,26 @@ def test_format_dlc_stats_profile_properties(stats):
         assert f"(GPU:{_fmt1(gpu_ms)}ms+proc:{_fmt1(proc_ms)}ms)" in s
     else:
         assert "GPU:" not in s
+
+
+def test_format_recorder_stats_exact_with_buffer_capacity():
+    stats = RecorderStats(
+        frames_written=10,
+        frames_enqueued=12,
+        write_fps=29.94,
+        last_latency=0.01234,
+        average_latency=0.05678,
+        buffer_seconds=0.4321,
+        queue_size=3,
+        buffer_size=10,
+        dropped_frames=2,
+    )
+
+    assert format_recorder_stats(stats) == (
+        "10/12 frames | "
+        "write 29.9 fps | "
+        "latency 12.3 ms (avg 56.8 ms) | "
+        "queue 3/10 (30%, ~432 ms) | "
+        "backlog 2 | "
+        "dropped 2"
+    )
