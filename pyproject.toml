@@ -63,6 +63,9 @@ test = [
   "tox",
   "tox-gh-actions",
 ]
+profiling = [
+  "scalene",
+]
 tf = [
   "deeplabcut-live[tf]>=1.1",
 ]
