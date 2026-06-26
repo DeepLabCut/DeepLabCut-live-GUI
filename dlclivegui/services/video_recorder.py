@@ -220,7 +220,7 @@ class VideoRecorder:
                 self._crf,
                 self._buffer_size,
                 self._convert_grayscale_to_rgb,
-                self._writer_options,
+                self._writer_options_overrides,
             )
 
             self._output.parent.mkdir(parents=True, exist_ok=True)

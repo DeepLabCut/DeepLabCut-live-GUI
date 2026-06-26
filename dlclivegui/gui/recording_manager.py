@@ -138,7 +138,7 @@ class RecordingManager:
             frame = current_frames.get(cam_id)
             frame_size = (frame.shape[0], frame.shape[1]) if frame is not None else None
             recorder_fps = self._resolve_recording_fps(cam, cam_id, frame_rates)
-            writer_options = recording.writegear_options(recorder_fps)
+            writer_options = recording.writegear_overrides() or None
 
             log.debug(
                 "Starting recorder %s -> %s frame_size=%s requested_fps=%s detected_fps=%s "
