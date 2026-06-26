@@ -25,11 +25,11 @@ GUI_MAX_DISPLAY_FPS: float = 30.0
 ## Debug
 ### Timing logs
 SINGLE_CAMERA_WORKER_DO_LOG_TIMING: bool = False
-MULTI_CAMERA_WORKER_DO_LOG_TIMING: bool = False
-REC_DO_LOG_TIMING: bool = False
+MULTI_CAMERA_WORKER_DO_LOG_TIMING: bool = True
+REC_DO_LOG_TIMING: bool = True
 # MAIN_WINDOW_DO_LOG_TIMING: bool = False
 #### Backends
-BASLER_DO_LOG_TIMING: bool = False
+BASLER_DO_LOG_TIMING: bool = True
 
 
 class CameraSettings(BaseModel):
@@ -515,6 +515,7 @@ class RecordingSettings(BaseModel):
     container: Literal["mp4", "avi", "mov"] = "mp4"
     codec: str = "libx264"
     crf: int = Field(default=23, ge=0, le=51)
+    fast_encoding: bool = False
 
     def output_path(self) -> Path:
         """Return the absolute output path for recordings."""
@@ -528,17 +529,46 @@ class RecordingSettings(BaseModel):
             filename = name.with_suffix(f".{self.container}")
         return directory / filename
 
-    def writegear_options(self, fps: float) -> dict[str, Any]:
-        """Return compression parameters for WriteGear."""
+    def writegear_options(self, fps: float | None) -> dict[str, Any]:
+        """Return FFmpeg/WriteGear compression parameters.
 
-        fps_value = float(fps) if fps else 30.0
+        The default settings prioritize compatibility and compression quality. If
+        ``fast_encoding`` is enabled, additional low-latency encoder options are
+        added for codecs that are known to support them.
+
+        Args:
+            fps: Desired input frame rate. If missing or non-positive, falls back
+                to 30 FPS.
+
+        Returns:
+            Dictionary of WriteGear/FFmpeg options.
+        """
+        try:
+            fps_value = float(fps or 0.0)
+        except Exception:
+            fps_value = 0.0
+        if fps_value <= 0.0:
+            fps_value = 30.0
+
         codec_value = (self.codec or "libx264").strip() or "libx264"
         crf_value = int(self.crf) if self.crf is not None else 23
-        return {
+
+        opts: dict[str, Any] = {
             "-input_framerate": f"{fps_value:.6f}",
             "-vcodec": codec_value,
             "-crf": str(crf_value),
         }
+
+        if self.fast_encoding:
+            if codec_value in {"libx264", "libx265"}:
+                opts.update(
+                    {
+                        "-preset": "ultrafast",
+                        "-tune": "zerolatency",
+                    }
+                )
+
+        return opts
 
 
 class ApplicationSettings(BaseModel):
