@@ -296,7 +296,8 @@ class MultiCameraController(QObject):
     """Controller for managing multiple cameras simultaneously."""
 
     # Signals
-    frame_ready = Signal(object)  # MultiFrameData (full cam FPS; recording and inference only)
+    frame_ready = Signal(object)  # MultiFrameData (full cam FPS; inference only)
+    recording_frame_ready = Signal(str, object, float)  # camera_id, frame, timestamp (full cam FPS; for recording)
     display_ready = Signal(object)  # MultiFrameData for GUI display (throttled to GUI_MAX_DISPLAY_FPS)
     camera_started = Signal(str, object)  # camera_id, settings
     camera_stopped = Signal(str)  # camera_id
@@ -319,6 +320,7 @@ class MultiCameraController(QObject):
         self._running = False
         self._stopping = False
         self._all_stopped_emitted = False
+        self._recording_frame_emission_enabled: bool = False
         self._started_cameras: set = set()
         self._display_ids: dict[str, str] = {}  # camera_id -> display_id (for labeling)
         self._camera_display_order: list[str] = []
@@ -358,6 +360,14 @@ class MultiCameraController(QObject):
             )
             self._timing_per_cam[camera_id] = timing
         return timing
+
+    def set_recording_frame_do_emit(self, enabled: bool) -> None:
+        """Enable/disable the lightweight per-camera recording frame signal.
+
+        This avoids sending recording-only traffic when the user is only previewing
+        or running DLC.
+        """
+        self._recording_frame_emission_enabled = bool(enabled)
 
     def _should_emit_display_ready(self) -> bool:
         """Return True when the UI/display path should be updated.
@@ -429,6 +439,7 @@ class MultiCameraController(QObject):
         self._running = True
         self._stopping = False
         self._all_stopped_emitted = False
+        self._recording_frame_emission_enabled = False
         self._frames.clear()
         self._timestamps.clear()
         self._started_cameras.clear()
@@ -622,6 +633,10 @@ class MultiCameraController(QObject):
                     crop_region = settings.get_crop_region()
                     if crop_region:
                         frame = MultiCameraController.apply_crop(frame, crop_region)
+
+            if self._recording_frame_emission_enabled:
+                with timing.measure("Multi.emit.recording_frame_ready"):
+                    self.recording_frame_ready.emit(camera_id, frame, timestamp)
 
             with self._frame_lock:
                 with timing.measure("Multi.store_latest"):
