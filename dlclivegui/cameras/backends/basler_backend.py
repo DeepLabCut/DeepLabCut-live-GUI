@@ -627,7 +627,8 @@ class BaslerCameraBackend(CameraBackend):
                 pass
 
             self._camera.StartGrabbing(
-                pylon.GrabStrategy_LatestImageOnly,
+                # pylon.GrabStrategy_LatestImageOnly,
+                pylon.GrabStrategy_OneByOne,
             )
             LOG.info(
                 "[Basler] grabbing=%s max_buffers=%s",
@@ -650,7 +651,7 @@ class BaslerCameraBackend(CameraBackend):
         )
 
         # ----------------------------
-        # Persist stable identity into namespace (migration-safe)
+        # Persist stable identity into namespace
         # ----------------------------
         try:
             serial = device.GetSerialNumber()
