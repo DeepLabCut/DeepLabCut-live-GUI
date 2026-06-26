@@ -31,6 +31,8 @@ except Exception:  # pragma: no cover - optional dependency
     genicam = None  # type: ignore[assignment]
     pylon = None  # type: ignore[assignment]
 
+DEBUG_TRIGGER_LOGS = False
+
 
 @register_backend("basler")
 class BaslerCameraBackend(CameraBackend):
@@ -959,6 +961,9 @@ class BaslerCameraBackend(CameraBackend):
             return False
 
     def _debug_trigger_nodes(self, *, context: str = "") -> None:
+        if not LOG.isEnabledFor(logging.DEBUG) or not DEBUG_TRIGGER_LOGS:
+            return
+
         names = (
             "TriggerSelector",
             "TriggerMode",
