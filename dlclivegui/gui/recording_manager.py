@@ -148,15 +148,19 @@ class RecordingManager:
             frame = current_frames.get(cam_id)
             frame_size = (frame.shape[0], frame.shape[1]) if frame is not None else None
             recorder_fps = self._resolve_recording_fps(cam, cam_id, frame_rates)
+            writer_options = recording.writegear_options(recorder_fps)
 
             log.debug(
-                "Starting recorder %s -> %s frame_size=%s requested_fps=%s detected_fps=%s recorder_fps=%s",
+                "Starting recorder %s -> %s frame_size=%s requested_fps=%s detected_fps=%s "
+                "recorder_fps=%s fast_encoding=%s writer_options=%s",
                 cam_id,
                 cam_path,
                 frame_size,
                 getattr(cam, "fps", None),
                 self._backend_ns(cam).get("detected_fps"),
                 f"{recorder_fps:.3f}" if recorder_fps else "auto/fallback",
+                bool(getattr(recording, "fast_encoding", False)),
+                writer_options,
             )
 
             recorder = VideoRecorder(
@@ -166,6 +170,7 @@ class RecordingManager:
                 codec=recording.codec,
                 crf=recording.crf,
                 convert_grayscale_to_rgb=not bool(getattr(cam, "preserve_mono", False)),
+                writer_options=writer_options,
             )
             try:
                 recorder.start()
@@ -213,9 +218,13 @@ class RecordingManager:
 
     def get_stats_summary(self) -> str:
         totals = {
+            "enqueued": 0,
             "written": 0,
             "dropped": 0,
             "queue": 0,
+            "buffer": 0,
+            "backlog": 0,
+            "write_fps": 0.0,
             "max_latency": 0.0,
             "avg_latencies": [],
         }
@@ -223,9 +232,13 @@ class RecordingManager:
             stats: RecorderStats | None = rec.get_stats()
             if not stats:
                 continue
+            totals["enqueued"] += stats.frames_enqueued
             totals["written"] += stats.frames_written
             totals["dropped"] += stats.dropped_frames
             totals["queue"] += stats.queue_size
+            totals["buffer"] += stats.buffer_size
+            totals["backlog"] += stats.backlog_frames
+            totals["write_fps"] += stats.write_fps
             totals["max_latency"] = max(totals["max_latency"], stats.last_latency)
             totals["avg_latencies"].append(stats.average_latency)
 
@@ -239,8 +252,16 @@ class RecordingManager:
             return "Recording..."
         else:
             avg = sum(totals["avg_latencies"]) / len(totals["avg_latencies"]) if totals["avg_latencies"] else 0.0
+
+            buffer = totals["buffer"]
+            queue_text = f"{totals['queue']}/{buffer}" if buffer > 0 else str(totals["queue"])
+            fill_pct = (100.0 * totals["queue"] / buffer) if buffer > 0 else 0.0
+
             return (
-                f"{len(self._recorders)} cams | {totals['written']} frames | "
+                f"{len(self._recorders)} cams | {totals['written']}/{totals['enqueued']} frames | "
+                f"writer {totals['write_fps']:.1f} fps | "
                 f"latency {totals['max_latency'] * 1000:.1f}ms (avg {avg * 1000:.1f}ms) | "
-                f"queue {totals['queue']} | dropped {totals['dropped']}"
+                f"queue {queue_text} ({fill_pct:.0f}%) | "
+                f"backlog {totals['backlog']} | "
+                f"dropped {totals['dropped']}"
             )
