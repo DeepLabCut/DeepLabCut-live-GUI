@@ -4,8 +4,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from dlclivegui.gui.recording_manager import RecorderStats
-from dlclivegui.utils.stats import format_dlc_stats, format_recorder_stats
+from dlclivegui.utils.stats import RecorderStats, format_dlc_stats, format_recorder_stats
 
 pytestmark = pytest.mark.unit
 

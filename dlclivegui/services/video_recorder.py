@@ -61,9 +61,8 @@ class VideoRecorder:
         convert_grayscale_to_rgb: Whether 2D grayscale frames should be expanded
             to 3-channel RGB before writing. Set to `False` to preserve mono
             frames when supported by the chosen writer/codec path.
-        fast_encoding: Whether to apply faster FFmpeg encoder settings when
-            supported by the selected codec. This can improve throughput at the
-            cost of larger files and/or reduced compression efficiency.
+        writer_options: Optional dictionary of additional keyword arguments passed
+            to `WriteGear`. If provided, this overrides the default options.
 
     Attributes:
         is_running: Whether the writer thread is currently alive.
