@@ -1,4 +1,5 @@
 # tests/services/test_multicam_controller.py
+import numpy as np
 import pytest
 
 from dlclivegui.cameras.factory import CameraFactory
@@ -12,6 +13,7 @@ from dlclivegui.services.multi_camera_controller import (
     get_camera_id,
     get_display_id,
 )
+from dlclivegui.utils.timestamps import FrameTimestampMetadata
 
 
 @pytest.mark.unit
@@ -547,3 +549,50 @@ def test_recording_frame_ready_only_emits_when_enabled(qtbot, patch_factory):
     finally:
         with qtbot.waitSignal(mc.all_stopped, timeout=2000):
             mc.stop(wait=True)
+
+
+class TestRecordingFrameTimestamps:
+    @pytest.mark.unit
+    def test_recording_frame_ready_forwards_timestamp_metadata(self, qtbot):
+        mc = MultiCameraController()
+        mc._running = True
+        mc._recording_frame_emission_enabled = True
+
+        cam_id = "basler:0815-0000"
+        mc._settings[cam_id] = CameraSettings(
+            name="C",
+            backend="basler",
+            index=0,
+            enabled=True,
+        ).apply_defaults()
+        mc._camera_display_order = [cam_id]
+        mc._display_ids[cam_id] = "C"
+
+        frame = np.zeros((10, 10), dtype=np.uint8)
+        meta = FrameTimestampMetadata(
+            source="grab_result.GetTimeStamp",
+            backend="basler",
+            default_reported="seconds",
+            seconds=0.001,
+            raw_value=1_000_000,
+            raw_unit="ticks",
+            tick_frequency_hz=1_000_000_000.0,
+            kind="camera_clock",
+        )
+
+        seen = []
+
+        def on_recording_frame(camera_id, emitted_frame, timestamp, timestamp_metadata):
+            seen.append((camera_id, emitted_frame, timestamp, timestamp_metadata))
+
+        mc.recording_frame_ready.connect(on_recording_frame)
+
+        mc._on_frame_captured(cam_id, frame, 123.0, meta)
+
+        assert len(seen) == 1
+
+        camera_id, emitted_frame, timestamp, timestamp_metadata = seen[0]
+        assert camera_id == cam_id
+        assert emitted_frame is frame
+        assert timestamp == 123.0
+        assert timestamp_metadata is meta
