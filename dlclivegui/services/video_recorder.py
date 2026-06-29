@@ -405,7 +405,15 @@ class VideoRecorder:
             avg_latency = self._total_latency / self._frames_written if self._frames_written else 0.0
             last_latency = self._last_latency
             write_fps = self._compute_write_fps_locked()
-        buffer_seconds = queue_size / write_fps if write_fps > 0 else 0.0
+
+        if write_fps > 0:
+            buffer_seconds = queue_size / write_fps
+        elif avg_latency > 0:
+            buffer_seconds = queue_size * avg_latency
+        elif last_latency > 0:
+            buffer_seconds = queue_size * last_latency
+        else:
+            buffer_seconds = 0.0
         return RecorderStats(
             frames_enqueued=frames_enqueued,
             frames_written=frames_written,
