@@ -48,7 +48,7 @@ class MultiFrameData:
 class SingleCameraWorker(QObject):
     """Worker for a single camera in multi-camera mode."""
 
-    frame_captured = Signal(str, object, float)  # camera_id, frame, timestamp
+    frame_captured = Signal(str, object, float, object)  # camera_id, frame, timestamp, timestamp_metadata
     error_occurred = Signal(str, str)  # camera_id, error_message
     runtime_info = Signal(str, object)  # camera_id, dict of runtime info
     started = Signal(str)  # camera_id
@@ -118,7 +118,10 @@ class SingleCameraWorker(QObject):
         while not self._stop_event.is_set():
             try:
                 with self._timing.measure("Single.read"):
-                    frame, timestamp = self._backend.read()
+                    captured = self._backend.read()
+                    frame = captured.frame
+                    timestamp = captured.software_timestamp
+                    timestamp_metadata = captured.timestamp_metadata
                 if frame is None or frame.size == 0:
                     consecutive_errors += 1
                     if consecutive_errors >= self._max_consecutive_errors:
@@ -132,7 +135,7 @@ class SingleCameraWorker(QObject):
 
                 consecutive_errors = 0
                 with self._timing.measure("Single.emit.frame_captured"):
-                    self.frame_captured.emit(self._camera_id, frame, timestamp)
+                    self.frame_captured.emit(self._camera_id, frame, timestamp, timestamp_metadata)
 
                 self._timing.note_frame()
                 self._timing.maybe_log()
@@ -283,7 +286,9 @@ class MultiCameraController(QObject):
 
     # Signals
     frame_ready = Signal(object)  # MultiFrameData (full cam FPS; inference only)
-    recording_frame_ready = Signal(str, object, float)  # camera_id, frame, timestamp (full cam FPS; for recording)
+    recording_frame_ready = Signal(
+        str, object, float, object
+    )  # camera_id, frame, timestamp, timestamp_metadata (full cam FPS; for recording)
     display_ready = Signal(object)  # MultiFrameData for GUI display (throttled to GUI_MAX_DISPLAY_FPS)
     camera_started = Signal(str, object)  # camera_id, settings
     camera_stopped = Signal(str)  # camera_id
@@ -598,7 +603,9 @@ class MultiCameraController(QObject):
 
         self._maybe_finalize_stop()
 
-    def _on_frame_captured(self, camera_id: str, frame: np.ndarray, timestamp: float) -> None:
+    def _on_frame_captured(
+        self, camera_id: str, frame: np.ndarray, timestamp: float, timestamp_metadata: object | None = None
+    ) -> None:
         """Handle a frame from one camera."""
         timing = self._timing_for_camera(camera_id)
         frame_data: MultiFrameData | None = None
@@ -617,7 +624,7 @@ class MultiCameraController(QObject):
 
             if self._recording_frame_emission_enabled:
                 with timing.measure("Multi.emit.recording_frame_ready"):
-                    self.recording_frame_ready.emit(camera_id, frame, timestamp)
+                    self.recording_frame_ready.emit(camera_id, frame, timestamp, timestamp_metadata)
 
             with self._frame_lock:
                 with timing.measure("Multi.store_latest"):
