@@ -7,6 +7,7 @@ from dlclivegui.config import CameraSettings
 from dlclivegui.gui.recording_manager import RecordingManager
 from dlclivegui.services.multi_camera_controller import get_camera_id, get_display_id
 from dlclivegui.utils.stats import RecorderStats
+from dlclivegui.utils.timestamps import FrameTimestampMetadata
 
 
 @pytest.fixture
@@ -422,3 +423,41 @@ def test_start_all_passes_writegear_options(
         assert rec.writer_options["-crf"] == "23"
         assert rec.writer_options["-preset"] == "ultrafast"
         assert rec.writer_options["-tune"] == "zerolatency"
+
+
+class TestRecordingManagerTimestampMetadata:
+    @pytest.mark.unit
+    def test_write_frame_passes_timestamp_metadata(
+        self,
+        recording_settings,
+        _active_cams_two,
+        current_frames,
+        patch_video_recorder,
+        patch_build_run_dir,
+    ):
+        mgr = RecordingManager()
+        mgr.start_all(recording_settings, _active_cams_two, current_frames, session_name="Sess")
+
+        cam0_id = get_camera_id(_active_cams_two[0])
+        frame = current_frames[cam0_id]
+
+        meta = FrameTimestampMetadata(
+            source="grab_result.GetTimeStamp",
+            backend="basler",
+            default_reported="seconds",
+            seconds=0.001,
+            raw_value=1_000_000,
+            raw_unit="ticks",
+            tick_frequency_hz=1_000_000_000.0,
+            kind="camera_clock",
+        )
+
+        mgr.write_frame(cam0_id, frame, timestamp=123.0, timestamp_metadata=meta)
+
+        rec = mgr.recorders[cam0_id]
+        assert len(rec.write_calls) == 1
+
+        written_frame, written_timestamp, written_metadata = rec.write_calls[0]
+        assert written_frame is frame
+        assert written_timestamp == 123.0
+        assert written_metadata is meta
