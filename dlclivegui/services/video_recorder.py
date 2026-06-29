@@ -562,7 +562,7 @@ class VideoRecorder:
                     },
                     "hardware_timestamp": hardware_timestamp_source,
                 },
-                "hardware_frame_timestamps": frame_timestamps,
+                "frame_timestamps": frame_timestamps,
                 "start_time": software_timestamps[0] if software_timestamps else None,
                 "end_time": software_timestamps[-1] if software_timestamps else None,
                 "duration_seconds": (
