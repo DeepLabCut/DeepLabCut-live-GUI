@@ -10,10 +10,9 @@ import time
 from typing import TYPE_CHECKING, Literal
 
 import cv2
-import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
-from ..base import CameraBackend, SupportLevel, register_backend
+from ..base import CameraBackend, CapturedFrame, SupportLevel, register_backend
 from ..factory import DetectedCamera
 from .utils.opencv_discovery import (
     ModeRequest,
@@ -199,21 +198,45 @@ class OpenCVCameraBackend(CameraBackend):
 
         self._configure_capture()
 
-    def read(self) -> tuple[np.ndarray | None, float]:
-        """Robust frame read: return (None, ts) on transient failures; never raises."""
+    def read(self) -> CapturedFrame:
+        """Robust frame read: return CapturedFrame(frame=None, ...) on transient failures; never raises."""
         if self._capture is None:
             logger.warning("OpenCVCameraBackend.read() called before open()")
-            return None, time.time()
+            return CapturedFrame(
+                frame=None,
+                software_timestamp=time.time(),
+                timestamp_metadata=None,
+            )
+
         try:
             if not self._capture.grab():
-                return None, time.time()
+                return CapturedFrame(
+                    frame=None,
+                    software_timestamp=time.time(),
+                    timestamp_metadata=None,
+                )
+
             success, frame = self._capture.retrieve()
             if not success or frame is None or frame.size == 0:
-                return None, time.time()
-            return frame, time.time()
+                return CapturedFrame(
+                    frame=None,
+                    software_timestamp=time.time(),
+                    timestamp_metadata=None,
+                )
+
+            return CapturedFrame(
+                frame=frame,
+                software_timestamp=time.time(),
+                timestamp_metadata=None,
+            )
+
         except Exception as exc:
-            logger.debug(f"OpenCV read transient error: {exc}")
-            return None, time.time()
+            logger.debug("OpenCV read transient error: %s", exc)
+            return CapturedFrame(
+                frame=None,
+                software_timestamp=time.time(),
+                timestamp_metadata=None,
+            )
 
     def close(self) -> None:
         self._release_capture()
