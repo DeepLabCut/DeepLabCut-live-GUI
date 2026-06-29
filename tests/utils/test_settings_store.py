@@ -95,6 +95,17 @@ def test_qt_settings_store_full_config_snapshot_invalid_returns_none(monkeypatch
     assert settstore.load_full_config_snapshot() is None
 
 
+def test_qt_settings_store_fast_encoding_roundtrip():
+    s = InMemoryQSettings()
+    settstore = store.DLCLiveGUISettingsStore(qsettings=s)
+
+    settstore.set_fast_encoding(True)
+    assert settstore.get_fast_encoding(default=False) is True
+
+    settstore.set_fast_encoding(False)
+    assert settstore.get_fast_encoding(default=True) is False
+
+
 # -----------------------------
 # ModelPathStore helpers
 # -----------------------------
