@@ -517,7 +517,7 @@ def test_recording_frame_ready_only_emits_when_enabled(qtbot, patch_factory):
     cam_id = get_camera_id(cam)
     seen: list[tuple[str, tuple, float]] = []
 
-    def on_recording_frame(camera_id, frame, timestamp):
+    def on_recording_frame(camera_id, frame, timestamp, timestamp_metadata=None):
         seen.append((camera_id, frame.shape, timestamp))
 
     mc.recording_frame_ready.connect(on_recording_frame)
