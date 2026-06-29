@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from ...config import CameraTriggerSettings
-from ..base import CameraBackend, SupportLevel, register_backend
+from ..base import CameraBackend, CapturedFrame, SupportLevel, register_backend
 from ..factory import DetectedCamera
 from .utils import gentl_discovery as cti_finder
 
@@ -621,7 +621,7 @@ class GenTLCameraBackend(CameraBackend):
             return f"{channels}ch-{frame.dtype}"
         return str(frame.dtype)
 
-    def read(self) -> tuple[np.ndarray, float]:
+    def read(self) -> CapturedFrame:
         if self._acquirer is None:
             raise RuntimeError("GenTL image acquirer not initialised")
 
@@ -661,7 +661,11 @@ class GenTLCameraBackend(CameraBackend):
                 pass
         self._actual_output_format = self._output_format_for_frame(frame)
 
-        return frame, timestamp
+        return CapturedFrame(
+            frame=frame,
+            software_timestamp=timestamp,
+            timestamp_metadata=None,
+        )
 
     def stop(self) -> None:
         if self._acquirer is not None:
