@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -11,6 +12,7 @@ import numpy as np
 from ..config import CameraSettings
 
 if TYPE_CHECKING:
+    from ..utils.timestamps import FrameTimestampMetadata
     from .factory import DetectedCamera
 
 _BACKEND_REGISTRY: dict[str, type[CameraBackend]] = {}
@@ -72,7 +74,22 @@ DEFAULT_CAPABILITIES: dict[str, SupportLevel] = {
     "device_discovery": SupportLevel.UNSUPPORTED,
     "stable_identity": SupportLevel.UNSUPPORTED,
     "hardware_trigger": SupportLevel.UNSUPPORTED,
+    "hardware_frame_timestamps": SupportLevel.UNSUPPORTED,
 }
+
+
+@dataclass(frozen=True)
+class CapturedFrame:
+    """Frame plus software timestamp and optional backend timestamp metadata."""
+
+    frame: np.ndarray | None
+    software_timestamp: float
+    timestamp_metadata: FrameTimestampMetadata | None = None
+
+    def __iter__(self):
+        """Backwards-compatible unpacking: frame, software_timestamp = backend.read()"""
+        yield self.frame
+        yield self.software_timestamp
 
 
 class CameraBackend(ABC):
@@ -105,6 +122,11 @@ class CameraBackend(ABC):
 
     @property
     def recommended_preserve_mono(self) -> bool | None:
+        return None
+
+    @property
+    def last_frame_timestamp_metadata(self) -> FrameTimestampMetadata | None:
+        """Return backend-provided timestamp metadata for the last read frame."""
         return None
 
     @classmethod
@@ -171,7 +193,7 @@ class CameraBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def read(self) -> tuple[np.ndarray, float]:
+    def read(self) -> CapturedFrame:
         """Read a frame and return the image with a timestamp."""
         raise NotImplementedError
 
