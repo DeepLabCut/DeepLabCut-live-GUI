@@ -7,11 +7,10 @@ import logging
 import time
 from typing import ClassVar
 
-import numpy as np
-
 from ...config import BASLER_DO_LOG_TIMING, CameraTriggerSettings
 from ...utils.stats import WorkerTimingStats
-from ..base import CameraBackend, SupportLevel, register_backend
+from ...utils.timestamps import FrameTimestampMetadata
+from ..base import CameraBackend, CapturedFrame, SupportLevel, register_backend
 
 LOG = logging.getLogger(__name__)
 
@@ -58,6 +57,8 @@ class BaslerCameraBackend(CameraBackend):
         # (may skip StartGrabbing and converter setup for faster capability probing; not suitable for normal capture)
         self._fast_start: bool = bool(self.ns.get("fast_start", False))
         self._retrieve_timeout_ms: int = 100  # default; may be overridden by trigger settings
+        self._timestamp_tick_frequency_hz: float | None = None
+        self._last_frame_timestamp_metadata: FrameTimestampMetadata | None = None
 
         # ---- Trigger settings ----
         raw_trigger = self.ns.get("trigger", self._props.get("trigger"))
@@ -158,6 +159,10 @@ class BaslerCameraBackend(CameraBackend):
         return "Mono8" if self._should_output_mono() else "BGR8"
 
     @property
+    def last_frame_timestamp_metadata(self) -> FrameTimestampMetadata | None:
+        return self._last_frame_timestamp_metadata
+
+    @property
     def recommended_preserve_mono(self) -> bool | None:
         if not self._camera_pixel_format:
             return None
@@ -180,6 +185,7 @@ class BaslerCameraBackend(CameraBackend):
                 "stable_identity": SupportLevel.SUPPORTED,
                 "hardware_trigger": SupportLevel.BEST_EFFORT,
                 "preserve_mono": SupportLevel.SUPPORTED,
+                "hardware_frame_timestamps": SupportLevel.SUPPORTED,
             }
         )
         return caps
@@ -483,6 +489,7 @@ class BaslerCameraBackend(CameraBackend):
             "BslResultingAcquisitionFrameRate",
             "ExposureAuto",
             "ExposureTime",
+            "ExposureTimeAbs",
             "Width",
             "Height",
             "PixelFormat",
@@ -552,7 +559,10 @@ class BaslerCameraBackend(CameraBackend):
             try:
                 if hasattr(self._camera, "ExposureAuto"):
                     self._camera.ExposureAuto.SetValue("Off")
-                self._camera.ExposureTime.SetValue(float(self.settings.exposure))
+                if hasattr(self._camera, "ExposureTime"):
+                    self._camera.ExposureTime.SetValue(float(self.settings.exposure))
+                if hasattr(self._camera, "ExposureTimeAbs"):
+                    self._camera.ExposureTimeAbs.SetValue(float(self.settings.exposure))
                 LOG.info("[Basler] Exposure set to %s us (auto off)", self.settings.exposure)
             except Exception as exc:
                 LOG.warning("[Basler] Failed to set exposure: %s", exc)
@@ -663,9 +673,16 @@ class BaslerCameraBackend(CameraBackend):
             getattr(self.settings, "gain", None),
         )
 
-        # ----------------------------
+        # Get hardware tick frequency for timestamp conversion
+        try:
+            node = getattr(self._camera, "GevTimestampTickFrequency", None)
+            if node is not None and node.IsReadable():
+                self._timestamp_tick_frequency_hz = float(node.GetValue())
+                LOG.info("[Basler] timestamp tick frequency: %.3f Hz", self._timestamp_tick_frequency_hz)
+        except Exception:
+            LOG.debug("[Basler] Could not read GevTimestampTickFrequency", exc_info=True)
+
         # Persist stable identity into namespace
-        # ----------------------------
         try:
             serial = device.GetSerialNumber()
             if serial:
@@ -678,7 +695,29 @@ class BaslerCameraBackend(CameraBackend):
         except Exception:
             pass
 
-    def read(self) -> tuple[np.ndarray, float]:
+    def _make_timestamp_metadata(self, grab_result) -> FrameTimestampMetadata | None:
+        try:
+            ticks = int(grab_result.GetTimeStamp())
+        except Exception:
+            return None
+
+        freq = getattr(self, "_timestamp_tick_frequency_hz", None)
+        seconds = ticks / freq if freq and freq > 0 else None
+
+        return FrameTimestampMetadata(
+            source="grab_result.GetTimeStamp",
+            backend="basler",
+            default_reported="seconds" if seconds is not None else "raw_value",
+            seconds=seconds,
+            wall_clock_time=None,
+            raw_value=ticks,
+            raw_unit="ticks",
+            tick_frequency_hz=freq,
+            timebase="Basler camera timestamp counter",
+            kind="camera_clock",
+        )
+
+    def read(self) -> CapturedFrame:
         if self._camera is None:
             raise RuntimeError("Basler camera not opened")
         if self._converter is None:
@@ -707,6 +746,11 @@ class BaslerCameraBackend(CameraBackend):
             with self._timing.measure("Basler.get_array"):
                 frame = image.GetArray()
 
+            with self._timing.measure("Basler.timestamp"):
+                software_timestamp = time.time()
+                timestamp_metadata = self._make_timestamp_metadata(grab_result)
+                self._last_frame_timestamp_metadata = timestamp_metadata
+
             if not self._logged_first_frame:
                 self._logged_first_frame = True
                 LOG.info(
@@ -733,7 +777,11 @@ class BaslerCameraBackend(CameraBackend):
             self._timing.note_frame()
             self._timing.maybe_log()
 
-            return frame, time.time()
+            return CapturedFrame(
+                frame=frame,
+                software_timestamp=software_timestamp,
+                timestamp_metadata=timestamp_metadata,
+            )
 
         except Exception as exc:
             if grab_result is not None:
