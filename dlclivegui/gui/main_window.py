@@ -812,6 +812,7 @@ class DLCLiveMainWindow(QMainWindow):
             self.filename_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
         if hasattr(self, "container_combo"):
             self.container_combo.currentTextChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.fast_encoding_checkbox.stateChanged.connect(self._on_fast_encoding_changed)
 
     # ------------------------------------------------------------------
     # Config
@@ -840,7 +841,8 @@ class DLCLiveMainWindow(QMainWindow):
         self.crf_spin.setValue(int(recording.crf))
 
         if hasattr(self, "fast_encoding_checkbox"):
-            self.fast_encoding_checkbox.setChecked(bool(getattr(recording, "fast_encoding", False)))
+            config_fast_encoding = bool(getattr(recording, "fast_encoding", False))
+            self.fast_encoding_checkbox.setChecked(self._settings_store.get_fast_encoding(default=config_fast_encoding))
 
         ## Restore persisted session name if empty
         if hasattr(self, "session_name_edit"):
@@ -1213,6 +1215,9 @@ class DLCLiveMainWindow(QMainWindow):
         self._settings_store.set_use_timestamp(self.use_timestamp_checkbox.isChecked())
         self._update_recording_path_preview()
 
+    def _on_fast_encoding_changed(self, _state: int) -> None:
+        self._settings_store.set_fast_encoding(self.fast_encoding_checkbox.isChecked())
+
     def _on_colormap_changed(self, _index: int) -> None:
         self._colormap = color_ui.get_cmap_name_from_combo(self.cmap_combo, fallback=self._colormap)
         if self._current_frame is not None:
@@ -1465,17 +1470,6 @@ class DLCLiveMainWindow(QMainWindow):
             frame = frame_data.frames[dlc_cam_id]
             timestamp = frame_data.timestamps.get(dlc_cam_id, time.time())
             self._dlc.enqueue_frame(frame, timestamp)
-
-        # PRIORITY 2: Recording (queued, non-blocking)
-        # if self._rec_manager.is_active and src_id in frame_data.frames:
-        #     frame = frame_data.frames[src_id]
-
-        #     if self.record_with_overlays_checkbox.isChecked():
-        #         # Draw overlays for recording
-        #         frame = self._render_overlays_for_recording(src_id, frame)
-
-        #     ts = frame_data.timestamps.get(src_id, time.time())
-        #     self._rec_manager.write_frame(src_id, frame, ts)
 
     def _on_multi_frame_display_ready(self, frame_data: MultiFrameData) -> None:
         """Throttled UI/display path.
