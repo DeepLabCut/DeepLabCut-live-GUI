@@ -57,7 +57,7 @@ class BaslerCameraBackend(CameraBackend):
         self._fast_start: bool = bool(self.ns.get("fast_start", False))
         self._retrieve_timeout_ms: int = 100  # default; may be overridden by trigger settings
         self._timestamp_tick_frequency_hz: float | None = None
-        self._last_frame_timestamp_metadata: FrameTimestampMetadata | None = None
+        self._timestamp_tick_frequency_source: str | None = None
 
         # ---- Trigger settings ----
         raw_trigger = self.ns.get("trigger", self._props.get("trigger"))
@@ -158,10 +158,6 @@ class BaslerCameraBackend(CameraBackend):
         return "Mono8" if self._should_output_mono() else "BGR8"
 
     @property
-    def last_frame_timestamp_metadata(self) -> FrameTimestampMetadata | None:
-        return self._last_frame_timestamp_metadata
-
-    @property
     def recommended_preserve_mono(self) -> bool | None:
         if not self._camera_pixel_format:
             return None
@@ -184,7 +180,7 @@ class BaslerCameraBackend(CameraBackend):
                 "stable_identity": SupportLevel.SUPPORTED,
                 "hardware_trigger": SupportLevel.BEST_EFFORT,
                 "preserve_mono": SupportLevel.SUPPORTED,
-                "hardware_frame_timestamps": SupportLevel.SUPPORTED,
+                "hardware_frame_timestamps": SupportLevel.BEST_EFFORT,
             }
         )
         return caps
@@ -667,9 +663,21 @@ class BaslerCameraBackend(CameraBackend):
             node = getattr(self._camera, "GevTimestampTickFrequency", None)
             if node is not None and node.IsReadable():
                 self._timestamp_tick_frequency_hz = float(node.GetValue())
-                LOG.info("[Basler] timestamp tick frequency: %.3f Hz", self._timestamp_tick_frequency_hz)
+                self._timestamp_tick_frequency_source = "GevTimestampTickFrequency"
+                LOG.info(
+                    "[Basler] timestamp tick frequency: %.3f Hz from GevTimestampTickFrequency",
+                    self._timestamp_tick_frequency_hz,
+                )
         except Exception:
             LOG.debug("[Basler] Could not read GevTimestampTickFrequency", exc_info=True)
+
+        if not self._timestamp_tick_frequency_hz or self._timestamp_tick_frequency_hz <= 0:
+            self._timestamp_tick_frequency_hz = 1_000_000_000.0
+            self._timestamp_tick_frequency_source = "assumed_default_1ghz"
+            LOG.info(
+                "[Basler] timestamp tick frequency unavailable; assuming %.3f Hz",
+                self._timestamp_tick_frequency_hz,
+            )
 
         # Persist stable identity into namespace
         try:
@@ -690,6 +698,10 @@ class BaslerCameraBackend(CameraBackend):
         except Exception:
             return None
 
+        if ticks == 0:
+            # Basler returns 0 if the timestamp is not available (e.g. for some GigE cameras)
+            return None
+
         freq = getattr(self, "_timestamp_tick_frequency_hz", None)
         seconds = ticks / freq if freq and freq > 0 else None
 
@@ -704,6 +716,9 @@ class BaslerCameraBackend(CameraBackend):
             tick_frequency_hz=freq,
             timebase="Basler camera timestamp counter",
             kind="camera_clock",
+            extra={
+                "tick_frequency_source": self._timestamp_tick_frequency_source,
+            },
         )
 
     def read(self) -> CapturedFrame:
@@ -738,7 +753,6 @@ class BaslerCameraBackend(CameraBackend):
             with self._timing.measure("Basler.timestamp"):
                 software_timestamp = time.time()
                 timestamp_metadata = self._make_timestamp_metadata(grab_result)
-                self._last_frame_timestamp_metadata = timestamp_metadata
 
             if not self._logged_first_frame:
                 self._logged_first_frame = True

@@ -548,9 +548,7 @@ class VideoRecorder:
                 "schema_version": 2,
                 "video_file": str(self._output.name),
                 "num_frames": len(frame_timestamps),
-                # Backward-compatible host/software timestamp list.
-                "timestamps": software_timestamps,
-                # New descriptive schema.
+                # "timestamps": software_timestamps,
                 "timestamp_sources": {
                     "software_timestamp": {
                         "source": "host_time.time",
