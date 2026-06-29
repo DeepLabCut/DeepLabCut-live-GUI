@@ -186,16 +186,17 @@ class VideoRecorder:
                 "logging": False,
             }
 
+            codec_value = (self._codec or "libx264").strip() or "libx264"
+            writer_kwargs: dict[str, Any] = {
+                "compression_mode": True,
+                "logging": False,
+                "-input_framerate": fps_value,
+                "-vcodec": codec_value,
+                "-crf": int(self._crf),
+            }
+
             if self._writer_options is not None:
                 writer_kwargs.update(self._writer_options)
-            else:
-                writer_kwargs.update(
-                    {
-                        "-input_framerate": fps_value,
-                        "-vcodec": codec_value,
-                        "-crf": int(self._crf),
-                    }
-                )
 
             # if not self._convert_grayscale_to_rgb:
             #     writer_kwargs.update(
@@ -393,7 +394,15 @@ class VideoRecorder:
             avg_latency = self._total_latency / self._frames_written if self._frames_written else 0.0
             last_latency = self._last_latency
             write_fps = self._compute_write_fps_locked()
-        buffer_seconds = queue_size / write_fps if write_fps > 0 else 0.0
+
+        if write_fps > 0:
+            buffer_seconds = queue_size / write_fps
+        elif avg_latency > 0:
+            buffer_seconds = queue_size * avg_latency
+        elif last_latency > 0:
+            buffer_seconds = queue_size * last_latency
+        else:
+            buffer_seconds = 0.0
         return RecorderStats(
             frames_enqueued=frames_enqueued,
             frames_written=frames_written,
