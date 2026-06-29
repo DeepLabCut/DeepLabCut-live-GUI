@@ -459,9 +459,10 @@ class VideoRecorder:
 
                                 if hasattr(timestamp_metadata, "to_frame_dict"):
                                     record["hardware_timestamp"] = timestamp_metadata.to_frame_dict()
-                                    default_value = timestamp_metadata.get_default_reported()
-                                    if default_value is not None:
-                                        record["hardware_timestamp_default"] = default_value
+                                    if hasattr(timestamp_metadata, "get_default_reported"):
+                                        default_value = timestamp_metadata.get_default_reported()
+                                        if default_value is not None:
+                                            record["hardware_timestamp_default"] = default_value
                                 elif isinstance(timestamp_metadata, dict):
                                     record["hardware_timestamp"] = dict(timestamp_metadata)
                                 else:
