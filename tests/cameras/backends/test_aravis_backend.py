@@ -243,7 +243,7 @@ def make_backend(settings, buffers):
 
 @pytest.mark.unit
 def test_device_name():
-    be, cam, s = make_backend(Settings(), [])
+    be, _cam, s = make_backend(Settings(), [])
     assert be.device_name() == "FakeVendor FakeModel (12345)"
 
 
@@ -253,9 +253,9 @@ def test_read_mono8():
     data = (np.arange(w * h) % 256).astype(np.uint8).tobytes()
 
     buf = FakeAravis.Buffer(data, w, h, FakeAravis.PIXEL_FORMAT_MONO_8)
-    be, cam, s = make_backend(Settings(), [buf])
+    be, _cam, s = make_backend(Settings(), [buf])
 
-    frame, ts = be.read()
+    frame = be.read().frame
     assert frame.shape == (h, w, 3)
     assert frame.dtype == np.uint8
     # Ensure grayscale expanded to 3 channels
@@ -272,9 +272,9 @@ def test_read_rgb8_converts_to_bgr():
     data = np.array([255, 0, 0, 0, 255, 0], dtype=np.uint8).tobytes()
 
     buf = FakeAravis.Buffer(data, w, h, FakeAravis.PIXEL_FORMAT_RGB_8_PACKED)
-    be, cam, s = make_backend(Settings(), [buf])
+    be, _cam, s = make_backend(Settings(), [buf])
 
-    frame, _ = be.read()
+    frame = be.read().frame
     assert frame.shape == (1, 2, 3)
     # BGR conversion: red → [0,0,255], green → [0,255,0]
     assert (frame[0, 0] == np.array([0, 0, 255])).all()
@@ -288,9 +288,9 @@ def test_read_bgr8_passthrough():
     data = np.array([10, 20, 30, 40, 50, 60], dtype=np.uint8).tobytes()
 
     buf = FakeAravis.Buffer(data, w, h, FakeAravis.PIXEL_FORMAT_BGR_8_PACKED)
-    be, cam, s = make_backend(Settings(), [buf])
+    be, _cam, s = make_backend(Settings(), [buf])
 
-    frame, _ = be.read()
+    frame = be.read().frame
     assert frame.shape == (1, 2, 3)
     assert (frame.flatten() == np.array([10, 20, 30, 40, 50, 60])).all()
     assert s.pushed >= 1
@@ -302,9 +302,9 @@ def test_read_mono16_scaling():
     raw = np.array([0, 32768, 65535], dtype=np.uint16)
 
     buf = FakeAravis.Buffer(raw.tobytes(), w, h, FakeAravis.PIXEL_FORMAT_MONO_16)
-    be, cam, s = make_backend(Settings(), [buf])
+    be, _cam, s = make_backend(Settings(), [buf])
 
-    frame, _ = be.read()
+    frame = be.read().frame
     assert frame.shape == (1, 3, 3)
 
     # scaling: 0 → 0, max → 255, mid → ~128
@@ -320,9 +320,9 @@ def test_read_unknown_format_fallback_to_mono8():
     data = (np.arange(w * h) % 256).astype(np.uint8).tobytes()
     # Unknown token
     buf = FakeAravis.Buffer(data, w, h, "SOME_UNKNOWN_FMT")
-    be, cam, s = make_backend(Settings(), [buf])
+    be, _cam, s = make_backend(Settings(), [buf])
 
-    frame, _ = be.read()
+    frame = be.read().frame
     assert frame.shape == (h, w, 3)
     assert np.all(frame[..., 0] == frame[..., 1])
     assert np.all(frame[..., 1] == frame[..., 2])
@@ -331,7 +331,7 @@ def test_read_unknown_format_fallback_to_mono8():
 
 @pytest.mark.unit
 def test_read_timeout_raises():
-    be, cam, s = make_backend(Settings(), [])
+    be, _cam, s = make_backend(Settings(), [])
     with pytest.raises(TimeoutError):
         be.read()
 
@@ -341,7 +341,7 @@ def test_read_status_error_raises_and_pushes_back():
     w, h = 1, 1
     data = b"\x00"
     buf = FakeAravis.Buffer(data, w, h, FakeAravis.PIXEL_FORMAT_MONO_8, status="ERROR")
-    be, cam, s = make_backend(Settings(), [buf])
+    be, _cam, s = make_backend(Settings(), [buf])
 
     with pytest.raises(TimeoutError):
         be.read()
@@ -350,7 +350,7 @@ def test_read_status_error_raises_and_pushes_back():
 
 @pytest.mark.unit
 def test_close_is_idempotent():
-    be, cam, s = make_backend(Settings(), [])
+    be, _cam, s = make_backend(Settings(), [])
     be.close()
     be.close()  # should not raise
 

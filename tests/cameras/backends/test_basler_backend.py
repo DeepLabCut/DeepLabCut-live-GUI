@@ -21,7 +21,8 @@ def test_basler_open_starts_grabbing_and_read_returns_frame(patch_basler_sdk, ba
     assert be._camera.IsGrabbing()
     assert be._converter is not None
 
-    frame, ts = be.read()
+    payload = be.read()
+    frame, ts = payload.frame, payload.software_timestamp
     assert isinstance(ts, float)
     assert isinstance(frame, np.ndarray)
     assert frame.shape == (10, 10, 3)
@@ -257,7 +258,8 @@ def test_basler_default_trigger_is_off_and_free_runs(
     assert be._camera.TriggerMode.GetValue() == "Off"
     assert be.waits_for_hardware_trigger is False
 
-    frame, _ = be.read()
+    payload = be.read()
+    frame = payload.frame
     assert frame.shape == (10, 10, 3)
 
     be.close()
@@ -356,7 +358,8 @@ def test_basler_follower_non_strict_invalid_source_disables_trigger(
     assert be._camera.TriggerMode.GetValue() == "Off"
     assert be.waits_for_hardware_trigger is False
 
-    frame, _ = be.read()
+    payload = be.read()
+    frame = payload.frame
     assert frame.shape == (10, 10, 3)
 
     be.close()
@@ -430,7 +433,7 @@ def test_basler_software_trigger_requires_trigger_once_before_read(
     be.trigger_once()
     assert be._camera.software_trigger_calls == 1
 
-    frame, _ = be.read()
+    frame = be.read().frame
     assert frame.shape == (10, 10, 3)
 
     be.close()
