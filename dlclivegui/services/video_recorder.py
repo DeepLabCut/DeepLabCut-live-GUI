@@ -183,12 +183,6 @@ class VideoRecorder:
             writer_kwargs: dict[str, Any] = {
                 "compression_mode": True,
                 "logging": False,
-            }
-
-            codec_value = (self._codec or "libx264").strip() or "libx264"
-            writer_kwargs: dict[str, Any] = {
-                "compression_mode": True,
-                "logging": False,
                 "-input_framerate": fps_value,
                 "-vcodec": codec_value,
                 "-crf": int(self._crf),
