@@ -802,16 +802,11 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Recording settings
         ## Session name persistence + preview updates
-        if hasattr(self, "session_name_edit"):
-            self.session_name_edit.editingFinished.connect(self._on_session_name_editing_finished)
-        if hasattr(self, "use_timestamp_checkbox"):
-            self.use_timestamp_checkbox.stateChanged.connect(self._on_use_timestamp_changed)
-        if hasattr(self, "output_directory_edit"):
-            self.output_directory_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
-        if hasattr(self, "filename_edit"):
-            self.filename_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
-        if hasattr(self, "container_combo"):
-            self.container_combo.currentTextChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.session_name_edit.editingFinished.connect(self._on_session_name_editing_finished)
+        self.use_timestamp_checkbox.stateChanged.connect(self._on_use_timestamp_changed)
+        self.output_directory_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.filename_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.container_combo.currentTextChanged.connect(lambda _t: self._update_recording_path_preview())
         self.fast_encoding_checkbox.stateChanged.connect(self._on_fast_encoding_changed)
 
     # ------------------------------------------------------------------
