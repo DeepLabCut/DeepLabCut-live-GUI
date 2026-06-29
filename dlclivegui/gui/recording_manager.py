@@ -202,12 +202,18 @@ class RecordingManager:
         self._session_dir = None
         self._run_dir = None
 
-    def write_frame(self, cam_id: str, frame: np.ndarray, timestamp: float | None = None) -> None:
+    def write_frame(
+        self, cam_id: str, frame: np.ndarray, timestamp: float | None = None, timestamp_metadata: object | None = None
+    ) -> None:
         rec = self._recorders.get(cam_id)
         if not rec or not rec.is_running:
             return
         try:
-            rec.write(frame, timestamp=timestamp if timestamp is not None else time.time())
+            rec.write(
+                frame,
+                timestamp=timestamp if timestamp is not None else time.time(),
+                timestamp_metadata=timestamp_metadata,
+            )
         except Exception as exc:
             log.warning("Failed to write frame for %s: %s", cam_id, exc)
             try:
