@@ -1418,8 +1418,7 @@ class DLCLiveMainWindow(QMainWindow):
         """Handle frames from multiple cameras.
 
         Priority:
-        1. DLC processing (highest priority - enqueue immediately, only for DLC camera)
-        2. Recording (queued writes, non-blocking)
+            - DLC processing (highest priority - enqueue immediately, only for DLC camera)
         """
         self._multi_camera_frames = frame_data.frames
         self._multi_camera_display_ids = frame_data.display_ids or {}
@@ -1460,7 +1459,7 @@ class DLCLiveMainWindow(QMainWindow):
             self._raw_frame = frame
             self._dlc_tile_offset, self._dlc_tile_scale = compute_tile_info(dlc_cam_id, frame, frame_data.frames)
 
-        # PRIORITY 1: DLC processing - only enqueue when DLC camera frame arrives!
+        # PRIORITY: DLC processing - only enqueue when DLC camera frame arrives!
         if self._dlc_active and is_dlc_camera_frame and dlc_cam_id in frame_data.frames:
             frame = frame_data.frames[dlc_cam_id]
             timestamp = frame_data.timestamps.get(dlc_cam_id, time.time())
