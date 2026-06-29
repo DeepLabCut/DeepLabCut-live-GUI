@@ -25,11 +25,11 @@ GUI_MAX_DISPLAY_FPS: float = 30.0
 ## Debug
 ### Timing logs
 SINGLE_CAMERA_WORKER_DO_LOG_TIMING: bool = False
-MULTI_CAMERA_WORKER_DO_LOG_TIMING: bool = True
-REC_DO_LOG_TIMING: bool = True
+MULTI_CAMERA_WORKER_DO_LOG_TIMING: bool = False
+REC_DO_LOG_TIMING: bool = False
 # MAIN_WINDOW_DO_LOG_TIMING: bool = False
 #### Backends
-BASLER_DO_LOG_TIMING: bool = True
+BASLER_DO_LOG_TIMING: bool = False
 
 
 class CameraSettings(BaseModel):
