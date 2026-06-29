@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import (
     CameraBackend,
+    CapturedFrame,
     SupportLevel,
     register_backend_direct,
     unregister_backend,
@@ -86,7 +87,7 @@ def make_backend_class(
                 raise RuntimeError("not opened")
             self._counter += 1
             frame = np.zeros(frame_shape, dtype=np.uint8)
-            return frame, float(timestamp_fn())
+            return CapturedFrame(frame=frame, software_timestamp=float(timestamp_fn()), timestamp_metadata=None)
 
     _TestBackend.__name__ = f"TestBackend_{name}"
     return _TestBackend
@@ -391,10 +392,10 @@ class FakeVideoRecorder:
     def stop(self):
         self.stopped = True
 
-    def write(self, frame, timestamp=None):
+    def write(self, frame, timestamp=None, timestamp_metadata=None):
         if self.raise_on_write:
             raise RuntimeError("write failed")
-        self.write_calls.append((frame, timestamp))
+        self.write_calls.append((frame, timestamp, timestamp_metadata))
         return True
 
     def get_stats(self):
@@ -418,7 +419,7 @@ def patch_video_recorder(monkeypatch):
 def recording_frame_spy(monkeypatch, window):
     captured = {}
 
-    def _fake_write_frame(cam_id, frame, timestamp=None):
+    def _fake_write_frame(cam_id, frame, timestamp=None, timestamp_metadata=None):
         captured[cam_id] = frame.copy()
 
     monkeypatch.setattr(window._rec_manager, "write_frame", _fake_write_frame)

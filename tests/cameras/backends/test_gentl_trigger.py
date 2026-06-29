@@ -289,7 +289,7 @@ def test_trigger_timeout_is_capped_for_hardware_trigger_fetch_polling(
         assert be._timeout == pytest.approx(expected_fetch_timeout)
 
         # Fake acquisition is started, so read should pass and record the capped timeout.
-        frame, _ = be.read()
+        frame = be.read().frame
         assert frame is not None
         assert be._acquirer.fetch_calls[-1] == pytest.approx(expected_fetch_timeout)
 
