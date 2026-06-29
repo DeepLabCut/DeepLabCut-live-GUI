@@ -54,12 +54,12 @@ def test_open_starts_stream_and_read_returns_frame(patch_gentl_sdk, gentl_settin
     assert be._acquirer is not None
 
     # Strict model validated via behavior: read must succeed after normal open()
-    frame, ts = be.read()
-    assert isinstance(ts, float)
-    assert isinstance(frame, np.ndarray)
-    assert frame.size > 0
+    captured = be.read()
+    assert isinstance(captured.software_timestamp, float)
+    assert isinstance(captured.frame, np.ndarray)
+    assert captured.frame.size > 0
     # Backend converts to BGR; ensure 3-channel output
-    assert frame.ndim == 3 and frame.shape[2] == 3
+    assert captured.frame.ndim == 3 and captured.frame.shape[2] == 3
 
     be.close()
     assert be._harvester is None
@@ -422,7 +422,7 @@ def test_pixel_format_unavailable_does_not_crash_open_and_streams(patch_gentl_sd
     be.open()
 
     # No fake-internal checks; just verify it can read
-    frame, _ = be.read()
+    frame = be.read().frame
     assert frame is not None and frame.size > 0
 
     be.close()
