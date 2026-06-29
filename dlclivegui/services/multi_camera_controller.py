@@ -509,7 +509,6 @@ class MultiCameraController(QObject):
                         display_ids=dict(self._display_ids),
                     )
 
-
             if frame_data is not None:
                 with timing.measure("Multi.emit.frame_ready"):
                     self.frame_ready.emit(frame_data)
