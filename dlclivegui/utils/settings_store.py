@@ -51,6 +51,15 @@ class DLCLiveGUISettingsStore:
     def set_use_timestamp(self, value: bool) -> None:
         self._s.setValue("recording/use_timestamp", bool(value))
 
+    def get_fast_encoding(self, default: bool = False) -> bool:
+        value = self._s.value("recording/fast_encoding", default)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def set_fast_encoding(self, enabled: bool) -> None:
+        self._s.setValue("recording/fast_encoding", bool(enabled))
+
     # --- optional: snapshot full config as JSON in QSettings ---
     def save_full_config_snapshot(self, cfg: ApplicationSettings) -> None:
         self._s.setValue("app/config_json", cfg.model_dump_json())
