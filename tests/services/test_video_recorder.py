@@ -233,7 +233,6 @@ def test_stop_writes_timestamps_sidecar_json(patch_writegear, output_path, rgb_f
     assert data["end_time"] == 12.0
     assert data["duration_seconds"] == 2.0
     assert data["schema_version"] == 2
-    assert data["timestamps"] == [10.0, 12.0]
     assert data["timestamp_sources"]["hardware_timestamp"] is None
     assert data["frame_timestamps"][0]["software_timestamp"] == 10.0
     assert data["frame_timestamps"][1]["software_timestamp"] == 12.0
@@ -450,9 +449,6 @@ class TestVideoRecorderTimestampSidecar:
         assert data["video_file"] == output_path.name
         assert data["num_frames"] == 2
 
-        # Backward-compatible list.
-        assert data["timestamps"] == [10.0, 12.0]
-
         assert data["timestamp_sources"]["software_timestamp"]["kind"] == "software_wall_clock"
         assert data["timestamp_sources"]["hardware_timestamp"] is None
 
@@ -503,7 +499,6 @@ class TestVideoRecorderTimestampSidecar:
         assert data["num_frames"] == 1
 
         # Backward-compatible software timestamp list.
-        assert data["timestamps"] == [10.0]
         assert data["start_time"] == 10.0
         assert data["end_time"] == 10.0
         assert data["duration_seconds"] == 0.0
