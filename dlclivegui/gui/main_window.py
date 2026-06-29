@@ -1396,7 +1396,9 @@ class DLCLiveMainWindow(QMainWindow):
             )
         return output
 
-    def _on_recording_frame_ready(self, camera_id: str, frame: np.ndarray, timestamp: float) -> None:
+    def _on_recording_frame_ready(
+        self, camera_id: str, frame: np.ndarray, timestamp: float, timestamp_metadata: object | None = None
+    ) -> None:
         """Handle full-rate per-camera frames for recording only.
 
         Intentionally lean:
@@ -1412,7 +1414,7 @@ class DLCLiveMainWindow(QMainWindow):
         if self.record_with_overlays_checkbox.isChecked():
             frame = self._render_overlays_for_recording(camera_id, frame)
 
-        self._rec_manager.write_frame(camera_id, frame, timestamp)
+        self._rec_manager.write_frame(camera_id, frame, timestamp, timestamp_metadata=timestamp_metadata)
 
     def _on_multi_frame_processing_ready(self, frame_data: MultiFrameData) -> None:
         """Handle frames from multiple cameras.
