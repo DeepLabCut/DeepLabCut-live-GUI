@@ -137,6 +137,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._raw_frame: np.ndarray | None = None
         self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
+        self._pending_recording_after_preview = False
         self._active_camera_settings: CameraSettings | None = None
         self._last_drop_warning = 0.0
         self._last_recorder_summary = "Recorder idle"
@@ -1422,6 +1423,7 @@ class DLCLiveMainWindow(QMainWindow):
         """
         self._multi_camera_frames = frame_data.frames
         self._multi_camera_display_ids = frame_data.display_ids or {}
+        self._try_start_pending_recording()
         src_id = frame_data.source_camera_id
         if src_id:
             self._fps_tracker.note_frame(src_id)  # Track FPS
@@ -1487,6 +1489,7 @@ class DLCLiveMainWindow(QMainWindow):
         """Handle all cameras stopped event."""
         # Stop all multi-camera recorders
         self._stop_multi_camera_recording()
+        self._pending_recording_after_preview = False
 
         self.preview_button.setEnabled(True)
         self.stop_preview_button.setEnabled(False)
@@ -1501,6 +1504,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _on_multi_camera_error(self, camera_id: str, message: str) -> None:
         """Handle error from a camera in multi-camera mode."""
+        self._pending_recording_after_preview = False
         self._show_warning(f"Camera {camera_id} error: {message}\nRecording stopped.")
         self._refresh_dlc_camera_list_running()
         if self.dlc_camera_combo.count() <= 1:
@@ -1509,6 +1513,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _on_multi_camera_initialization_failed(self, failures: list) -> None:
         """Handle complete failure to initialize cameras."""
+        self._pending_recording_after_preview = False
         # Build error message with details for each failed camera
         error_lines = ["Failed to initialize camera(s):"]
         for camera_id, error_msg in failures:
@@ -1669,6 +1674,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._stop_multi_camera_recording()
 
         self.multi_camera_controller.stop()
+        self._pending_recording_after_preview = False
         self._stop_inference(show_message=False)
         self._fps_tracker.clear()
         self._last_display_time = 0.0
@@ -1952,6 +1958,7 @@ class DLCLiveMainWindow(QMainWindow):
         """Start recording from all active cameras."""
         # Auto-start preview if not running
         if not self.multi_camera_controller.is_running():
+            self._pending_recording_after_preview = True
             self._start_preview()
             # Wait a moment for cameras to initialize before recording
             # The recording will start after preview is confirmed running
@@ -1961,6 +1968,32 @@ class DLCLiveMainWindow(QMainWindow):
             return
 
         # Preview already running, start recording immediately
+        self._start_multi_camera_recording()
+
+    def _try_start_pending_recording(self) -> None:
+        if not self._pending_recording_after_preview:
+            return
+
+        if self._rec_manager.is_active:
+            self._pending_recording_after_preview = False
+            return
+
+        if not self.multi_camera_controller.is_running():
+            return
+
+        active_cams = self._config.multi_camera.get_active_cameras()
+        expected_ids = {get_camera_id(cam) for cam in active_cams}
+
+        if not expected_ids:
+            self._pending_recording_after_preview = False
+            return
+
+        available_ids = set(self._multi_camera_frames.keys())
+
+        if not expected_ids.issubset(available_ids):
+            return
+
+        self._pending_recording_after_preview = False
         self._start_multi_camera_recording()
 
     def _stop_recording(self) -> None:
