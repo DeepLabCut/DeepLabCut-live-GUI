@@ -1730,24 +1730,28 @@ class DLCLiveMainWindow(QMainWindow):
     def _update_dlc_controls_enabled(self) -> None:
         """Enable/disable DLC settings based on inference state."""
         allow_changes = not self._dlc_active
-        processor_controls = allow_changes and self._processor_control_enabled()
 
         widgets = [
             self.model_path_edit,
             self.browse_model_button,
             self.dlc_camera_combo,
-            # self.additional_options_edit,
         ]
+
         processor_widgets = [
             self.processor_folder_edit,
             self.browse_processor_folder_button,
             self.refresh_processors_button,
             self.processor_combo,
         ]
+
         for widget in widgets:
             widget.setEnabled(allow_changes)
+
         for widget in processor_widgets:
-            widget.setEnabled(processor_controls)
+            widget.setEnabled(allow_changes)
+
+        if hasattr(self, "allow_processor_ctrl_checkbox"):
+            self.allow_processor_ctrl_checkbox.setEnabled(allow_changes)
 
     def _update_camera_controls_enabled(self) -> None:
         multi_cam_recording = self._rec_manager.is_active

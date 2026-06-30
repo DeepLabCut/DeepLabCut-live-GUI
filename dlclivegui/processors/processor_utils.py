@@ -17,6 +17,64 @@ def default_processors_dir() -> str:
         return str(path)
 
 
+def _processor_base_class():
+    from dlclive import Processor
+
+    return Processor
+
+
+def _is_processor_subclass(obj, *, include_base: bool = False) -> bool:
+    """Return True for dlclive.Processor subclasses, including indirect subclasses."""
+    if not inspect.isclass(obj):
+        return False
+
+    try:
+        processor_base = _processor_base_class()
+    except Exception:
+        logger.exception("Could not import dlclive.Processor")
+        return False
+
+    try:
+        if obj is processor_base:
+            return bool(include_base)
+        return issubclass(obj, processor_base)
+    except TypeError:
+        return False
+
+
+def _processor_info_from_class(cls, fallback_name: str) -> dict:
+    return {
+        "class": cls,
+        "name": getattr(cls, "PROCESSOR_NAME", fallback_name),
+        "description": getattr(cls, "PROCESSOR_DESCRIPTION", ""),
+        "params": getattr(cls, "PROCESSOR_PARAMS", {}),
+    }
+
+
+def discover_processor_classes(module, *, only_defined_in_module: bool = True) -> dict[str, dict]:
+    """Discover dlclive.Processor subclasses in a module.
+
+    Includes indirect subclasses of Processor.
+
+    Args:
+        module: Imported Python module.
+        only_defined_in_module: If True, ignore Processor subclasses imported
+            from other modules to avoid duplicate registry entries.
+    """
+    processors: dict[str, dict] = {}
+
+    for name, obj in inspect.getmembers(module, inspect.isclass):
+        if only_defined_in_module and getattr(obj, "__module__", None) != module.__name__:
+            continue
+
+        if not _is_processor_subclass(obj):
+            continue
+
+        processors[name] = _processor_info_from_class(obj, name)
+
+    return processors
+
+
 def scan_processor_folder(folder_path):
     all_processors = {}
     folder = Path(folder_path)
@@ -65,22 +123,7 @@ def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[
                 processors = mod.get_available_processors()
             else:
                 # Fallback: scan for dlclive.Processor subclasses
-                from dlclive import Processor
-
-                processors = {}
-                for attr_name in dir(mod):
-                    obj = getattr(mod, attr_name)
-                    try:
-                        if isinstance(obj, type) and obj is not Processor and issubclass(obj, Processor):
-                            processors[attr_name] = {
-                                "class": obj,
-                                "name": getattr(obj, "PROCESSOR_NAME", attr_name),
-                                "description": getattr(obj, "PROCESSOR_DESCRIPTION", ""),
-                                "params": getattr(obj, "PROCESSOR_PARAMS", {}),
-                            }
-                    except Exception:
-                        # Non-class or weird metaclass; ignore
-                        pass
+                processors = discover_processor_classes(mod)
 
             # Normalize into your “file::class” shape
             module_file = mod.__name__.split(".")[-1] + ".py"
@@ -131,26 +174,7 @@ def load_processors_from_file(file_path: str | Path):
             return processors
 
         # Fallback path: discover subclasses of dlclive.Processor
-        from dlclive import Processor
-
-        processors: dict[str, dict] = {}
-        for name, obj in inspect.getmembers(module, inspect.isclass):
-            if obj is Processor:
-                continue
-            # Guard: module might define other classes; only include Processor subclasses
-            try:
-                if issubclass(obj, Processor):
-                    processors[name] = {
-                        "class": obj,
-                        "name": getattr(obj, "PROCESSOR_NAME", name),
-                        "description": getattr(obj, "PROCESSOR_DESCRIPTION", ""),
-                        "params": getattr(obj, "PROCESSOR_PARAMS", {}),
-                    }
-            except Exception:
-                # Some "classes" can fail issubclass checks; ignore safely
-                continue
-
-        return processors
+        return discover_processor_classes(module)
 
     except Exception:
         # Full traceback helps a ton when a plugin fails to import
