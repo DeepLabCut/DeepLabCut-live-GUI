@@ -1966,7 +1966,7 @@ class DLCLiveMainWindow(QMainWindow):
             # The recording will start after preview is confirmed running
             self.statusBar().showMessage("Starting preview before recording...", 3000)
             # Use a single-shot timer to start recording after preview starts
-            QTimer.singleShot(500, self._start_multi_camera_recording)
+            # QTimer.singleShot(500, self._start_multi_camera_recording)
             return
 
         # Preview already running, start recording immediately
