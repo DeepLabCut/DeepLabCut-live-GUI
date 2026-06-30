@@ -801,6 +801,8 @@ class DLCLiveMainWindow(QMainWindow):
         self._dlc.initialized.connect(self._on_dlc_initialised)
         self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
         self.dlc_camera_combo.currentTextChanged.connect(self.dlc_camera_combo.update_shrink_width)
+        self.allow_processor_ctrl_checkbox.stateChanged.connect(lambda _s: self._update_dlc_controls_enabled())
+        self.allow_processor_ctrl_checkbox.stateChanged.connect(lambda _s: self._update_processor_status())
 
         # Recording settings
         ## Session name persistence + preview updates
@@ -1485,6 +1487,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage(f"Multi-camera preview started: {active_count} camera(s)", 5000)
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
+        self._update_dlc_controls_enabled()
 
     def _on_multi_camera_stopped(self) -> None:
         """Handle all cameras stopped event."""
@@ -1502,6 +1505,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage("Multi-camera preview stopped", 3000)
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
+        self._update_dlc_controls_enabled()
 
     def _on_multi_camera_error(self, camera_id: str, message: str) -> None:
         """Handle error from a camera in multi-camera mode."""
