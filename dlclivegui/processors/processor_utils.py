@@ -98,7 +98,7 @@ def scan_processor_folder(folder_path):
     return all_processors
 
 
-def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[str | dict]:
+def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[str, dict]:
     """
     Discover and load processor classes from a package namespace.
     """
