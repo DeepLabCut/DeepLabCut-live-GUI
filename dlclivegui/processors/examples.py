@@ -148,7 +148,10 @@ class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):  # pragma: 
         # Calculate weighted center from head keypoints
         head_xy = xy[[0, 1, 2, 3, 4, 5, 6, 26], :]
         head_conf = conf[[0, 1, 2, 3, 4, 5, 6, 26]]
-        center = np.average(head_xy, axis=0, weights=head_conf)
+        try:
+            center = np.average(head_xy, axis=0, weights=head_conf)
+        except ZeroDivisionError:
+            center = np.zeros(2)
 
         # Calculate body axis (tail_base -> neck)
         body_axis = xy[7] - xy[13]
