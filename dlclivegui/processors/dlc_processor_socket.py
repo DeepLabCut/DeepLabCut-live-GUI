@@ -30,10 +30,11 @@ PROCESSOR_REGISTRY = {}
 def register_processor(cls):
     registry_key = getattr(cls, "PROCESSOR_ID", cls.__name__)
     if registry_key in PROCESSOR_REGISTRY:
-        raise ValueError(
+        msg = (
             f"Duplicate processor registration key '{registry_key}': "
             f"{PROCESSOR_REGISTRY[registry_key].__name__} vs {cls.__name__}"
         )
+        logger.warning(msg)
     PROCESSOR_REGISTRY[registry_key] = cls
     return cls
 
