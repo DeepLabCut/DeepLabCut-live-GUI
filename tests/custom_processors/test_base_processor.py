@@ -37,6 +37,19 @@ def socket_mod(monkeypatch):
     return importlib.import_module(mod_name)
 
 
+@pytest.fixture
+def example_processor_mod(monkeypatch):
+    """
+    Import the example processor module with dlclive mocked.
+    Adjust module name if your file lives elsewhere.
+    """
+    _mock_dlclive(monkeypatch)
+    mod_name = "dlclivegui.processors.examples"
+    if mod_name in sys.modules:
+        del sys.modules[mod_name]
+    return importlib.import_module(mod_name)
+
+
 def _module_data_dir(socket_mod) -> Path:
     """Compute the data/ directory where save() writes artifacts."""
     return Path(socket_mod.__file__).parent.parent.parent / "data"
@@ -233,12 +246,14 @@ def test_save_ignores_pre_recording_original_pose_frames(socket_mod):
         ("ExampleProcessorSocketFilterKeypoints", 10),
     ],
 )
-def test_subclass_save_ignores_pre_recording_original_pose_frames(socket_mod, class_name, n_keypoints):
+def test_subclass_save_ignores_pre_recording_original_pose_frames(
+    socket_mod, example_processor_mod, class_name, n_keypoints
+):
     """
     Concrete processors must keep original_pose aligned with recorded metadata
     even when process() is called before recording starts.
     """
-    processor_class = getattr(socket_mod, class_name)
+    processor_class = getattr(example_processor_mod, class_name)
     proc = processor_class(bind=("127.0.0.1", 0), save_original=True)
 
     try:
