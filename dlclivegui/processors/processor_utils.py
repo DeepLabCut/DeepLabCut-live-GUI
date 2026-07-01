@@ -18,7 +18,7 @@ def default_processors_dir() -> str:
 
 
 def _processor_base_class():
-    from dlclive import Processor
+    from dlclive.processor import Processor
 
     return Processor
 
