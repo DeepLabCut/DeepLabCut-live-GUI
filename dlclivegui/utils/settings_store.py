@@ -57,6 +57,42 @@ class DLCLiveGUISettingsStore:
             return value
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
+    def get_processor_folder(self, default: str = "") -> str:
+        """
+        Return the persisted processor folder if it still exists and is a directory.
+        Otherwise return default.
+        """
+        value = self._s.value("dlc/processor_folder", default)
+        value = str(value).strip() if value is not None else ""
+
+        if not value:
+            return default
+
+        try:
+            path = Path(value).expanduser()
+            if path.is_dir():
+                return str(path.resolve())
+        except Exception:
+            logger.debug("Persisted processor folder is invalid: %s", value, exc_info=True)
+
+        return default
+
+    def set_processor_folder(self, folder: str) -> None:
+        """
+        Persist processor folder only if it exists and is a directory.
+        Invalid folders are ignored.
+        """
+        folder = str(folder).strip() if folder is not None else ""
+        if not folder:
+            return
+
+        try:
+            path = Path(folder).expanduser()
+            if path.is_dir():
+                self._s.setValue("dlc/processor_folder", str(path.resolve()))
+        except Exception:
+            logger.debug("Failed to persist processor folder: %s", folder, exc_info=True)
+
     def set_fast_encoding(self, enabled: bool) -> None:
         self._s.setValue("recording/fast_encoding", bool(enabled))
 
