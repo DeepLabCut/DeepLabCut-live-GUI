@@ -6,7 +6,8 @@ from math import acos, atan2, copysign, degrees, pi, sqrt
 
 import numpy as np
 
-from dlclivegui.processors import BaseProcessorSocket, register_processor
+from dlclivegui.processors import register_processor
+from dlclivegui.processors.dlc_processor_socket import BaseProcessorSocket
 
 logger = logging.getLogger(__name__)
 
