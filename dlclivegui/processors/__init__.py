@@ -1,3 +1,3 @@
-from .dlc_processor_socket import PROCESSOR_REGISTRY, BaseProcessorSocket, register_processor
+from .registry import PROCESSOR_REGISTRY, register_processor
 
-__all__ = ["register_processor", "BaseProcessorSocket", "PROCESSOR_REGISTRY"]
+__all__ = ["register_processor", "PROCESSOR_REGISTRY"]
