@@ -446,7 +446,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Processor selection
         processor_path_layout = QHBoxLayout()
         self.processor_folder_edit = QLineEdit()
-        self.processor_folder_edit.setText(default_processors_dir())
+        self.processor_folder_edit.setText(self._settings_store.get_processor_folder(default=default_processors_dir()))
         processor_path_layout.addWidget(self.processor_folder_edit)
 
         self.browse_processor_folder_button = QPushButton("Browse...")
@@ -1085,10 +1085,11 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _action_browse_processor_folder(self) -> None:
         """Browse for processor folder."""
-        current_path = self.processor_folder_edit.text() or default_processors_dir()
+        current_path = self.processor_folder_edit.text().strip() or default_processors_dir()
         directory = QFileDialog.getExistingDirectory(self, "Select processor folder", current_path)
         if directory:
             self.processor_folder_edit.setText(directory)
+            self._settings_store.set_processor_folder(directory)
             self._refresh_processors()
 
     def _action_open_recording_folder(self) -> None:
@@ -1142,10 +1143,17 @@ class DLCLiveMainWindow(QMainWindow):
         self.processor_combo.addItem("No Processor", None)
 
         selected_folder = self.processor_folder_edit.text().strip()
-        if Path(selected_folder).exists():
-            self._scanned_processors = scan_processor_folder(selected_folder)
+        selected_path = Path(selected_folder).expanduser() if selected_folder else None
+
+        if selected_path is not None and selected_path.is_dir():
+            resolved_folder = str(selected_path.resolve())
+            self._settings_store.set_processor_folder(resolved_folder)
+            self._scanned_processors = scan_processor_folder(resolved_folder)
+            source_text = resolved_folder
         else:
             self._scanned_processors = scan_processor_package("dlclivegui.processors")
+            source_text = "package dlclivegui.processors"
+
         self._processor_keys = list(self._scanned_processors.keys())
 
         for key in self._processor_keys:
@@ -1154,9 +1162,7 @@ class DLCLiveMainWindow(QMainWindow):
             self.processor_combo.addItem(display_name, key)
 
         self.processor_combo.update_shrink_width()
-        self.statusBar().showMessage(
-            f"Found {len(self._processor_keys)} processor(s) in package dlclivegui.processors", 3000
-        )
+        self.statusBar().showMessage(f"Found {len(self._processor_keys)} processor(s) in {source_text}", 3000)
 
     # ------------------------------------------------------------------
     # Recording path preview and session name persistence
@@ -2166,6 +2172,9 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Remember model path on exit
         self._model_path_store.save_if_valid(self.model_path_edit.text().strip())
+        # Remember processor folder on exit
+        if hasattr(self, "processor_folder_edit"):
+            self._settings_store.set_processor_folder(self.processor_folder_edit.text().strip())
 
         # Close the window
         super().closeEvent(event)
