@@ -125,7 +125,7 @@ def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[
                 processors = mod.get_available_processors()
             else:
                 # Fallback: scan for dlclive.Processor subclasses
-                processors = discover_processor_classes(mod, only_defined_in_module=False)
+                processors = discover_processor_classes(mod)
 
             # Normalize into your “file::class” shape
             module_file = mod.__name__.split(".")[-1] + ".py"
@@ -176,7 +176,6 @@ def load_processors_from_file(file_path: str | Path):
             return processors
 
         # Fallback path: discover subclasses of dlclive.Processor
-        #  here module only is disabled to allow classes re-exported in other modules to be discovered
         return discover_processor_classes(module, only_defined_in_module=False)
 
     except Exception:
