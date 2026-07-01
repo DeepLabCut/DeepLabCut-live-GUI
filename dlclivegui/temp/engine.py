@@ -6,7 +6,7 @@ from pathlib import Path
 # or if we update dlclive.Engine to have these methods and use that instead of a separate enum here.
 # The latter would be more cohesive but also creates a dependency from utils to dlclive,
 # pending release of dlclive
-class Engine(Enum):
+class Engine(str, Enum):
     TENSORFLOW = "tensorflow"
     PYTORCH = "pytorch"
 
@@ -26,6 +26,12 @@ class Engine(Enum):
 
     @classmethod
     def from_model_type(cls, model_type: str) -> "Engine":
+        if not isinstance(model_type, str):
+            try:
+                model_type = getattr(model_type, "value", str(model_type))
+            except Exception as e:
+                raise ValueError(f"Could not convert model_type to string: {model_type}") from e
+
         if model_type.lower() == "pytorch":
             return cls.PYTORCH
         elif model_type.lower() in ("tensorflow", "base", "tensorrt", "lite"):
