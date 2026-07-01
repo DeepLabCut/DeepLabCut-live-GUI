@@ -215,7 +215,14 @@ class RecordingManager:
                 timestamp_metadata=timestamp_metadata,
             )
         except Exception as exc:
-            log.warning("Failed to write frame for %s: %s", cam_id, exc)
+            log.warning(
+                "Failed to write frame for %s: %s: %s frame_shape=%s dtype=%s",
+                cam_id,
+                type(exc).__name__,
+                str(exc) or repr(exc),
+                getattr(frame, "shape", None),
+                getattr(frame, "dtype", None),
+            )
             try:
                 rec.stop()
             except Exception:
