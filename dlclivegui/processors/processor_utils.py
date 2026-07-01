@@ -176,7 +176,7 @@ def load_processors_from_file(file_path: str | Path):
             return processors
 
         # Fallback path: discover subclasses of dlclive.Processor
-        return discover_processor_classes(module, only_defined_in_module=False)
+        return discover_processor_classes(module)
 
     except Exception:
         # Full traceback helps a ton when a plugin fails to import
