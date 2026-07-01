@@ -38,7 +38,8 @@ def _is_processor_subclass(obj, *, include_base: bool = False) -> bool:
         if obj is processor_base:
             return bool(include_base)
         return issubclass(obj, processor_base)
-    except TypeError:
+    except Exception:
+        logger.exception(f"Error checking if {obj} is a subclass of dlclive.Processor")
         return False
 
 
@@ -123,7 +124,7 @@ def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[
                 processors = mod.get_available_processors()
             else:
                 # Fallback: scan for dlclive.Processor subclasses
-                processors = discover_processor_classes(mod)
+                processors = discover_processor_classes(mod, only_defined_in_module=False)
 
             # Normalize into your “file::class” shape
             module_file = mod.__name__.split(".")[-1] + ".py"
@@ -174,7 +175,8 @@ def load_processors_from_file(file_path: str | Path):
             return processors
 
         # Fallback path: discover subclasses of dlclive.Processor
-        return discover_processor_classes(module)
+        #  here module only is disabled to allow classes re-exported in other modules to be discovered
+        return discover_processor_classes(module, only_defined_in_module=False)
 
     except Exception:
         # Full traceback helps a ton when a plugin fails to import
