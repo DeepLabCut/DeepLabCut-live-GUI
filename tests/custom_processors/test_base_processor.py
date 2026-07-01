@@ -13,15 +13,21 @@ import pytest
 
 
 def _mock_dlclive(monkeypatch):
-    """Provide a dummy dlclive.Processor so the module can import in tests."""
-    fake = types.ModuleType("dlclive")
-
     class Processor:
         def __init__(self, *args, **kwargs):
             pass
 
-    fake.Processor = Processor
-    monkeypatch.setitem(sys.modules, "dlclive", fake)
+        def process(self, pose, **kwargs):
+            return pose
+
+    dlclive_mod = types.ModuleType("dlclive")
+    processor_mod = types.ModuleType("dlclive.processor")
+
+    dlclive_mod.Processor = Processor
+    processor_mod.Processor = Processor
+
+    monkeypatch.setitem(sys.modules, "dlclive", dlclive_mod)
+    monkeypatch.setitem(sys.modules, "dlclive.processor", processor_mod)
 
 
 @pytest.fixture
