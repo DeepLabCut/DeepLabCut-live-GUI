@@ -278,15 +278,16 @@ class VideoRecorder:
                 expected_h, expected_w = self._frame_size
                 actual_h, actual_w = frame.shape[:2]
                 if (actual_h, actual_w) != (expected_h, expected_w):
-                    logger.warning(
-                        f"Frame size mismatch: expected (h={expected_h}, w={expected_w}), "
-                        f"got (h={actual_h}, w={actual_w}). "
-                        "Stopping recorder to prevent encoding errors."
+                    message = (
+                        f"Frame size mismatch for recorder {self._output.name}: "
+                        f"expected_hw=({expected_h}, {expected_w}) "
+                        f"actual_hw=({actual_h}, {actual_w}) "
+                        f"{self._describe_frame(frame)}. "
+                        "Stopping recorder to prevent FFmpeg pipe errors."
                     )
-                    with self._stats_lock:
-                        self._encode_error = ValueError(
-                            f"Frame size changed from (h={expected_h}, w={expected_w}) to (h={actual_h}, w={actual_w})"
-                        )
+
+                    logger.warning(message)
+                    self._set_encode_error(message)
                     self._process_timing.note_error()
                     self._process_timing.maybe_log()
                     return False
@@ -426,9 +427,12 @@ class VideoRecorder:
                         break
                     continue
                 except Exception as exc:
-                    with self._stats_lock:
-                        self._encode_error = exc
-                    logger.exception("Could not retrieve item from queue", exc_info=exc)
+                    message = (
+                        f"Could not retrieve frame from recorder queue for {self._output.name}: "
+                        f"{type(exc).__name__}: {exc!s}"
+                    )
+                    self._set_encode_error(message, exc)
+                    logger.exception(message)
                     self._stop_event.set()
                     break
 
@@ -473,9 +477,28 @@ class VideoRecorder:
                             self._frame_timestamps.append(record)
 
                         except Exception as exc:
+                            queue_size = q.qsize() if q is not None else -1
+
                             with self._stats_lock:
-                                self._encode_error = exc
-                            logger.exception("Video encoding failed while writing frame", exc_info=exc)
+                                frames_enqueued = self._frames_enqueued
+                                frames_written = self._frames_written
+                                dropped_frames = self._dropped_frames
+
+                            message = (
+                                f"Video encoding failed for recorder {self._output.name}: "
+                                f"{type(exc).__name__}: {exc!s}. "
+                                f"{self._describe_frame(frame)} "
+                                f"expected_frame_size={self._frame_size} "
+                                f"frames_written={frames_written} "
+                                f"frames_enqueued={frames_enqueued} "
+                                f"dropped={dropped_frames} "
+                                f"queue_size={queue_size}. "
+                                "The FFmpeg/WriteGear pipe is no longer usable; stopping this recorder."
+                            )
+
+                            self._set_encode_error(message, exc)
+
+                            logger.exception(message)
                             self._stop_event.set()
                             self._writer_timing.note_error()
                             self._writer_timing.maybe_log()
@@ -524,9 +547,33 @@ class VideoRecorder:
             return 0.0
         return (len(self._written_times) - 1) / duration
 
+    def _describe_frame(self, frame: np.ndarray | None) -> str:
+        if frame is None:
+            return "frame=None"
+
+        try:
+            return (
+                f"shape={frame.shape} "
+                f"dtype={frame.dtype} "
+                f"contiguous={frame.flags.c_contiguous} "
+                f"nbytes={frame.nbytes / (1024 * 1024):.2f}MB"
+            )
+        except Exception:
+            return f"frame=<uninspectable type={type(frame)!r}>"
+
     def _current_error(self) -> Exception | None:
         with self._stats_lock:
             return self._encode_error
+
+    def _set_encode_error(self, message: str, exc: Exception | None = None) -> Exception:
+        error = RuntimeError(message)
+        if exc is not None:
+            error.__cause__ = exc
+
+        with self._stats_lock:
+            self._encode_error = error
+
+        return error
 
     def _save_timestamps(self) -> None:
         """Save frame timestamps to a JSON file alongside the video."""
