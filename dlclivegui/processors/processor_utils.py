@@ -101,8 +101,6 @@ def scan_processor_folder(folder_path):
 def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[str | dict]:
     """
     Discover and load processor classes from a package namespace.
-    Returns a dict keyed as 'module.py::ClassName' with the same
-    structure you use today.
     """
     all_processors: dict[str, dict] = {}
 
@@ -118,13 +116,16 @@ def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[
             continue
         try:
             mod = import_module(mod_name)
+            # Skip dlc_processor_socket.py as it's the base class and registry
+            if mod.__name__.endswith("dlc_processor_socket"):
+                continue
 
             # Prefer module-level registry function if present
             if hasattr(mod, "get_available_processors"):
                 processors = mod.get_available_processors()
             else:
                 # Fallback: scan for dlclive.Processor subclasses
-                processors = discover_processor_classes(mod, only_defined_in_module=False)
+                processors = discover_processor_classes(mod)
 
             # Normalize into your “file::class” shape
             module_file = mod.__name__.split(".")[-1] + ".py"
@@ -175,7 +176,6 @@ def load_processors_from_file(file_path: str | Path):
             return processors
 
         # Fallback path: discover subclasses of dlclive.Processor
-        #  here module only is disabled to allow classes re-exported in other modules to be discovered
         return discover_processor_classes(module, only_defined_in_module=False)
 
     except Exception:
