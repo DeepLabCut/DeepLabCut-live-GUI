@@ -16,7 +16,8 @@ Processors are Python classes (typically subclasses of `dlclive.Processor`) that
 
 ### Useful files
 
-- `dlclivegui/processors/dlc_processor_socket.py` — Example socket-based processor base class + examples
+- `dlclivegui/processors/dlc_processor_socket.py` — Example socket-based processor base class
+- `dlclivegui/processors/examples.py` — Example processor implementations (e.g., One-Euro filter)
 - `dlclivegui/processors/processor_utils.py` — Scanning + instantiation helpers used by the GUI
 
 ---
@@ -204,12 +205,7 @@ The built-in `BaseProcessorSocket` (in `dlc_processor_socket.py`) demonstrates a
 
 ```python
 from dlclive import Processor
-
-PROCESSOR_REGISTRY = {}
-
-def register_processor(cls):
-    PROCESSOR_REGISTRY[getattr(cls, "PROCESSOR_ID", cls.__name__)] = cls
-    return cls
+from dlclivegui.processors import register_processor, PROCESSOR_REGISTRY
 
 @register_processor
 class MyNewProcessor(Processor):
