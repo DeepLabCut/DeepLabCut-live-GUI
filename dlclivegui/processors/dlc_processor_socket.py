@@ -13,7 +13,7 @@ from threading import Event, Thread
 
 import numpy as np
 import pandas as pd
-from dlclive import Processor  # type: ignore
+from dlclive.processor import Processor  # type: ignore
 
 logger = logging.getLogger("dlc_processor_socket")
 
