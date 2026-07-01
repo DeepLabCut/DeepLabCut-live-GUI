@@ -194,7 +194,8 @@ def load_processors_from_file(file_path: str | Path) -> dict[str, dict]:
         spec.loader.exec_module(module)
 
         # Fallback path: discover subclasses of dlclive.Processor
-        return discover_processor_classes(module)
+        #  here module only is disabled to allow classes re-exported in other modules to be discovered
+        return discover_processor_classes(module, only_defined_in_module=False)
 
     except Exception:
         # Full traceback helps a ton when a plugin fails to import
