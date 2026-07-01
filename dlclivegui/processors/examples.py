@@ -6,8 +6,7 @@ from math import acos, atan2, copysign, degrees, pi, sqrt
 
 import numpy as np
 
-from dlclivegui.processors import register_processor
-from dlclivegui.processors.dlc_processor_socket import BaseProcessorSocket
+from dlclivegui.processors import BaseProcessorSocket, register_processor
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +164,6 @@ class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):  # pragma: 
         # Calculate head angle relative to body
         cross = body_axis[0] * head_axis[1] - head_axis[0] * body_axis[1]
         sign = copysign(1, cross)  # Positive when looking left
-
         try:
             head_angle = acos(body_axis @ head_axis) * sign
         except ValueError:
@@ -335,7 +333,6 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no 
         # Calculate head angle relative to body
         cross = body_axis[0] * head_axis[1] - head_axis[0] * body_axis[1]
         sign = copysign(1, cross)  # Positive when looking left
-
         try:
             head_angle = acos(body_axis @ head_axis) * sign
         except ValueError:
