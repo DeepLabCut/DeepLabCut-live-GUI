@@ -258,13 +258,28 @@ class DLCLiveProcessor(QObject):
         if q is None:
             return
 
-        try:
-            q.put_nowait((frame_c, timestamp, enq_time))
-            with self._stats_lock:
-                self._frames_enqueued += 1
-        except queue.Full:
-            with self._stats_lock:
-                self._frames_dropped += 1
+        item = (frame_c, timestamp, enq_time)
+
+        while True:
+            try:
+                q.put_nowait(item)
+                with self._stats_lock:
+                    self._frames_enqueued += 1
+                return
+
+            except queue.Full:
+                try:
+                    q.get_nowait()
+                    try:
+                        q.task_done()
+                    except ValueError:
+                        pass
+
+                    with self._stats_lock:
+                        self._frames_dropped += 1
+
+                except queue.Empty:
+                    continue
 
     def get_stats(self) -> ProcessorStats:
         """Get current processing statistics."""
