@@ -325,7 +325,7 @@ def start_all_spy(monkeypatch, tmp_path):
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
 
-    from dlclivegui.gui import recording_manager as rm_mod
+    from dlclivegui.services import recording_manager as rm_mod
 
     monkeypatch.setattr(rm_mod.RecordingManager, "start_all", _fake_start_all)
     return calls
@@ -409,7 +409,7 @@ def recording_settings(app_config_two_cams):
 
 @pytest.fixture
 def patch_video_recorder(monkeypatch):
-    import dlclivegui.gui.recording_manager as rm_mod
+    import dlclivegui.services.recording_manager as rm_mod
 
     monkeypatch.setattr(rm_mod, "VideoRecorder", FakeVideoRecorder)
     return FakeVideoRecorder
@@ -428,7 +428,7 @@ def recording_frame_spy(monkeypatch, window):
 
 @pytest.fixture
 def patch_build_run_dir(monkeypatch, tmp_path):
-    import dlclivegui.gui.recording_manager as rm_mod
+    import dlclivegui.services.recording_manager as rm_mod
 
     spy = {"session_dir": None, "use_timestamp": None}
     run_dir = tmp_path / "videos" / "Sess_SANITIZED" / "run_TEST"
