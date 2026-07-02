@@ -20,6 +20,9 @@ TriggerStrobeOperation = Literal["Exposure", "FixedDuration"]
 # Global settings
 ## GUI
 GUI_MAX_DISPLAY_FPS: float = 30.0
+## Recording
+ALLOWED_VIDEO_CONTAINERS: set[str] = {"mp4", "avi", "mov"}
+DEFAULT_RECORDING_CONTAINER: str = "mp4"
 
 
 ## Debug
@@ -512,7 +515,7 @@ class RecordingSettings(BaseModel):
     enabled: bool = False
     directory: str = Field(default_factory=lambda: str(Path.home() / "Videos" / "deeplabcut-live"))
     filename: str = "session.mp4"
-    container: Literal["mp4", "avi", "mov"] = "mp4"
+    container: Literal["mp4", "avi", "mov"] = DEFAULT_RECORDING_CONTAINER
     codec: str = "libx264"
     crf: int = Field(default=23, ge=0, le=51)
     fast_encoding: bool = False
