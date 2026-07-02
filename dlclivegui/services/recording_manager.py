@@ -159,8 +159,8 @@ class RecordingManager:
                 if item is _FRAME_SENTINEL:
                     break
 
-                cam_id, frame, timestamp = item
-                self._write_frame_now(cam_id, frame, timestamp)
+                cam_id, frame, timestamp, timestamp_metadata = item
+                self._write_frame_now(cam_id, frame, timestamp, timestamp_metadata)
 
             finally:
                 try:

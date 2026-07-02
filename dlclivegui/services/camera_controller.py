@@ -106,7 +106,10 @@ class SingleCameraWorker(QObject):
         while not self._stop_event.is_set():
             try:
                 with self._timing.measure("Single.read"):
-                    frame, timestamp = self._backend.read()
+                    captured = self._backend.read()
+                    frame = captured.frame
+                    timestamp = captured.software_timestamp
+                    timestamp_metadata = captured.timestamp_metadata
                 if frame is None or frame.size == 0:
                     consecutive_errors += 1
                     if consecutive_errors >= self._max_consecutive_errors:
@@ -129,12 +132,12 @@ class SingleCameraWorker(QObject):
                 if recording_enabled and recording_sink is not None:
                     try:
                         with self._timing.measure("Single.recording_sink"):
-                            recording_sink(self._camera_id, frame, timestamp)
+                            recording_sink(self._camera_id, frame, timestamp, timestamp_metadata)
                     except Exception as exc:
                         logger.exception(f"Failed to write frame for camera {self._camera_id}: {exc}")
 
                 with self._timing.measure("Single.emit"):
-                    self.frame_captured.emit(self._camera_id, frame, timestamp)
+                    self.frame_captured.emit(self._camera_id, frame, timestamp, timestamp_metadata)
 
                 self._timing.note_frame()
                 self._timing.maybe_log()
