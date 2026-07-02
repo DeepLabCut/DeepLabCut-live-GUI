@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from dlclivegui.config import DEFAULT_RECORDING_CONTAINER
+
 _INVALID_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -36,7 +38,7 @@ def split_stem_ext(base_filename: str, container: str) -> tuple[str, str]:
     If user typed an extension, keep it. Else use container.
     """
     base = (base_filename or "").strip()
-    container = (container or "mp4").strip().lstrip(".") or "mp4"
+    container = (container or DEFAULT_RECORDING_CONTAINER).strip().lstrip(".") or DEFAULT_RECORDING_CONTAINER
 
     if not base:
         base = "recording"
