@@ -48,7 +48,9 @@ from PySide6.QtWidgets import (
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.config import (
+    ALLOWED_VIDEO_CONTAINERS,
     DEFAULT_CONFIG,
+    DEFAULT_RECORDING_CONTAINER,
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
@@ -593,7 +595,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.container_combo.setToolTip("Select the video container/format")
         self.container_combo.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
         self.container_combo.setEditable(True)
-        self.container_combo.addItems(["mp4", "avi", "mov"])
+        self.container_combo.addItems(sorted(ALLOWED_VIDEO_CONTAINERS))
         # Ensure it never becomes unreadable:
         self.container_combo.setMinimumContentsLength(8)
         self.container_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -809,7 +811,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.use_timestamp_checkbox.stateChanged.connect(self._on_use_timestamp_changed)
         self.output_directory_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
         self.filename_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
-        self.container_combo.currentTextChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.container_combo.currentTextChanged.connect(self._on_container_changed)
         self.fast_encoding_checkbox.stateChanged.connect(self._on_fast_encoding_changed)
 
     # ------------------------------------------------------------------
@@ -945,11 +947,13 @@ class DLCLiveMainWindow(QMainWindow):
         )
 
     def _recording_settings_from_ui(self) -> RecordingSettings:
+        container = self.container_combo.currentText().strip() or DEFAULT_RECORDING_CONTAINER
+        filename = self._filename_matching_container(self.filename_edit.text().strip(), container)
         return RecordingSettings(
             enabled=True,  # Always enabled - recording controlled by button
             directory=self.output_directory_edit.text().strip(),
-            filename=self.filename_edit.text().strip() or "session.mp4",
-            container=self.container_combo.currentText().strip() or "mp4",
+            filename=filename,
+            container=container,
             codec=self.codec_combo.currentText().strip() or "libx264",
             crf=int(self.crf_spin.value()),
             fast_encoding=bool(
@@ -1162,30 +1166,51 @@ class DLCLiveMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # Recording path preview and session name persistence
+    def _known_recording_extensions(self) -> set[str]:
+        """Return known recording container extensions without leading dots."""
+        known = ALLOWED_VIDEO_CONTAINERS.copy()
+        if hasattr(self, "container_combo"):
+            known.update(
+                self.container_combo.itemText(i).strip().lower().lstrip(".")
+                for i in range(self.container_combo.count())
+                if self.container_combo.itemText(i).strip()
+            )
+        return known
+
+    def _filename_matching_container(self, filename: str, container: str) -> str:
+        """
+        Adjust filename extension to match selected container, but only when
+        the existing extension is another known recording container.
+        """
+        name = filename.strip() or "recording"
+        selected_ext = container.strip().lower().lstrip(".")
+        suffix = Path(name).suffix
+
+        if not suffix or not selected_ext:
+            return name
+
+        current_ext = suffix.lower().lstrip(".")
+        if current_ext in self._known_recording_extensions() and current_ext != selected_ext:
+            return str(Path(name).with_suffix(f".{selected_ext}"))
+
+        return name
+
+    def _on_container_changed(self, text: str) -> None:
+        """Keep filename extension aligned with selected container when safe."""
+        if hasattr(self, "filename_edit"):
+            current = self.filename_edit.text()
+            updated = self._filename_matching_container(current, text)
+            if updated != current:
+                self.filename_edit.blockSignals(True)
+                self.filename_edit.setText(updated)
+                self.filename_edit.blockSignals(False)
+
+        self._update_recording_path_preview()
+
     def _on_session_name_editing_finished(self) -> None:
         name = self.session_name_edit.text().strip()
         self._settings_store.set_session_name(name)
         self._update_recording_path_preview()
-
-    # def _update_recording_path_preview(self) -> None:
-    #     """Update the label showing where files will go (best-effort)."""
-    #     if not hasattr(self, "recording_path_preview"):
-    #         return
-    #     out_dir = self.output_directory_edit.text().strip()
-    #     sess = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
-    #     base = self.filename_edit.text().strip()
-    #     container = self.container_combo.currentText().strip() if hasattr(self, "container_combo") else "mp4"
-    #     use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
-
-    #     # Preview is approximate (since run index/time is decided at start).
-    #     sess_safe = sess.strip() or "session"
-    #     run_hint = "run_<timestamp>" if use_ts else "run_<next>"
-    #     stem_hint = Path(base).stem if base.strip() else "recording"  # shows user-provided stem or default
-    #     full_hint = str(Path(out_dir).expanduser() / sess_safe / run_hint / f"{stem_hint}_<camera>.{container}")
-    #     self.recording_path_preview.setText(f"<span style='color: gray;'>{full_hint}</span>")
-    #     self.recording_path_preview.setToolTip(
-    #         f"<b>Click to copy to clipboard :</b><br>{full_hint.replace('<camera>', '*')}"
-    #     )
 
     def _update_recording_path_preview(self) -> None:
         """Update the label showing where files will go (best-effort)."""
@@ -1194,8 +1219,12 @@ class DLCLiveMainWindow(QMainWindow):
 
         out_dir = self.output_directory_edit.text().strip()
         sess = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
-        base = self.filename_edit.text().strip()
-        container = self.container_combo.currentText().strip() if hasattr(self, "container_combo") else "mp4"
+        container = (
+            self.container_combo.currentText().strip()
+            if hasattr(self, "container_combo")
+            else DEFAULT_RECORDING_CONTAINER
+        )
+        base = self._filename_matching_container(self.filename_edit.text(), container)
         use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
 
         # Preview is approximate (since run index/time is decided at start).
