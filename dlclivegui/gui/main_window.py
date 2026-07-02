@@ -1723,9 +1723,9 @@ class DLCLiveMainWindow(QMainWindow):
         # Stop any active recording first
         self._stop_multi_camera_recording()
 
-        self.multi_camera_controller.stop()
         self._pending_recording_after_preview = False
         self._stop_inference(show_message=False)
+        self.multi_camera_controller.stop()
         self._fps_tracker.clear()
         self._last_display_time = 0.0
         if hasattr(self, "camera_stats_label"):
