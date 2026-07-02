@@ -558,7 +558,7 @@ class RecordingSettings(BaseModel):
         crf_value = int(self.crf) if self.crf is not None else 23
 
         opts: dict[str, Any] = {
-            "-input_framerate": f"{fps_value:.6f}",
+            "-input_framerate": float(fps_value),
             "-vcodec": codec_value,
             "-crf": str(crf_value),
         }
