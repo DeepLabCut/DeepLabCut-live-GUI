@@ -70,6 +70,7 @@ from ..processors.processor_utils import (
 )
 from ..services.dlc_processor import DLCLiveProcessor, PoseResult
 from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id, get_display_id
+from ..services.recording_manager import RecordingManager
 from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import WorkerTimingStats, format_dlc_stats
@@ -79,7 +80,6 @@ from .misc import color_dropdowns as color_ui
 from .misc import layouts as lyts
 from .misc.drag_spinbox import ScrubSpinBox
 from .misc.eliding_label import ElidingPathLabel
-from .recording_manager import RecordingManager
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 
 logger = logging.getLogger("DLCLiveGUI")
@@ -801,7 +801,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Multi-camera controller signals (used for both single and multi-camera modes)
         self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_processing_ready)
         self.multi_camera_controller.display_ready.connect(self._on_multi_frame_display_ready)
-        self.multi_camera_controller.recording_frame_ready.connect(self._on_recording_frame_ready)
+        # self.multi_camera_controller.recording_frame_ready.connect(self._on_recording_frame_ready)
         self.multi_camera_controller.all_started.connect(self._on_multi_camera_started)
         self.multi_camera_controller.all_stopped.connect(self._on_multi_camera_stopped)
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
@@ -1605,6 +1605,7 @@ class DLCLiveMainWindow(QMainWindow):
         if run_dir is None:
             self._show_error("Failed to start recording.")
             return
+        self.multi_camera_controller.set_recording_sink(self._rec_manager.write_frame)
         self.multi_camera_controller.set_recording_frame_do_emit(True)
 
         self._settings_store.set_session_name(session_name)
@@ -1629,6 +1630,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Stop frame emission immediately so no new frames enter recording pipeline.
         try:
             self.multi_camera_controller.set_recording_frame_do_emit(False)
+            self.multi_camera_controller.set_recording_sink(None)
         except Exception:
             logger.exception("Failed to disable recording frame emission")
 
