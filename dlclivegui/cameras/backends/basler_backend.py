@@ -448,7 +448,7 @@ class BaslerCameraBackend(CameraBackend):
 
         fps = self._positive_float(getattr(self.settings, "fps", 0.0))
         if fps is None:
-            LOG.info("[Basler] FPS: auto/free-run, not forcing AcquisitionFrameRate")
+            LOG.debug("[Basler] FPS: auto/free-run, not forcing AcquisitionFrameRate")
             return
 
         enable = self._feature("AcquisitionFrameRateEnable")
@@ -465,7 +465,7 @@ class BaslerCameraBackend(CameraBackend):
             try:
                 min_v = rate.GetMin()
                 max_v = rate.GetMax()
-                LOG.info("[Basler] AcquisitionFrameRate range: min=%s max=%s requested=%s", min_v, max_v, fps)
+                LOG.debug("[Basler] AcquisitionFrameRate range: min=%s max=%s requested=%s", min_v, max_v, fps)
             except Exception:
                 pass
 
@@ -496,7 +496,7 @@ class BaslerCameraBackend(CameraBackend):
             if feature is not None:
                 readbacks[name] = self._feature_value(feature, None)
 
-        LOG.info("[Basler] FPS readback requested=%s values=%s", fps, readbacks)
+        LOG.debug("[Basler] Readback requested=%s values=%s", fps, readbacks)
 
         try:
             self._actual_fps = float(readbacks.get("AcquisitionFrameRate"))
@@ -521,14 +521,14 @@ class BaslerCameraBackend(CameraBackend):
 
         if self._should_output_mono():
             self._converter.OutputPixelFormat = pylon.PixelType_Mono8
-            LOG.info(
+            LOG.debug(
                 "[Basler] Converter configured for Mono8 output (camera PixelFormat=%s preserve_mono=%s)",
                 camera_pixel_format,
                 self._preserve_mono,
             )
         else:
             self._converter.OutputPixelFormat = pylon.PixelType_BGR8packed
-            LOG.info(
+            LOG.debug(
                 "[Basler] Converter configured for BGR8 output (camera PixelFormat=%s preserve_mono=%s)",
                 camera_pixel_format,
                 self._preserve_mono,
@@ -559,7 +559,7 @@ class BaslerCameraBackend(CameraBackend):
                     self._camera.ExposureTime.SetValue(float(self.settings.exposure))
                 if hasattr(self._camera, "ExposureTimeAbs"):
                     self._camera.ExposureTimeAbs.SetValue(float(self.settings.exposure))
-                LOG.info("[Basler] Exposure set to %s us (auto off)", self.settings.exposure)
+                LOG.debug("[Basler] Exposure set to %s us (auto off)", self.settings.exposure)
             except Exception as exc:
                 LOG.warning("[Basler] Failed to set exposure: %s", exc)
 
@@ -569,7 +569,7 @@ class BaslerCameraBackend(CameraBackend):
                 if hasattr(self._camera, "GainAuto"):
                     self._camera.GainAuto.SetValue("Off")
                 self._camera.Gain.SetValue(float(self.settings.gain))
-                LOG.info("[Basler] Gain set to %s dB (auto off)", self.settings.gain)
+                LOG.debug("[Basler] Gain set to %s dB (auto off)", self.settings.gain)
             except Exception as exc:
                 LOG.warning("[Basler] Failed to set gain: %s", exc)
 
@@ -649,7 +649,7 @@ class BaslerCameraBackend(CameraBackend):
                 # pylon.GrabStrategy_LatestImageOnly,
                 pylon.GrabStrategy_OneByOne,
             )
-            LOG.info(
+            LOG.debug(
                 "[Basler] grabbing=%s max_buffers=%s",
                 self._camera.IsGrabbing(),
                 self._camera.MaxNumBuffer.GetValue() if hasattr(self._camera, "MaxNumBuffer") else "N/A",
@@ -657,7 +657,7 @@ class BaslerCameraBackend(CameraBackend):
         else:
             LOG.debug("Fast-start probe: skipping StartGrabbing and converter")
 
-        LOG.info(
+        LOG.debug(
             "[Basler] open device_id=%s index=%s fast_start=%s requested=(%sx%s @ %s fps exp=%s gain=%s)",
             getattr(self, "_device_id", None),
             getattr(self.settings, "index", None),
@@ -767,7 +767,7 @@ class BaslerCameraBackend(CameraBackend):
 
             if not self._logged_first_frame:
                 self._logged_first_frame = True
-                LOG.info(
+                LOG.debug(
                     "[Basler] first frame device_id=%s shape=%s dtype=%s nbytes=%.2f MB "
                     "camera_pixel_format=%s output_format=%s preserve_mono=%s",
                     self._device_id,
@@ -814,7 +814,7 @@ class BaslerCameraBackend(CameraBackend):
             raise RuntimeError("Failed to retrieve image from Basler camera.") from exc
 
     def close(self) -> None:
-        LOG.info(
+        LOG.debug(
             "[Basler] close called camera_exists=%s grabbing=%s open=%s",
             self._camera is not None,
             bool(self._camera and self._camera.IsGrabbing()),
@@ -1176,7 +1176,7 @@ class BaslerCameraBackend(CameraBackend):
             self._trigger = CameraTriggerSettings()
             return
 
-        LOG.info(
+        LOG.debug(
             "Basler trigger input configured: role=%s selector=%s source=%s activation=%s "
             "selector_ok=%s source_ok=%s activation_ok=%s",
             role,
@@ -1241,7 +1241,7 @@ class BaslerCameraBackend(CameraBackend):
         source_ok = self._set_enum_feature("LineSource", output_source, strict=strict)
 
         if mode_ok and source_ok:
-            LOG.info(
+            LOG.debug(
                 "Basler trigger master configured via Line*: output_line=%s output_source=%s",
                 output_line,
                 output_source,
