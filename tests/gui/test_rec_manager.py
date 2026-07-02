@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from dlclivegui.config import CameraSettings
-from dlclivegui.gui.recording_manager import RecordingManager
 from dlclivegui.services.multi_camera_controller import get_camera_id, get_display_id
+from dlclivegui.services.recording_manager import RecordingManager
 from dlclivegui.utils.stats import RecorderStats
 from dlclivegui.utils.timestamps import FrameTimestampMetadata
 
@@ -214,7 +214,7 @@ def test_write_frame_uses_time_when_timestamp_missing(
     mgr = RecordingManager()
     mgr.start_all(recording_settings, _active_cams_two, current_frames, session_name="Sess")
 
-    import dlclivegui.gui.recording_manager as rm_mod  # noqa: E402
+    import dlclivegui.services.recording_manager as rm_mod  # noqa: E402
 
     monkeypatch.setattr(rm_mod.time, "time", lambda: 999.0)
 
