@@ -51,6 +51,7 @@ from dlclivegui.config import (
     ALLOWED_VIDEO_CONTAINERS,
     DEFAULT_CONFIG,
     DEFAULT_RECORDING_CONTAINER,
+    DLC_DO_LOG_TIMING,
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
@@ -70,7 +71,7 @@ from ..services.dlc_processor import DLCLiveProcessor, PoseResult
 from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id, get_display_id
 from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
-from ..utils.stats import format_dlc_stats
+from ..utils.stats import WorkerTimingStats, format_dlc_stats
 from ..utils.utils import FPSTracker
 from .camera_config.camera_config_dialog import CameraConfigDialog
 from .misc import color_dropdowns as color_ui
@@ -131,6 +132,10 @@ class DLCLiveMainWindow(QMainWindow):
         self._rec_manager = RecordingManager()
         self._dlc = DLCLiveProcessor()
         self.multi_camera_controller = MultiCameraController()
+        ### Time debug
+        self._dlc_timing = WorkerTimingStats(
+            "GUI - DLC Worker", logger=logger, log_interval=2.0, enabled=DLC_DO_LOG_TIMING
+        )
 
         self._config = config
         self._inference_camera_id: str | None = None  # Camera ID used for inference
@@ -1504,7 +1509,11 @@ class DLCLiveMainWindow(QMainWindow):
         if self._dlc_active and is_dlc_camera_frame and dlc_cam_id in frame_data.frames:
             frame = frame_data.frames[dlc_cam_id]
             timestamp = frame_data.timestamps.get(dlc_cam_id, time.time())
-            self._dlc.enqueue_frame(frame, timestamp)
+            with self._dlc_timing.measure("enqueue_frame"):
+                self._dlc.enqueue_frame(frame, timestamp)
+
+            self._dlc_timing.note_frame()
+            self._dlc_timing.maybe_log()
 
     def _on_multi_frame_display_ready(self, frame_data: MultiFrameData) -> None:
         """Throttled UI/display path.
@@ -2048,10 +2057,23 @@ class DLCLiveMainWindow(QMainWindow):
     def _on_pose_ready(self, result: PoseResult) -> None:
         if not self._dlc_active:
             return
-        self._last_pose = result
-        # logger.debug(f"Pose result: {result.pose}, Timestamp: {result.timestamp}")
-        if self._current_frame is not None:
-            self._display_frame(self._current_frame, force=True)
+
+        with self._dlc_timing.measure("DLC.pose_ready_callback"):
+            self._last_pose = result
+
+            try:
+                latency_ms = (time.time() - float(result.timestamp)) * 1000.0
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("DLC pose latency camera_timestamp_to_gui=%.2f ms", latency_ms)
+            except Exception:
+                pass
+
+            if self._current_frame is not None:
+                self._display_dirty = True
+                # with self._dlc_timing.measure("DLC.display_after_pose"):
+                # self._display_frame(self._current_frame, force=True)
+
+        self._dlc_timing.maybe_log()
 
     def _on_dlc_error(self, message: str) -> None:
         self._stop_inference(show_message=False)
