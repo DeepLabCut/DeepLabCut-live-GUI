@@ -184,7 +184,7 @@ class VideoRecorder:
             writer_kwargs: dict[str, Any] = {
                 "compression_mode": True,
                 "logging": False,
-                "-input_framerate": fps_value,
+                "-input_framerate": float(fps_value),
                 "-vcodec": codec_value,
                 "-crf": int(self._crf),
             }
