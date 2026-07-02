@@ -6,12 +6,13 @@ import importlib.metadata
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -86,6 +87,8 @@ logger = logging.getLogger("DLCLiveGUI")
 
 class DLCLiveMainWindow(QMainWindow):
     """Main application window."""
+
+    _recording_stopped_async = Signal()
 
     def __init__(self, config: ApplicationSettings | None = None):
         super().__init__()
@@ -178,6 +181,9 @@ class DLCLiveMainWindow(QMainWindow):
         self._dlc_tile_scale: tuple[float, float] = (1.0, 1.0)  # (scale_x, scale_y)
         # Display flag (decoupled from frame capture for performance)
         self._display_dirty: bool = False
+        # Recording state
+        self._recording_stopping = False
+        self._recording_stopped_async.connect(self._on_recording_stopped_async)
 
         self._load_icons()
         self._preview_pixmap = QPixmap(LOGO_ALPHA)
@@ -641,11 +647,11 @@ class DLCLiveMainWindow(QMainWindow):
         form.addRow(grid)
 
         # Recording options
-        self.record_with_overlays_checkbox = QCheckBox("Record video with overlays")
-        self.record_with_overlays_checkbox.setToolTip(
-            "Enable to include pose overlays in recorded video (keypoints & bounding boxes)"
-        )
-        self.record_with_overlays_checkbox.setChecked(False)
+        # self.record_with_overlays_checkbox = QCheckBox("Record video with overlays")
+        # self.record_with_overlays_checkbox.setToolTip(
+        # "Enable to include pose overlays in recorded video (keypoints & bounding boxes)"
+        # )
+        # self.record_with_overlays_checkbox.setChecked(False)
 
         self.fast_encoding_checkbox = QCheckBox("Use faster encoding parameters")
         self.fast_encoding_checkbox.setToolTip(
@@ -658,7 +664,7 @@ class DLCLiveMainWindow(QMainWindow):
         recording_options = QWidget()
         recording_options_layout = QHBoxLayout(recording_options)
         recording_options_layout.setContentsMargins(0, 0, 0, 0)
-        recording_options_layout.addWidget(self.record_with_overlays_checkbox)
+        # recording_options_layout.addWidget(self.record_with_overlays_checkbox)
         recording_options_layout.addWidget(self.fast_encoding_checkbox)
         recording_options_layout.addStretch(1)
 
@@ -1454,8 +1460,8 @@ class DLCLiveMainWindow(QMainWindow):
         if not self._rec_manager.is_active:
             return
 
-        if self.record_with_overlays_checkbox.isChecked():
-            frame = self._render_overlays_for_recording(camera_id, frame)
+        # if self.record_with_overlays_checkbox.isChecked():
+        #     frame = self._render_overlays_for_recording(camera_id, frame)
 
         self._rec_manager.write_frame(camera_id, frame, timestamp, timestamp_metadata=timestamp_metadata)
 
@@ -1611,9 +1617,35 @@ class DLCLiveMainWindow(QMainWindow):
         if not self._rec_manager.is_active:
             return
 
-        self.multi_camera_controller.set_recording_frame_do_emit(False)
+        if getattr(self, "_recording_stopping", False):
+            return
 
-        self._rec_manager.stop_all()
+        self._recording_stopping = True
+
+        self.start_record_button.setEnabled(False)
+        self.stop_record_button.setEnabled(False)
+        self.statusBar().showMessage("Stopping multi-camera recording…", 3000)
+
+        # Stop frame emission immediately so no new frames enter recording pipeline.
+        try:
+            self.multi_camera_controller.set_recording_frame_do_emit(False)
+        except Exception:
+            logger.exception("Failed to disable recording frame emission")
+
+        def worker():
+            try:
+                self._rec_manager.stop_all()
+            finally:
+                self._recording_stopped_async.emit()
+
+        threading.Thread(
+            target=worker,
+            name="StopRecordingWorker",
+            daemon=True,
+        ).start()
+
+    def _on_recording_stopped_async(self) -> None:
+        self._recording_stopping = False
         self.start_record_button.setEnabled(True)
         self.stop_record_button.setEnabled(False)
         self.statusBar().showMessage("Multi-camera recording stopped", 3000)
