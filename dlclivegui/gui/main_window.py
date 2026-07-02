@@ -2061,12 +2061,12 @@ class DLCLiveMainWindow(QMainWindow):
         with self._dlc_timing.measure("DLC.pose_ready_callback"):
             self._last_pose = result
 
-            try:
-                latency_ms = (time.time() - float(result.timestamp)) * 1000.0
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug("DLC pose latency camera_timestamp_to_gui=%.2f ms", latency_ms)
-            except Exception:
-                pass
+            # try:
+            #     latency_ms = (time.time() - float(result.timestamp)) * 1000.0
+            #      if logger.isEnabledFor(logging.DEBUG):
+            #          logger.debug("DLC pose latency camera_timestamp_to_gui=%.2f ms", latency_ms)
+            # except Exception:
+            #     pass
 
             if self._current_frame is not None:
                 self._display_dirty = True
