@@ -1275,7 +1275,7 @@ class GenTLCameraBackend(CameraBackend):
         if requested.lower() == "auto":
             for candidate in ("Line0", "Line1", "Line2", "Any"):
                 if candidate in available:
-                    LOG.info(
+                    LOG.debug(
                         "GenTL TriggerSource auto-selected '%s'. Available: %s",
                         candidate,
                         available,
@@ -1447,7 +1447,7 @@ class GenTLCameraBackend(CameraBackend):
             self._trigger = CameraTriggerSettings()
             return
 
-        LOG.info(
+        LOG.debug(
             "GenTL trigger input configured: role=%s selector=%s source_requested=%s "
             "source=%s activation=%s selector_ok=%s source_ok=%s activation_ok=%s",
             role,
@@ -1508,7 +1508,7 @@ class GenTLCameraBackend(CameraBackend):
                     node = self._node(node_map, "StrobeDuration")
                     if node is not None:
                         node.value = int(strobe_duration)
-                        LOG.info("Configured GenTL StrobeDuration=%s", int(strobe_duration))
+                        LOG.debug("Configured GenTL StrobeDuration=%s", int(strobe_duration))
                 except Exception as exc:
                     if strict:
                         raise RuntimeError(f"Failed to set StrobeDuration={strobe_duration}: {exc}") from exc
@@ -1519,7 +1519,7 @@ class GenTLCameraBackend(CameraBackend):
                     node = self._node(node_map, "StrobeDelay")
                     if node is not None:
                         node.value = int(strobe_delay)
-                        LOG.info("Configured GenTL StrobeDelay=%s", int(strobe_delay))
+                        LOG.debug("Configured GenTL StrobeDelay=%s", int(strobe_delay))
                 except Exception as exc:
                     if strict:
                         raise RuntimeError(f"Failed to set StrobeDelay={strobe_delay}: {exc}") from exc
@@ -1533,7 +1533,7 @@ class GenTLCameraBackend(CameraBackend):
             )
 
             if enable_ok:
-                LOG.info(
+                LOG.debug(
                     "GenTL trigger master configured via Strobe*: "
                     "StrobeEnable=On StrobePolarity=%s polarity_ok=%s "
                     "StrobeOperation=%s operation_ok=%s",
@@ -1573,7 +1573,7 @@ class GenTLCameraBackend(CameraBackend):
                 source_ok = self._set_enum_node(node_map, "LineSource", output_source, strict=strict)
 
                 if mode_ok and source_ok:
-                    LOG.info(
+                    LOG.debug(
                         "GenTL trigger master configured via Line*: output_line=%s output_source=%s",
                         output_line,
                         output_source,
@@ -1692,7 +1692,7 @@ class GenTLCameraBackend(CameraBackend):
             return
 
         target = float(self.settings.fps)
-        LOG.info("Configuring GenTL frame rate: requested %.3f FPS", target)
+        LOG.debug("Configuring GenTL frame rate: requested %.3f FPS", target)
 
         for attr in ("AcquisitionFrameRateEnable", "AcquisitionFrameRateControlEnable"):
             try:
@@ -1700,7 +1700,7 @@ class GenTLCameraBackend(CameraBackend):
                 before = getattr(node, "value", None)
                 node.value = True
                 after = getattr(node, "value", None)
-                LOG.info("Enabled GenTL %s: before=%r after=%r", attr, before, after)
+                LOG.debug("Enabled GenTL %s: before=%r after=%r", attr, before, after)
                 break
             except Exception:
                 pass
@@ -1712,7 +1712,7 @@ class GenTLCameraBackend(CameraBackend):
                 node.value = target
                 after = getattr(node, "value", None)
 
-                LOG.info(
+                LOG.debug(
                     "Set GenTL %s: before=%r requested=%.3f after=%r",
                     attr,
                     before,
