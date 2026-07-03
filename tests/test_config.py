@@ -97,6 +97,8 @@ def test_build_writegear_options_default():
         "-vcodec": "libx264",
         "-crf": 23,
     }
+    assert "-preset" not in opts
+    assert "-tune" not in opts
 
 
 def test_build_writegear_options_fast_encoding_x264():
