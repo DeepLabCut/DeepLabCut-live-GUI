@@ -26,7 +26,7 @@ def _write_temp_backend_package(tmp_path: Path, pkg_name: str = "test_backends_p
     # A backend module which registers itself as "lazyfake"
     backend_code = textwrap.dedent(
         """
-        from dlclivegui.cameras.base import register_backend, CameraBackend
+        from dlclivegui.cameras.base import register_backend, CameraBackend, CapturedFrame
         from dlclivegui.config import CameraSettings
         import numpy as np
         import time
@@ -44,7 +44,7 @@ def _write_temp_backend_package(tmp_path: Path, pkg_name: str = "test_backends_p
             def read(self):
                 # Small deterministic frame + timestamp
                 frame = np.zeros((2, 3, 3), dtype=np.uint8)
-                return frame, time.time()
+                return CapturedFrame(frame, time.time(), None)
 
             def close(self) -> None:
                 self._opened = False
