@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class SingleCameraWorker(QObject):
     """Worker for a single camera in multi-camera mode."""
 
-    frame_captured = Signal(str, object, float)  # camera_id, frame, timestamp
+    frame_captured = Signal(str, object, float, object)  # camera_id, frame, timestamp, timestamp_metadata
     error_occurred = Signal(str, str)  # camera_id, error_message
     runtime_info = Signal(str, object)  # camera_id, dict of runtime info
     started = Signal(str)  # camera_id
