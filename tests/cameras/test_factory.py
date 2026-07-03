@@ -3,6 +3,7 @@
 import pytest
 
 from dlclivegui.cameras import CameraFactory, DetectedCamera, base
+from dlclivegui.cameras.base import CapturedFrame
 from dlclivegui.config import CameraSettings
 
 
@@ -69,7 +70,7 @@ def test_detect_cameras_prefers_rich_discovery(register_backend_clean):
             raise AssertionError("Probing path should not open when rich discovery returns a list")
 
         def read(self):
-            return None, 0.0
+            return CapturedFrame(None, 0.0, None)
 
         def close(self):
             pass
@@ -112,7 +113,7 @@ def test_detect_cameras_rich_discovery_receives_cancel_and_progress(register_bac
             pass
 
         def read(self):
-            return None, 0.0
+            return CapturedFrame(None, 0.0, None)
 
         def close(self):
             pass
@@ -150,7 +151,7 @@ def test_detect_cameras_rich_discovery_none_falls_back_to_probing(register_backe
                 raise RuntimeError("no device")
 
         def read(self):
-            return None, 0.0
+            return CapturedFrame(None, 0.0, None)
 
         def close(self):
             pass
@@ -182,7 +183,7 @@ def test_detect_cameras_rich_discovery_error_falls_back_to_probing(register_back
                 raise RuntimeError("no device")
 
         def read(self):
-            return None, 0.0
+            return CapturedFrame(None, 0.0, None)
 
         def close(self):
             pass
@@ -220,7 +221,7 @@ def test_check_camera_available_applies_rebind_settings_before_quick_ping(regist
             pass
 
         def read(self):
-            return None, 0.0
+            return CapturedFrame(None, 0.0, None)
 
         def close(self):
             pass
@@ -252,7 +253,7 @@ def test_create_applies_rebind_settings(register_backend_clean):
             pass
 
         def read(self):
-            return None, 0.0
+            return CapturedFrame(None, 0.0, None)
 
         def close(self):
             pass
@@ -280,7 +281,7 @@ def test_create_rebind_failure_is_non_fatal(register_backend_clean):
             pass
 
         def read(self):
-            return None, 0.0
+            return CapturedFrame(None, 0.0, None)
 
         def close(self):
             pass
@@ -311,7 +312,7 @@ def test_check_camera_available_quick_ping(register_backend_clean):
             pass
 
         def read(self):
-            return None, 0.0
+            return CapturedFrame(None, 0.0, None)
 
         def close(self):
             pass
@@ -341,7 +342,7 @@ def test_detect_cameras_probe_path(register_backend_clean):
                 raise RuntimeError("no device")
 
         def read(self):
-            return None, 0.0
+            return CapturedFrame(None, 0.0, None)
 
         def close(self):
             pass

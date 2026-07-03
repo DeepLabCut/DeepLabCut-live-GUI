@@ -26,7 +26,7 @@ def test_fake_backend_e2e():
         def read(self):
             assert self._opened
             img = np.zeros((10, 20, 3), dtype=np.uint8)
-            return img, 123.456
+            return base.CapturedFrame(img, 123.456, None)
 
         def close(self):
             self._opened = False
