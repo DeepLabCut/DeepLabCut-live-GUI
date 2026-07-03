@@ -106,31 +106,28 @@ class RecordingManager:
             return self._recorders.pop(cam_id, default)
 
     def _start_dispatcher(self) -> None:
-        with self._lock:
-            if self._dispatch_thread is not None and self._dispatch_thread.is_alive():
-                return
+        if self._dispatch_thread is not None and self._dispatch_thread.is_alive():
+            return
 
-            self._dispatch_stop.clear()
-            self._frame_queue = queue.Queue(maxsize=4096)
-            self._dispatch_thread = threading.Thread(
-                target=self._dispatch_loop,
-                name="RecordingManagerDispatcher",
-                daemon=True,
-            )
-            self._dispatch_thread.start()
+        self._dispatch_stop.clear()
+        self._frame_queue = queue.Queue(maxsize=4096)
+        self._dispatch_thread = threading.Thread(
+            target=self._dispatch_loop,
+            name="RecordingManagerDispatcher",
+            daemon=True,
+        )
+        self._dispatch_thread.start()
 
     def _stop_dispatcher(self, timeout: float = 2.0) -> None:
-        self._dispatch_stop.set()
-
         with self._lock:
             q = self._frame_queue
             t = self._dispatch_thread
 
         if q is not None:
             try:
-                q.put_nowait(_FRAME_SENTINEL)
+                q.put(_FRAME_SENTINEL, block=True, timeout=timeout)
             except queue.Full:
-                pass
+                log.warning("Recording frame queue full while stopping dispatcher; dispatcher may not stop promptly.")
 
         if t is not None:
             t.join(timeout=timeout)
@@ -138,8 +135,9 @@ class RecordingManager:
                 log.warning("Recording frame dispatcher did not stop within %.1fs", timeout)
 
         with self._lock:
-            self._dispatch_thread = None
-            self._frame_queue = None
+            if self._dispatch_thread is t:
+                self._dispatch_thread = None
+                self._frame_queue = None
             self._dispatch_stop.clear()
 
     def _dispatch_loop(self) -> None:
@@ -149,11 +147,8 @@ class RecordingManager:
         if q is None:
             return
 
-        while not self._dispatch_stop.is_set():
-            try:
-                item = q.get(timeout=0.1)
-            except queue.Empty:
-                continue
+        while True:
+            item = q.get()
 
             try:
                 if item is _FRAME_SENTINEL:
@@ -270,7 +265,6 @@ class RecordingManager:
                 self._run_dir = None
             return None
 
-        self._start_dispatcher()
         return run_dir
 
     def stop_all(self) -> None:
@@ -326,13 +320,23 @@ class RecordingManager:
                     log.exception("Failed to stop recorder for %s after write error.", cam_id)
 
     def write_frame(
-        self, cam_id: str, frame: np.ndarray, timestamp: float | None = None, timestamp_metadata: object | None = None
+        self,
+        cam_id: str,
+        frame: np.ndarray,
+        timestamp: float | None = None,
+        timestamp_metadata: object | None = None,
     ) -> None:
         with self._lock:
-            q = self._frame_queue
             active = cam_id in self._recorders
+            if not active:
+                return
 
-        if not active or q is None:
+            if self._frame_queue is None or self._dispatch_thread is None or not self._dispatch_thread.is_alive():
+                self._start_dispatcher()
+
+            q = self._frame_queue
+
+        if q is None:
             return
 
         try:
@@ -344,6 +348,27 @@ class RecordingManager:
                 getattr(frame, "shape", None),
                 getattr(frame, "dtype", None),
             )
+
+    def flush(self, timeout: float = 2.0) -> bool:
+        """Wait until all currently queued recording frames have been dispatched.
+
+        Returns True if the queue drained before timeout, False otherwise.
+        """
+        with self._lock:
+            q = self._frame_queue
+
+        if q is None:
+            return True
+
+        done = threading.Event()
+
+        def waiter() -> None:
+            q.join()
+            done.set()
+
+        t = threading.Thread(target=waiter, name="RecordingManagerFlush", daemon=True)
+        t.start()
+        return done.wait(timeout)
 
     def get_stats_summary(self) -> str:
         totals = {
