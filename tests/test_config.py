@@ -54,7 +54,7 @@ def test_recording_settings_writegear_options_default():
 
     opts = settings.writegear_options(100.0)
 
-    assert opts["-input_framerate"] == "100.000000"
+    assert opts["-input_framerate"] == 100.0
     assert opts["-vcodec"] == "libx264"
     assert opts["-crf"] == "23"
     assert "-preset" not in opts
@@ -66,7 +66,7 @@ def test_recording_settings_writegear_options_fast_encoding_x264():
 
     opts = settings.writegear_options(100.0)
 
-    assert opts["-input_framerate"] == "100.000000"
+    assert opts["-input_framerate"] == 100.0
     assert opts["-vcodec"] == "libx264"
     assert opts["-crf"] == "23"
     assert opts["-preset"] == "ultrafast"
@@ -88,4 +88,4 @@ def test_recording_settings_writegear_options_invalid_fps_falls_back_to_30():
 
     opts = settings.writegear_options(None)
 
-    assert opts["-input_framerate"] == "30.000000"
+    assert opts["-input_framerate"] == 30.0

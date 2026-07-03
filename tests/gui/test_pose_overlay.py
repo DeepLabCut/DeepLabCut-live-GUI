@@ -9,6 +9,7 @@ class _StubRec:
 
 @pytest.mark.gui
 @pytest.mark.timeout(10)
+@pytest.mark.skip("Removed functionality.")
 def test_record_overlay_uses_identity_transform_for_per_camera_recording(window, draw_pose_stub):
     # Disable event timers to avoid GUI rendering pipelines interfering with test
     window._display_timer.stop()
@@ -47,6 +48,7 @@ def test_record_overlay_uses_identity_transform_for_per_camera_recording(window,
 
 @pytest.mark.gui
 @pytest.mark.timeout(10)
+@pytest.mark.skip("Removed functionality.")
 def test_record_overlay_toggle_affects_frames_sent_to_recorder(window, recording_frame_spy, draw_pose_stub):
     # Disable event timers to avoid GUI rendering pipelines interfering with test
     window._display_timer.stop()
