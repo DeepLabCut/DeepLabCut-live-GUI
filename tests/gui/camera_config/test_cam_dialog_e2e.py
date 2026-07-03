@@ -8,7 +8,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
 
-from dlclivegui.cameras.base import CameraBackend
+from dlclivegui.cameras.base import CameraBackend, CapturedFrame
 from dlclivegui.cameras.factory import CameraFactory, DetectedCamera
 from dlclivegui.config import CameraSettings, MultiCameraSettings
 from dlclivegui.gui.camera_config.camera_config_dialog import CameraConfigDialog
@@ -194,7 +194,7 @@ def test_e2e_apply_settings_restarts_preview_on_restart_fields(dialog, qtbot, mo
             self._opened = False
 
         def read(self):
-            return np.zeros((30, 40, 3), dtype=np.uint8), 0.1
+            return CapturedFrame(np.zeros((30, 40, 3), dtype=np.uint8), 0.1, None)
 
     CountingBackend.opens = 0
     monkeypatch.setattr(CameraFactory, "create", staticmethod(lambda s: CountingBackend(s)))
@@ -238,7 +238,7 @@ def test_e2e_apply_settings_does_not_restart_on_crop_or_rotation(dialog, qtbot, 
             self._opened = False
 
         def read(self):
-            return np.zeros((30, 40, 3), dtype=np.uint8), 0.1
+            return CapturedFrame(np.zeros((30, 40, 3), dtype=np.uint8), 0.1, None)
 
     CountingBackend.opens = 0
     monkeypatch.setattr(CameraFactory, "create", staticmethod(lambda s: CountingBackend(s)))
