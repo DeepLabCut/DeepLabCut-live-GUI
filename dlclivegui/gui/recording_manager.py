@@ -291,7 +291,9 @@ class RecordingManager:
             self._session_dir = None
             self._run_dir = None
 
-    def _write_frame_now(self, cam_id: str, frame: np.ndarray, timestamp: float | None = None, timestamp_metadata: object | None = None) -> None:
+    def _write_frame_now(
+        self, cam_id: str, frame: np.ndarray, timestamp: float | None = None, timestamp_metadata: object | None = None
+    ) -> None:
         with self._lock:
             rec = self._recorders.get(cam_id)
 
@@ -323,7 +325,9 @@ class RecordingManager:
                 except Exception:
                     log.exception("Failed to stop recorder for %s after write error.", cam_id)
 
-    def write_frame(self, cam_id: str, frame: np.ndarray, timestamp: float | None = None, timestamp_metadata: object | None = None) -> None:
+    def write_frame(
+        self, cam_id: str, frame: np.ndarray, timestamp: float | None = None, timestamp_metadata: object | None = None
+    ) -> None:
         with self._lock:
             q = self._frame_queue
             active = cam_id in self._recorders
