@@ -110,9 +110,9 @@ class MultiCameraController(QObject):
 
     # Signals
     frame_ready = Signal(object)  # MultiFrameData (full cam FPS; inference only)
-    recording_frame_ready = Signal(
-        str, object, float, object
-    )  # camera_id, frame, timestamp, timestamp_metadata (full cam FPS; for recording)
+    # recording_frame_ready = Signal(
+    #     str, object, float, object
+    # )  # camera_id, frame, timestamp, timestamp_metadata (full cam FPS; for recording)
     display_ready = Signal(object)  # MultiFrameData for GUI display (throttled to GUI_MAX_DISPLAY_FPS)
     camera_started = Signal(str, object)  # camera_id, settings
     camera_stopped = Signal(str)  # camera_id
@@ -441,7 +441,7 @@ class MultiCameraController(QObject):
         frame_data: MultiFrameData | None = None
 
         with timing.measure("Multi.slot.total"):
-            self._settings.get(camera_id)
+            # self._settings.get(camera_id)
 
             # with timing.measure("Multi.apply_transforms"):
             #     if settings and settings.rotation:
