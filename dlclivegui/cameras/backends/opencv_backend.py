@@ -245,15 +245,26 @@ class OpenCVCameraBackend(CameraBackend):
         self._release_capture()
 
     def device_name(self) -> str:
-        base_name = "OpenCV"
+        ns = self.parse_options(self.settings)
+
+        if ns.device_name:
+            return ns.device_name
+
+        name = str(getattr(self.settings, "name", "") or "").strip()
+        if name:
+            return name
+
+        api_name = ""
         if self._capture and hasattr(self._capture, "getBackendName"):
             try:
-                backend_name = self._capture.getBackendName()
+                api_name = self._capture.getBackendName()
             except Exception:
-                backend_name = ""
-            if backend_name:
-                base_name = backend_name
-        return f"{base_name} camera #{self.settings.index}"
+                api_name = ""
+
+        if api_name:
+            return f"OpenCV {api_name} camera #{self.settings.index}"
+
+        return f"OpenCV camera #{self.settings.index}"
 
     @property
     def actual_fps(self) -> float | None:
