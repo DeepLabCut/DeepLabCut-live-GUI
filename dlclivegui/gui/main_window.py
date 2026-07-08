@@ -1302,16 +1302,20 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage(f"Camera configuration updated: {active_count} active camera(s)", 3000)
 
     def _update_active_cameras_label(self) -> None:
-        """Update the label showing active cameras."""
         active_cams = self._config.multi_camera.get_active_cameras()
+
         if not active_cams:
             self.active_cameras_label.setText("No cameras configured")
-        elif len(active_cams) == 1:
+            return
+
+        if len(active_cams) == 1:
             cam = active_cams[0]
-            self.active_cameras_label.setText(f"{cam.name} [{cam.backend}:{cam.index}] @ {cam.fps:.1f} fps")
-        else:
-            cam_names = [f"{c.name}" for c in active_cams]
-            self.active_cameras_label.setText(f"{len(active_cams)} cameras: {', '.join(cam_names)}")
+            display_id = get_display_id(cam)
+            self.active_cameras_label.setText(f"{display_id} [{cam.backend}:{cam.index}]")
+            return
+
+        cam_names = [get_display_id(c) for c in active_cams]
+        self.active_cameras_label.setText(f"{len(active_cams)} cameras: {', '.join(cam_names)}")
 
     def _validate_configured_cameras(self) -> None:
         """Validate that configured cameras are available.
@@ -1353,8 +1357,14 @@ class DLCLiveMainWindow(QMainWindow):
     def _label_for_cam_id(self, cam_id: str) -> str:
         for cam in self._config.multi_camera.get_active_cameras():
             if get_camera_id(cam) == cam_id:
-                return f"{cam.name} [{cam.backend}:{cam.index}]"
-        return cam_id
+                display_id = get_display_id(cam)
+                return f"{display_id} [{cam.backend}:{cam.index}]"
+
+        display_id = self._multi_camera_display_ids.get(cam_id)
+        if display_id:
+            return display_id
+
+        return "Unknown camera"
 
     def _refresh_dlc_camera_list_running(self) -> None:
         """Populate the inference camera dropdown from currently running cameras."""
@@ -1390,8 +1400,9 @@ class DLCLiveMainWindow(QMainWindow):
 
         active_cams = self._config.multi_camera.get_active_cameras()
         for cam in active_cams:
-            cam_id = get_camera_id(cam)  # e.g., "opencv:0" or "pylon:1"
-            label = f"{cam.name} [{cam.backend}:{cam.index}]"
+            cam_id = get_camera_id(cam)
+            display_id = get_display_id(cam)
+            label = f"{display_id} [{cam.backend}:{cam.index}]"
             self.dlc_camera_combo.addItem(label, cam_id)
 
         # Keep previous selection if still present, else default to first
