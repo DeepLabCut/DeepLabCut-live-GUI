@@ -1,3 +1,4 @@
+# tests/gui/test_main.py
 import numpy as np
 import pytest
 from PySide6.QtCore import Qt, QTimer
