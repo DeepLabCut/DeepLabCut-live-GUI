@@ -270,32 +270,46 @@ class DLCLiveMainWindow(QMainWindow):
         for lbl in (self.camera_stats_label, self.dlc_stats_label, self.recording_stats_label):
             lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        # Controls panel with fixed width to prevent shifting
-        controls_widget = QWidget()
-        # controls_widget.setMaximumWidth(500)
-        controls_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        controls_layout = QVBoxLayout(controls_widget)
-        controls_layout.setContentsMargins(5, 5, 5, 5)
+        # Controls panel content
+        controls_content_widget = QWidget()
+        controls_content_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        controls_layout = QVBoxLayout(controls_content_widget)
+        controls_layout.setContentsMargins(5, 5, 5, 0)
         controls_layout.addWidget(self._build_camera_group())
         controls_layout.addWidget(self._build_dlc_group())
         controls_layout.addWidget(self._build_recording_group())
         controls_layout.addWidget(self._build_viz_group())
 
-        # Preview/Stop buttons at bottom of controls - wrap in widget
+        # Preview/Stop buttons stay outside the scroll area as a fixed footer
         button_bar_widget = QWidget()
+        button_bar_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
         button_bar = QHBoxLayout(button_bar_widget)
         button_bar.setContentsMargins(0, 5, 0, 5)
+
         self.preview_button = QPushButton("Start Preview")
         self.preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.preview_button.setMinimumWidth(150)
+
         self.stop_preview_button = QPushButton("Stop Preview")
         self.stop_preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
         self.stop_preview_button.setEnabled(False)
         self.stop_preview_button.setMinimumWidth(150)
+
         button_bar.addWidget(self.preview_button)
         button_bar.addWidget(self.stop_preview_button)
-        controls_layout.addWidget(button_bar_widget)
-        controls_layout.addStretch(1)
+
+        controls_widget = lyts.make_scrollable_with_fixed_footer(
+            controls_content_widget,
+            button_bar_widget,
+            object_name="ControlsPanel",
+            scroll_object_name="ControlsScrollArea",
+            footer_object_name="ControlsFooter",
+            margins=(0, 0, 0, 0),
+            spacing=0,
+            footer_margins=(5, 0, 5, 0),
+        )
 
         # Add controls and video panel to main layout
         ## Dock widget for controls
@@ -1559,12 +1573,19 @@ class DLCLiveMainWindow(QMainWindow):
 
         self.preview_button.setEnabled(True)
         self.stop_preview_button.setEnabled(False)
+
         self._current_frame = None
         self._multi_camera_frames.clear()
         self._multi_camera_display_ids.clear()
+        self._running_cams_ids.clear()
+        self._display_dirty = False
+
         self.video_label.setPixmap(QPixmap())
         self.video_label.setText("Camera preview not started")
         self.statusBar().showMessage("Multi-camera preview stopped", 3000)
+
+        self._update_active_cameras_label()
+        self._refresh_dlc_camera_list()
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
         self._update_dlc_controls_enabled()
