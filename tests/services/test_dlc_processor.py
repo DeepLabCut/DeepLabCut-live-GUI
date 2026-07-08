@@ -1,12 +1,24 @@
+from __future__ import annotations
+
+import queue
+
 import numpy as np
 import pytest
 
-# from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.config import DLCProcessorSettings
+
+# from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.services.dlc_processor import (
     DLCLiveProcessor,
     ProcessorStats,
+    WorkerState,
 )
+
+
+class _AliveThread:
+    def is_alive(self) -> bool:
+        return True
+
 
 # ---------------------------------------------------------------------
 # Tests
@@ -73,28 +85,36 @@ def test_worker_processes_frames(qtbot, monkeypatch_dlclive, settings_model):
         proc.reset()
 
 
-@pytest.mark.unit
-def test_queue_full_drops_frames(qtbot, monkeypatch_dlclive, settings_model):
+def test_enqueue_frame_drops_stale_when_queue_is_full(settings_model):
     proc = DLCLiveProcessor()
     proc.configure(settings_model)
 
     try:
-        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        proc._queue = queue.Queue(maxsize=1)
+        proc._worker_thread = _AliveThread()
+        proc._state = WorkerState.RUNNING
+        proc._stop_event.clear()
 
-        # Start the worker with the first frame
-        with qtbot.waitSignal(proc.initialized, timeout=1500):
-            proc.enqueue_frame(frame, 1.0)
+        frame1 = np.zeros((32, 32, 3), dtype=np.uint8)
+        frame2 = np.ones((32, 32, 3), dtype=np.uint8)
 
-        # Flood the 1-slot queue to force drops
-        for _ in range(50):
-            proc.enqueue_frame(frame, 2.0)
+        proc.enqueue_frame(frame1, 1.0)
+        proc.enqueue_frame(frame2, 2.0)
 
-        # Wait until we observe dropped frames
-        qtbot.waitUntil(lambda: proc._frames_dropped > 0, timeout=1500)
-        assert proc._frames_dropped > 0
+        stats = proc.get_stats()
+        assert stats.frames_enqueued == 2
+        assert stats.frames_dropped == 1
+        assert stats.queue_size == 1
+
+        queued_frame, queued_timestamp, _queued_at = proc._queue.get_nowait()
+        assert queued_timestamp == 2.0
+        np.testing.assert_array_equal(queued_frame, frame2)
 
     finally:
-        proc.reset()
+        proc._queue = None
+        proc._worker_thread = None
+        proc._state = WorkerState.STOPPED
+        proc._stop_event.clear()
 
 
 @pytest.mark.unit
