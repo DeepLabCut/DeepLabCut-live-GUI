@@ -5,11 +5,30 @@ import inspect
 import logging
 import pkgutil
 import sys
+from dataclasses import dataclass, field
 from importlib import import_module
 from importlib.resources import as_file, files
 from pathlib import Path
+from typing import Any
+
+from dlclivegui.config import DLC_LIFECYCLE_EXTRA_LOGS
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ProcessorSpec:
+    cls: type
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        return getattr(self.cls, "PROCESSOR_NAME", self.cls.__name__)
+
+    def build(self) -> Any:
+        """Instantiate the processor class with the provided kwargs."""
+        log_processor_context(f"ProcessorSpec.build: {self.name} with kwargs={self.kwargs}", logger)
+        return self.cls(**self.kwargs)
 
 
 def default_processors_dir() -> str:
@@ -184,6 +203,28 @@ def load_processors_from_file(file_path: str | Path):
         return {}
 
 
+def create_spec_from_scan(processors_dict, processor_key, **kwargs) -> ProcessorSpec:
+    """Create a ProcessorSpec from scan_processor_folder results, without instantiating the processor yet."""
+    if processor_key not in processors_dict:
+        available = ", ".join(processors_dict.keys())
+        raise ValueError(f"Unknown processor '{processor_key}'. Available: {available}")
+
+    processor_info = processors_dict[processor_key]
+    processor_class = processor_info["class"]
+    return ProcessorSpec(cls=processor_class, kwargs=kwargs)
+
+
+def processor_builds_in_worker(processor_class: type) -> bool:
+    """
+    Return True if this processor class requests construction inside DLCLiveWorker.
+
+    Processors opt in by defining:
+
+        PROCESSOR_BUILD_IN_WORKER = True
+    """
+    return bool(getattr(processor_class, "PROCESSOR_BUILD_IN_WORKER", False))
+
+
 def instantiate_from_scan(processors_dict, processor_key, **kwargs):
     """
     Instantiate a processor from scan_processor_folder results.
@@ -228,3 +269,22 @@ def display_processor_info(processors):
             print(f"      - {param_name} ({param_info['type']})")
             print(f"        Default: {param_info['default']}")
             print(f"        {param_info['description']}")
+
+
+def log_processor_context(label: str, custom_logger: logging.Logger = logger):
+    if not DLC_LIFECYCLE_EXTRA_LOGS:
+        return
+
+    import multiprocessing as mp
+    import os
+    import threading
+    import time
+
+    custom_logger.info(
+        "[CUSTOM PROCESSOR] %s | pid=%s process=%s thread=%s time=%.6f",
+        label,
+        os.getpid(),
+        mp.current_process().name,
+        threading.current_thread().name,
+        time.time(),
+    )
