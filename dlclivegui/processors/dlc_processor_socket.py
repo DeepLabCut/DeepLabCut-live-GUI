@@ -41,6 +41,11 @@ class BaseProcessorSocket(Processor):
     PROCESSOR_DESCRIPTION = "Base class for socket-based processors with multi-client support"
     PROCESSOR_PARAMS = {}
 
+    # Experimental:
+    # Socket/Teensy/Unity processors often start threads, sockets, serial ports, etc.
+    # Build them inside the DLCLive worker to match legacy Tk GUI behavior.
+    PROCESSOR_BUILD_IN_WORKER = False
+
     def __init__(
         self,
         bind=None,

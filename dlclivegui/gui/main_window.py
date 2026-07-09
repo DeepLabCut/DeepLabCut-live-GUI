@@ -63,8 +63,11 @@ from dlclivegui.config import (
 )
 
 from ..processors.processor_utils import (
+    create_spec_from_scan,
     default_processors_dir,
     instantiate_from_scan,
+    log_processor_context,
+    processor_builds_in_worker,
     scan_processor_folder,
     scan_processor_package,
 )
@@ -1953,33 +1956,70 @@ class DLCLiveMainWindow(QMainWindow):
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
             self._show_error(f"Invalid DLCLive settings: {exc}")
             return False
+
         if not settings.model_path:
             self._show_error("Please select a DLCLive model before starting inference.")
             return False
 
-        # Instantiate processor if selected
         processor = None
+        processor_spec = None
+
         if self._processor_control_enabled():
             selected_key = self.processor_combo.currentData()
             self._settings_store.set_processor_key(selected_key)
 
             if selected_key is not None and self._scanned_processors:
                 try:
-                    # For now, instantiate with no parameters
-                    processor = instantiate_from_scan(self._scanned_processors, selected_key)
-                    processor_name = self._scanned_processors[selected_key]["name"]
+                    processor_info = self._scanned_processors[selected_key]
+                    processor_class = processor_info["class"]
+                    processor_name = processor_info.get("name", processor_class.__name__)
+
+                    if processor_builds_in_worker(processor_class):
+                        processor_spec = create_spec_from_scan(
+                            self._scanned_processors,
+                            selected_key,
+                        )
+                        processor = None
+
+                        log_processor_context(
+                            f"MainWindow._configure_dlc - SPEC: {processor_class.__name__}",
+                            logger,
+                        )
+
+                    else:
+                        processor = instantiate_from_scan(
+                            self._scanned_processors,
+                            selected_key,
+                        )
+                        processor_spec = None
+
+                        log_processor_context(
+                            f"MainWindow._configure_dlc - INSTANCE: {type(processor).__name__}",
+                            logger,
+                        )
+
                     self.statusBar().showMessage(f"Loaded processor: {processor_name}", 3000)
+
                 except Exception as e:
-                    error_msg = f"Failed to instantiate processor: {e}"
+                    error_msg = f"Failed to configure processor: {e}"
                     self._show_error(error_msg)
-                    logger.error(error_msg)
+                    logger.exception(error_msg)
                     return False
+
         else:
             selected_key = self.processor_combo.currentData()
             if selected_key is not None:
-                self.statusBar().showMessage(f"Processor selection ignored (control disabled): {selected_key}", 3000)
+                self.statusBar().showMessage(
+                    f"Processor selection ignored (control disabled): {selected_key}",
+                    3000,
+                )
 
-        self._dlc.configure(settings, processor=processor)
+        self._dlc.configure(
+            settings,
+            processor=processor,
+            processor_spec=processor_spec,
+        )
+
         self._model_path_store.save_if_valid(settings.model_path)
         return True
 
