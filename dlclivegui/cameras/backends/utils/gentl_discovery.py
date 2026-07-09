@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import glob
+import logging
 import os
+import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -16,6 +18,125 @@ class GenTLDiscoveryPolicy(Enum):
     FIRST = auto()  # default: take first N candidates in order found
     NEWEST = auto()  # take N candidates with most recent modification time (mtime)
     RAISE_IF_MULTIPLE = auto()  # if > N candidates, raise an error to avoid ambiguity (forces explicit config)
+
+
+try:  # pragma: no cover - optional dependency
+    from harvesters.core import Harvester  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    Harvester = None  # type: ignore
+
+logger = logging.getLogger(__name__)
+
+
+class SharedHarvesterEntry:
+    """
+    A shared Harvester instance keyed by a canonical tuple of CTI files.
+    """
+
+    def __init__(self, cti_files: list[str]):
+        if Harvester is None:  # pragma: no cover
+            raise RuntimeError(
+                "The 'harvesters' package is required for the GenTL backend. Install it via 'pip install harvesters'."
+            )
+
+        self.lock = threading.RLock()
+        self.key = tuple(sorted(_normalize_path(p, casefold_windows=True) for p in cti_files))
+        self.refcount = 0
+        self.harvester = Harvester()
+        self.loaded_files: list[str] = []
+        self.failed_files: dict[str, str] = {}
+
+        for cti in self.key:
+            try:
+                self.harvester.add_file(cti)
+                self.loaded_files.append(cti)
+            except Exception as e:
+                logger.warning(f"Failed to load CTI file: {cti}. Skipping.")
+                self.failed_files[cti] = str(e)
+
+        if not self.loaded_files:
+            e = RuntimeError("No GenTL producer (.cti) could be loaded by shared Harvester.")
+            self._raise_and_reset_harvester(e)
+
+        # Initial device enumeration.
+        try:
+            self.harvester.update()
+        except Exception as e:
+            self._raise_and_reset_harvester(e)
+
+    def _raise_and_reset_harvester(self, exc: Exception) -> None:
+        exc.loaded_files = self.loaded_files[:]
+        exc.failed_files = dict(self.failed_files)
+        try:
+            self.harvester.reset()
+        except Exception:
+            pass
+        raise exc
+
+
+class SharedHarvesterPool:
+    """
+    Process-local pool of shared Harvester instances.
+
+    Keyed by the canonicalized CTI file set.
+    """
+
+    _lock = threading.RLock()
+    _entries: dict[tuple[str, ...], SharedHarvesterEntry] = {}
+
+    @classmethod
+    def acquire(cls, cti_files: list[str]) -> SharedHarvesterEntry:
+        key = tuple(sorted(_normalize_path(p, casefold_windows=True) for p in cti_files))
+        with cls._lock:
+            entry = cls._entries.get(key)
+            if entry is None:
+                entry = SharedHarvesterEntry(list(key))
+                cls._entries[key] = entry
+            entry.refcount += 1
+            return entry
+
+    @classmethod
+    def release(cls, entry: SharedHarvesterEntry | None) -> None:
+        if entry is None:
+            return
+
+        with cls._lock:
+            current = cls._entries.get(entry.key)
+            if current is None:
+                # Already released/reset.
+                return
+
+            current.refcount -= 1
+            if current.refcount > 0:
+                return
+
+            try:
+                with current.lock:
+                    try:
+                        current.harvester.reset()
+                    except Exception:
+                        pass
+            finally:
+                cls._entries.pop(entry.key, None)
+
+    @classmethod
+    def refresh(cls, entry: SharedHarvesterEntry | None) -> None:
+        """
+        Optional helper when callers want to re-enumerate the device list
+        on an already-shared Harvester instance.
+        """
+        if entry is None:
+            return
+        with entry.lock:
+            entry.harvester.update()
+
+    @classmethod
+    def get_refcount(cls, entry: SharedHarvesterEntry | None) -> int:
+        if entry is None:
+            return 0
+        with cls._lock:
+            current = cls._entries.get(entry.key)
+            return int(current.refcount) if current is not None else 0
 
 
 @dataclass
@@ -81,18 +202,18 @@ def _expand_user_and_env(value: str) -> str:
     return s
 
 
-def _normalize_path(p: str) -> str:
-    """
-    Normalize a filesystem path in a cross-platform way:
-    - expands ~ and environment variables
-    - resolves to absolute where possible (without requiring existence)
-    """
+def _normalize_path(p: str, *, casefold_windows: bool = False) -> str:
     expanded = _expand_user_and_env(p)
     pp = Path(expanded)
     try:
-        return str(pp.resolve(strict=False))
+        out = str(pp.resolve(strict=False))
     except Exception:
-        return str(pp.absolute())
+        out = str(pp.absolute())
+
+    if casefold_windows:
+        out = os.path.normcase(out)
+
+    return out
 
 
 def _iter_cti_files_in_dir(directory: str, recursive: bool = False) -> Iterable[str]:
