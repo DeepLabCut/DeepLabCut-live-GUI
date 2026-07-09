@@ -177,14 +177,9 @@ def get_camera_id(settings: CameraSettings) -> str:
 
 
 def _trigger_role_from_settings(settings: CameraSettings) -> str:
-    backend = (settings.backend or "").lower()
-    props = settings.properties if isinstance(settings.properties, dict) else {}
-    ns = props.get(backend, {}) if isinstance(props.get(backend), dict) else {}
-
-    trigger = ns.get("trigger", {})
+    trigger = settings.get_trigger_settings()
     if not isinstance(trigger, dict):
         return "off"
-
     role = str(trigger.get("role", "off") or "off").strip().lower()
 
     # Match CameraTriggerSettings aliases enough for controller ordering.
