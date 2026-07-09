@@ -237,6 +237,11 @@ class MultiCameraController(QObject):
         cam_id = get_camera_id(settings_copy)
         display_id = get_display_id(settings_copy)
 
+        existing_thread = self._threads.get(cam_id)
+        if cam_id in self._workers and (existing_thread is None or not existing_thread.isRunning()):
+            LOGGER.warning(f"Camera {cam_id} has a stopped thread; cleaning up before restart")
+            self._cleanup_camera(cam_id)
+
         if cam_id in self._workers:
             LOGGER.warning(f"Camera {cam_id} is already running, skipping start")
             return
