@@ -454,10 +454,14 @@ def apply_detected_identity(cam: CameraSettings, detected: DetectedCamera, backe
 def camera_identity_key(cam: CameraSettings) -> tuple:
     backend = (cam.backend or "").lower()
     props = cam.properties if isinstance(cam.properties, dict) else {}
-    ns = props.get(backend, {}) if isinstance(props, dict) else {}
-    device_id = ns.get("device_id")
+    ns = props.get(backend, {}) if isinstance(props.get(backend), dict) else {}
 
-    # Prefer stable identity if present, otherwise fallback
+    device_id = ns.get("device_id")
     if device_id:
-        return (backend, "device_id", device_id)
+        return (backend, "device_id", str(device_id))
+
+    serial = ns.get("serial_number") or ns.get("device_serial_number") or ns.get("serial")
+    if serial:
+        return (backend, "serial", str(serial))
+
     return (backend, "index", int(cam.index))
