@@ -253,6 +253,8 @@ class MultiCameraController(QObject):
 
         # Startup order may differ for trigger safety:
         # followers/external first, master last.
+        # Note that this  is not a hard sync guarantee, it just calls start() on the workers
+        # in the order of priority.
         active_settings = sorted(active_settings_user_order, key=_camera_start_priority)
         if not active_settings:
             LOGGER.warning("No active cameras to start")
@@ -417,7 +419,7 @@ class MultiCameraController(QObject):
         self._failed_cameras.clear()
         self._display_ids.clear()
         self._camera_display_order.clear()
-        
+
         with self._frame_lock:
             self._frames.clear()
             self._timestamps.clear()
