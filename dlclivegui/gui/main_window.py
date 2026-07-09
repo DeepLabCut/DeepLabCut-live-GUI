@@ -66,8 +66,11 @@ from dlclivegui.config import (
 )
 
 from ..processors.processor_utils import (
+    create_spec_from_scan,
     default_processors_dir,
     instantiate_from_scan,
+    log_processor_context,
+    processor_builds_in_worker,
     scan_processor_folder,
     scan_processor_package,
 )
@@ -937,7 +940,7 @@ class DLCLiveMainWindow(QMainWindow):
             color_ui.set_bbox_combo_from_bgr(self.bbox_color_combo, self._bbox_color)
 
         # Processor
-        ## Allow processor control checkbox state
+        ## Use custom processor checkbox state
         if hasattr(self, "use_custom_proc_checkbox"):
             self.use_custom_proc_checkbox.setChecked(self._settings_store.get_processor_control_enabled(default=False))
 
@@ -2034,34 +2037,77 @@ class DLCLiveMainWindow(QMainWindow):
     def _configure_dlc(self) -> bool:
         try:
             settings = self._dlc_settings_from_ui()
-        except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
-            self._show_error(f"Invalid DLCLive settings: {exc}")
-            return False
-        if not settings.model_path:
-            self._show_error("Please select a DLCLive model before starting inference.")
+        except (
+            ValueError,
+            RuntimeError,
+            json.JSONDecodeError,
+        ) as exc:
+            self._show_error(
+                f"Invalid DLCLive settings: {exc}"
+            )
             return False
 
-        # Instantiate processor if selected
+        if not settings.model_path:
+            self._show_error(
+                "Please select a DLCLive model before "
+                "starting inference."
+            )
+            return False
+
         processor = None
+        processor_spec = None
         selected_key = self.processor_combo.currentData()
 
         self._settings_store.set_processor_key(selected_key)
 
         if self._custom_processor_enabled():
             try:
-                processor = instantiate_from_scan(
-                    self._scanned_processors,
-                    selected_key,
+                processor_info = self._scanned_processors[
+                    selected_key
+                ]
+                processor_class = processor_info["class"]
+                processor_name = processor_info.get(
+                    "name",
+                    processor_class.__name__,
                 )
-                processor_name = self._scanned_processors[selected_key]["name"]
+
+                if processor_builds_in_worker(
+                    processor_class
+                ):
+                    processor_spec = create_spec_from_scan(
+                        self._scanned_processors,
+                        selected_key,
+                    )
+
+                    log_processor_context(
+                        "MainWindow._configure_dlc - "
+                        f"SPEC: {processor_class.__name__}",
+                        logger,
+                    )
+                else:
+                    processor = instantiate_from_scan(
+                        self._scanned_processors,
+                        selected_key,
+                    )
+
+                    log_processor_context(
+                        "MainWindow._configure_dlc - "
+                        f"INSTANCE: {type(processor).__name__}",
+                        logger,
+                    )
+
                 self.statusBar().showMessage(
                     f"Loaded processor: {processor_name}",
                     3000,
                 )
+
             except Exception as exc:
-                error_msg = f"Failed to instantiate processor: {exc}"
+                error_msg = (
+                    "Failed to configure processor: "
+                    f"{exc}"
+                )
                 self._show_error(error_msg)
-                logger.error(error_msg)
+                logger.exception(error_msg)
                 return False
 
         elif selected_key is not None:
@@ -2070,8 +2116,14 @@ class DLCLiveMainWindow(QMainWindow):
                 3000,
             )
 
-        self._dlc.configure(settings, processor=processor)
-        self._model_path_store.save_if_valid(settings.model_path)
+        self._dlc.configure(
+            settings,
+            processor=processor,
+            processor_spec=processor_spec,
+        )
+        self._model_path_store.save_if_valid(
+            settings.model_path
+        )
         return True
 
     def _update_inference_buttons(self) -> None:
@@ -2204,20 +2256,6 @@ class DLCLiveMainWindow(QMainWindow):
                 self.recording_stats_label.setText(summary)
             else:
                 self.recording_stats_label.setText(self._last_recorder_summary)
-
-    def _on_processor_selection_changed(
-        self,
-        _index: int,
-    ) -> None:
-        """Enable custom processing when a processor is selected."""
-        has_selection = self.processor_combo.currentData() is not None
-        self.processor_toggle_row.setVisible(has_selection)
-
-        self.use_custom_proc_checkbox.blockSignals(True)
-        self.use_custom_proc_checkbox.setChecked(has_selection)
-        self.use_custom_proc_checkbox.blockSignals(False)
-
-        self._update_processor_status()
 
     def _update_processor_status(self) -> None:
         """Update processor connection and recording status, handle auto-recording."""
@@ -2562,7 +2600,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Remember processor-control checkbox state on exit
         if hasattr(self, "use_custom_proc_checkbox"):
-            self._settings_store.set_processor_control_enabled(self.use_custom_proc_checkbox.isChecked())
+            self._settings_store.set_processor_control_enabled(self._custom_processor_enabled())
 
         if hasattr(self, "filename_edit"):
             self._settings_store.set_rec_filename(self.filename_edit.text().strip())

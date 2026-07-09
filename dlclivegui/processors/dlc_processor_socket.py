@@ -38,6 +38,11 @@ class BaseProcessorSocket(Processor):
     PROCESSOR_PARAMS = {}
     PROCESSOR_DISCOVERABLE = False  # base class, not intended to be an example processor
 
+    # Experimental:
+    # Socket/Teensy/Unity processors often start threads, sockets, serial ports, etc.
+    # Build them inside the DLCLive worker to match legacy Tk GUI behavior.
+    PROCESSOR_BUILD_IN_WORKER = False
+
     def __init__(
         self,
         bind=None,
