@@ -18,7 +18,7 @@ from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import camera_identity_key
 
 # from dlclivegui.config import CameraSettings
-from dlclivegui.config import CameraSettings
+from dlclivegui.config import CameraSettings, CameraTriggerSettings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -177,22 +177,11 @@ def get_camera_id(settings: CameraSettings) -> str:
 
 
 def _trigger_role_from_settings(settings: CameraSettings) -> str:
-    trigger = settings.get_trigger_settings()
-    if not isinstance(trigger, dict):
+    try:
+        trigger = settings.get_trigger_settings()
+        return str(CameraTriggerSettings.from_any(trigger).role).strip().lower()
+    except Exception:
         return "off"
-    role = str(trigger.get("role", "off") or "off").strip().lower()
-
-    # Match CameraTriggerSettings aliases enough for controller ordering.
-    if role in {"true", "on", "trigger", "triggered"}:
-        return "external"
-    if role in {"slave"}:
-        return "follower"
-    if role in {"main"}:
-        return "master"
-    if role in {"false", "none", "disabled", "disable", ""}:
-        return "off"
-
-    return role
 
 
 def _camera_start_priority(settings: CameraSettings) -> int:
