@@ -1681,7 +1681,42 @@ class DLCLiveMainWindow(QMainWindow):
             daemon=True,
         ).start()
 
+    def _save_processor_data_if_available(self) -> None:
+        """Best-effort generic processor save.
+
+        The GUI intentionally does not pass a path here. This lets custom processors
+        use their own save_path / filename / internal policy.
+
+        Expected processor contract:
+            processor.save() -> int | bool | None
+
+        Return values are only logged; failure should not crash the GUI.
+        """
+        processor = getattr(self._dlc, "_processor", None)
+
+        # Fallback in case DLCLive owns the processor but _processor was not updated.
+        if processor is None:
+            dlc_obj = getattr(self._dlc, "_dlc", None)
+            processor = getattr(dlc_obj, "processor", None) if dlc_obj is not None else None
+
+        if processor is None:
+            logger.debug("Processor save skipped: no processor instance available.")
+            return
+
+        save = getattr(processor, "save", None)
+        if not callable(save):
+            logger.debug("Processor save skipped: processor has no callable save().")
+            return
+
+        try:
+            result = save()
+            logger.info("Processor save() completed with result: %r", result)
+        except Exception:
+            logger.exception("Processor save() failed.")
+
     def _on_recording_stopped_async(self) -> None:
+        self._save_processor_data_if_available()
+
         self._recording_stopping = False
         self.start_record_button.setEnabled(True)
         self.stop_record_button.setEnabled(False)
