@@ -127,18 +127,11 @@ class GenTLCameraBackend(CameraBackend):
             )
             self._trigger = CameraTriggerSettings()
 
+        self._base_timeout = float(ns.get("timeout", props.get("timeout", 2.0)))
+        self._timeout = self._base_timeout
         trigger_timeout = self._positive_float(self._trigger_attr(self._trigger, "timeout", None))
-        if trigger_timeout is not None:
-            role = str(self._trigger_attr(self._trigger, "role", "off") or "off").strip().lower()
-
-            if role in {"external", "follower"}:
-                # Do not let a long hardware-trigger wait block shutdown.
-                # SingleCameraWorker treats these fetch timeouts as expected
-                # polling misses while waits_for_hardware_trigger is true.
-                self._timeout = min(float(trigger_timeout), self._MAX_HARDWARE_TRIGGER_FETCH_TIMEOUT)
-            else:
-                # For non-trigger-waiting modes, preserve legacy behavior.
-                self._timeout = float(trigger_timeout)
+        self._trigger_requested_timeout: float | None = trigger_timeout
+        self._apply_effective_fetch_timeout()
 
         self._requested_resolution: tuple[int, int] | None = self._get_requested_resolution_or_none()
 
@@ -463,8 +456,21 @@ class GenTLCameraBackend(CameraBackend):
                     self._configure_exposure(node_map)
                     self._configure_gain(node_map)
                     self._configure_frame_rate(node_map)
-                    self._configure_trigger(node_map)  # keep low in the list
-                    self._ensure_settings_ns()["trigger_actual"] = self._trigger_to_dict(self._trigger)
+
+                    ns = self._ensure_settings_ns()
+                    requested_trigger = self._trigger_to_dict(self._trigger)
+
+                    self._configure_trigger(node_map)
+                    self._apply_effective_fetch_timeout()
+
+                    actual_trigger = self._trigger_to_dict(self._trigger)
+                    actual_trigger["fetch_timeout"] = self._timeout
+                    if self._trigger_requested_timeout is not None:
+                        actual_trigger["requested_timeout"] = float(self._trigger_requested_timeout)
+
+                    ns["trigger"] = requested_trigger
+                    ns["trigger_actual"] = actual_trigger
+
                     self._read_telemetry(node_map)
                     self._persist_device_metadata(selected_info, selected_serial)
 
@@ -1052,6 +1058,11 @@ class GenTLCameraBackend(CameraBackend):
             return {}
         if isinstance(trigger, dict):
             return dict(trigger)
+        if hasattr(trigger, "to_properties"):
+            try:
+                return trigger.to_properties()
+            except Exception:
+                pass
         if hasattr(trigger, "model_dump"):
             try:
                 return trigger.model_dump(exclude_none=True)
@@ -1103,6 +1114,23 @@ class GenTLCameraBackend(CameraBackend):
             available,
         )
         return requested, False
+
+    def _apply_effective_fetch_timeout(self) -> None:
+        trigger_timeout = self._trigger_requested_timeout
+        if trigger_timeout is None:
+            self._timeout = self._base_timeout
+            return
+
+        role = str(self._trigger_attr(self._trigger, "role", "off") or "off").strip().lower()
+
+        if role in {"external", "follower"}:
+            self._timeout = min(float(trigger_timeout), self._MAX_HARDWARE_TRIGGER_FETCH_TIMEOUT)
+        elif role == "master":
+            self._timeout = float(trigger_timeout)
+        else:
+            # Only cap trigger-bound modes
+            # master/off should not block waiting for a hardware trigger
+            self._timeout = self._base_timeout
 
     def _configure_pixel_format(self, node_map) -> None:
         try:
