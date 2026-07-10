@@ -144,7 +144,8 @@ class DLCLiveMainWindow(QMainWindow):
         )
 
         self._config = config
-        self._inference_camera_id: str | None = None  # Camera ID used for inference
+        self._inference_camera_id: str | None = self._settings_store.get_inference_camera_id()
+        self._active_inference_camera_id: str | None = None
         self._running_cams_ids: set[str] = set()
         self._current_frame: np.ndarray | None = None
         self._raw_frame: np.ndarray | None = None
@@ -840,8 +841,12 @@ class DLCLiveMainWindow(QMainWindow):
         self._dlc.initialized.connect(self._on_dlc_initialised)
         self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
         self.dlc_camera_combo.currentTextChanged.connect(self.dlc_camera_combo.update_shrink_width)
-        self.processor_combo.currentIndexChanged.connect(self._on_processor_selection_changed)
-        self.use_custom_proc_checkbox.stateChanged.connect(lambda _s: self._update_processor_status())
+        self.processor_combo.currentIndexChanged.connect(
+            self._on_processor_selection_changed
+        )
+        self.use_custom_proc_checkbox.stateChanged.connect(
+            self._on_custom_processor_enabled_changed
+        )
 
         # Recording settings
         ## Session name persistence + preview updates
@@ -909,6 +914,13 @@ class DLCLiveMainWindow(QMainWindow):
         self._bbox_color = viz.get_bbox_color_bgr()
         if hasattr(self, "bbox_color_combo"):
             color_ui.set_bbox_combo_from_bgr(self.bbox_color_combo, self._bbox_color)
+
+        # Processor
+        ## Allow processor control checkbox state
+        if hasattr(self, "use_custom_proc_checkbox"):
+            self.use_custom_proc_checkbox.setChecked(
+                self._settings_store.get_processor_control_enabled(default=False)
+            )
 
         # Update DLC camera list
         self._refresh_dlc_camera_list()
@@ -1181,32 +1193,170 @@ class DLCLiveMainWindow(QMainWindow):
             and self.processor_combo.currentData() is not None
         )
 
+    def _on_processor_selection_changed(
+        self,
+        _index: int,
+    ) -> None:
+        """Persist selection and enable custom processing for a chosen processor."""
+        selected_key = self.processor_combo.currentData()
+        has_selection = selected_key is not None
+
+        self._settings_store.set_processor_key(selected_key)
+        self.processor_toggle_row.setVisible(has_selection)
+
+        self.use_custom_proc_checkbox.blockSignals(True)
+        self.use_custom_proc_checkbox.setChecked(has_selection)
+        self.use_custom_proc_checkbox.blockSignals(False)
+
+        self._settings_store.set_processor_control_enabled(
+            has_selection
+        )
+
+        if hasattr(
+            self.processor_combo,
+            "update_shrink_width",
+        ):
+            self.processor_combo.update_shrink_width()
+
+        self._update_processor_status()
+
+
+    def _on_custom_processor_enabled_changed(
+        self,
+        _state: int,
+    ) -> None:
+        """Persist whether the selected custom processor should be used."""
+        enabled = self._custom_processor_enabled()
+
+        self._settings_store.set_processor_control_enabled(
+            enabled
+        )
+        self._update_processor_status()
+
     def _refresh_processors(self) -> None:
-        self.processor_combo.clear()
-        self.processor_combo.addItem("No Processor", None)
+        """Scan processors and restore the previous selection best-effort."""
+        previous_key = self.processor_combo.currentData()
+        preferred_key = (
+            previous_key
+            or self._settings_store.get_processor_key()
+        )
+        preferred_enabled = (
+            self.use_custom_proc_checkbox.isChecked()
+            if previous_key is not None
+            else self._settings_store.get_processor_control_enabled(
+                default=False
+            )
+        )
 
-        selected_folder = self.processor_folder_edit.text().strip()
-        selected_path = Path(selected_folder).expanduser() if selected_folder else None
+        self.processor_combo.blockSignals(True)
+        try:
+            self.processor_combo.clear()
+            self.processor_combo.addItem(
+                "No Processor",
+                None,
+            )
 
-        if selected_path is not None and selected_path.is_dir():
-            resolved_folder = str(selected_path.resolve())
-            self._settings_store.set_processor_folder(resolved_folder)
-            self._scanned_processors = scan_processor_folder(resolved_folder)
-            source_text = resolved_folder
-        else:
-            self._scanned_processors = scan_processor_package("dlclivegui.processors")
-            source_text = "package dlclivegui.processors"
+            selected_folder = (
+                self.processor_folder_edit.text().strip()
+            )
+            selected_path = (
+                Path(selected_folder).expanduser()
+                if selected_folder
+                else None
+            )
 
-        self._processor_keys = list(self._scanned_processors.keys())
+            if (
+                selected_path is not None
+                and selected_path.is_dir()
+            ):
+                resolved_folder = str(
+                    selected_path.resolve()
+                )
+                self._settings_store.set_processor_folder(
+                    resolved_folder
+                )
+                self._scanned_processors = (
+                    scan_processor_folder(
+                        resolved_folder
+                    )
+                )
+                source_text = resolved_folder
+            else:
+                self._scanned_processors = (
+                    scan_processor_package(
+                        "dlclivegui.processors"
+                    )
+                )
+                source_text = (
+                    "package dlclivegui.processors"
+                )
 
-        for key in self._processor_keys:
-            info = self._scanned_processors[key]
-            display_name = f"{info['name']} ({info['file']})"
-            self.processor_combo.addItem(display_name, key)
+            self._processor_keys = list(
+                self._scanned_processors
+            )
+
+            for key in self._processor_keys:
+                info = self._scanned_processors[key]
+                display_name = (
+                    f"{info['name']} ({info['file']})"
+                )
+                self.processor_combo.addItem(
+                    display_name,
+                    key,
+                )
+
+            selected_index = 0
+            if preferred_key is not None:
+                found_index = (
+                    self.processor_combo.findData(
+                        preferred_key
+                    )
+                )
+                if found_index >= 0:
+                    selected_index = found_index
+
+            self.processor_combo.setCurrentIndex(
+                selected_index
+            )
+        finally:
+            self.processor_combo.blockSignals(False)
+
+        has_selection = (
+            self.processor_combo.currentData()
+            is not None
+        )
+
+        self.processor_toggle_row.setVisible(
+            has_selection
+        )
+
+        self.use_custom_proc_checkbox.blockSignals(
+            True
+        )
+        self.use_custom_proc_checkbox.setChecked(
+            has_selection and preferred_enabled
+        )
+        self.use_custom_proc_checkbox.blockSignals(
+            False
+        )
+
+        # Clear a saved key that is no longer available.
+        selected_key = self.processor_combo.currentData()
+        self._settings_store.set_processor_key(
+            selected_key
+        )
+        self._settings_store.set_processor_control_enabled(
+            self._custom_processor_enabled()
+        )
 
         self.processor_combo.update_shrink_width()
-        self.statusBar().showMessage(f"Found {len(self._processor_keys)} processor(s) in {source_text}", 3000)
+        self._update_processor_status()
 
+        self.statusBar().showMessage(
+            f"Found {len(self._processor_keys)} "
+            f"processor(s) in {source_text}",
+            3000,
+        )
     # ------------------------------------------------------------------
     # Recording path preview and session name persistence
     def _known_recording_extensions(self) -> set[str]:
@@ -1399,34 +1549,56 @@ class DLCLiveMainWindow(QMainWindow):
         return "Unknown camera"
 
     def _refresh_dlc_camera_list_running(self) -> None:
-        """Populate the inference camera dropdown from currently running cameras."""
+        """Populate inference camera dropdown from currently running cameras.
+
+        - Keep the user's preferred camera if it is running
+        - Otherwise use a temporary runtime fallback
+        - Never persist fallback choices caused by preview/update events
+        """
+        preferred_id = self._inference_camera_id or self._settings_store.get_inference_camera_id()
+
         self.dlc_camera_combo.blockSignals(True)
         self.dlc_camera_combo.clear()
+
         for cam in self._config.multi_camera.get_active_cameras():
             cam_id = get_camera_id(cam)
             if cam_id in self._running_cams_ids:
                 self.dlc_camera_combo.addItem(self._label_for_cam_id(cam_id), cam_id)
 
-        # Keep current selection if still present, else select first running
-        if self._inference_camera_id in self._running_cams_ids:
-            idx = self.dlc_camera_combo.findData(self._inference_camera_id)
+        selected_id = None
+
+        if preferred_id in self._running_cams_ids:
+            idx = self.dlc_camera_combo.findData(preferred_id)
             if idx >= 0:
                 self.dlc_camera_combo.setCurrentIndex(idx)
-        elif self.dlc_camera_combo.count() > 0:
-            self.dlc_camera_combo.setCurrentIndex(0)
-            self._inference_camera_id = self.dlc_camera_combo.currentData()
-        self.dlc_camera_combo.blockSignals(False)
+                selected_id = preferred_id
 
-    def _set_dlc_combo_to_id(self, cam_id: str) -> None:
-        """Update combo selection to a given ID without firing signals."""
-        self.dlc_camera_combo.blockSignals(True)
-        idx = self.dlc_camera_combo.findData(cam_id)
-        if idx >= 0:
-            self.dlc_camera_combo.setCurrentIndex(idx)
+        if selected_id is None and self.dlc_camera_combo.count() > 0:
+            self.dlc_camera_combo.setCurrentIndex(0)
+            selected_id = self.dlc_camera_combo.currentData()
+
+        self._active_inference_camera_id = selected_id
+
         self.dlc_camera_combo.blockSignals(False)
+        self.dlc_camera_combo.update_shrink_width()
+
+    def _set_dlc_combo_to_id(self, cam_id: str) -> bool:
+        """Update combo selection to a given camera ID without firing signals."""
+        self.dlc_camera_combo.blockSignals(True)
+        try:
+            idx = self.dlc_camera_combo.findData(cam_id)
+            if idx >= 0:
+                self.dlc_camera_combo.setCurrentIndex(idx)
+                return True
+            return False
+        finally:
+            self.dlc_camera_combo.blockSignals(False)
+            self.dlc_camera_combo.update_shrink_width()
 
     def _refresh_dlc_camera_list(self) -> None:
-        """Populate the inference camera dropdown from active cameras."""
+        """Populate inference camera dropdown from configured active cameras."""
+        preferred_id = self._inference_camera_id or self._settings_store.get_inference_camera_id()
+
         self.dlc_camera_combo.blockSignals(True)
         self.dlc_camera_combo.clear()
 
@@ -1437,27 +1609,41 @@ class DLCLiveMainWindow(QMainWindow):
             label = f"{display_id} [{cam.backend}:{cam.index}]"
             self.dlc_camera_combo.addItem(label, cam_id)
 
-        # Keep previous selection if still present, else default to first
-        if self._inference_camera_id is not None:
-            idx = self.dlc_camera_combo.findData(self._inference_camera_id)
+        selected_id = None
+
+        if preferred_id is not None:
+            idx = self.dlc_camera_combo.findData(preferred_id)
             if idx >= 0:
                 self.dlc_camera_combo.setCurrentIndex(idx)
-            elif self.dlc_camera_combo.count() > 0:
-                self.dlc_camera_combo.setCurrentIndex(0)
-                self._inference_camera_id = self.dlc_camera_combo.currentData()
-        else:
-            if self.dlc_camera_combo.count() > 0:
-                self.dlc_camera_combo.setCurrentIndex(0)
-                self._inference_camera_id = self.dlc_camera_combo.currentData()
+                selected_id = preferred_id
+
+        if selected_id is None and self.dlc_camera_combo.count() > 0:
+            self.dlc_camera_combo.setCurrentIndex(0)
+            selected_id = self.dlc_camera_combo.currentData()
+
+            # First-run convenience only.
+            # If there is no previous preference, initialize one.
+            if self._inference_camera_id is None and preferred_id is None:
+                self._inference_camera_id = selected_id
+                self._settings_store.set_inference_camera_id(selected_id)
+
+        self._active_inference_camera_id = selected_id
 
         self.dlc_camera_combo.blockSignals(False)
         self.dlc_camera_combo.update_shrink_width()
 
     def _on_dlc_camera_changed(self, _index: int) -> None:
-        """Track user selection of the inference camera."""
-        self._inference_camera_id = self.dlc_camera_combo.currentData()
+        """Track explicit user selection of the inference camera."""
+        cam_id = self.dlc_camera_combo.currentData()
+
+        self._inference_camera_id = cam_id
+        self._active_inference_camera_id = cam_id
+
+        self._settings_store.set_inference_camera_id(cam_id)
+
         self.dlc_camera_combo.update_shrink_width()
-        # Force redraw so bbox/pose overlays switch to the new tile immediately
+
+        # Force redraw so bbox/pose overlays switch to the new tile immediately.
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
 
@@ -1469,7 +1655,7 @@ class DLCLiveMainWindow(QMainWindow):
         offset, scale = (0, 0), (1.0, 1.0)
 
         # If this is the inference camera, apply pose overlays
-        if cam_id == self._inference_camera_id and self._last_pose and self._last_pose.pose is not None:
+        if cam_id == self._active_inference_camera_id and self._last_pose and self._last_pose.pose is not None:
             output = draw_pose(
                 output,
                 self._last_pose.pose,
@@ -1526,24 +1712,29 @@ class DLCLiveMainWindow(QMainWindow):
             self._running_cams_ids = new_running
             self._refresh_dlc_camera_list_running()
 
-        # Determine DLC camera (first active camera)
-        selected_id = self._inference_camera_id
+        preferred_id = self._inference_camera_id
         available_ids = list(frame_data.frames.keys())
-        if selected_id in frame_data.frames:
-            dlc_cam_id = selected_id
+
+        if preferred_id in frame_data.frames:
+            dlc_cam_id = preferred_id
         else:
             dlc_cam_id = available_ids[0] if available_ids else ""
+
             if dlc_cam_id:
-                self._inference_camera_id = dlc_cam_id
-                self._set_dlc_combo_to_id(dlc_cam_id)
-                self.statusBar().showMessage(
-                    f"DLC inference camera changed to {self._label_for_cam_id(dlc_cam_id)}", 3000
-                )
-            else:  # No more cameras available
+                if self._active_inference_camera_id != dlc_cam_id:
+                    self._active_inference_camera_id = dlc_cam_id
+                    self._set_dlc_combo_to_id(dlc_cam_id)
+                    self.statusBar().showMessage(
+                        f"Using temporary DLC inference camera: {self._label_for_cam_id(dlc_cam_id)}",
+                        3000,
+                    )
+            else:
                 if self._dlc_active:
                     self._stop_inference(show_message=True)
                 self._display_dirty = True
                 return
+
+        self._active_inference_camera_id = dlc_cam_id
 
         # Check if this frame is from the DLC camera
         is_dlc_camera_frame = frame_data.source_camera_id == dlc_cam_id
@@ -1839,20 +2030,42 @@ class DLCLiveMainWindow(QMainWindow):
         # Instantiate processor if selected
         processor = None
         selected_key = self.processor_combo.currentData()
+
+        self._settings_store.set_processor_key(
+            selected_key
+        )
+
         if self._custom_processor_enabled():
             try:
-                # For now, instantiate with no parameters
-                processor = instantiate_from_scan(self._scanned_processors, selected_key)
-                processor_name = self._scanned_processors[selected_key]["name"]
-                self.statusBar().showMessage(f"Loaded processor: {processor_name}", 3000)
-            except Exception as e:
-                error_msg = f"Failed to instantiate processor: {e}"
+                processor = instantiate_from_scan(
+                    self._scanned_processors,
+                    selected_key,
+                )
+                processor_name = (
+                    self._scanned_processors[
+                        selected_key
+                    ]["name"]
+                )
+                self.statusBar().showMessage(
+                    f"Loaded processor: {processor_name}",
+                    3000,
+                )
+            except Exception as exc:
+                error_msg = (
+                    "Failed to instantiate processor: "
+                    f"{exc}"
+                )
                 self._show_error(error_msg)
                 logger.error(error_msg)
                 return False
-        elif selected_key is not None:
-            self.statusBar().showMessage(f"Custom processor disabled: {selected_key}", 3000)
 
+        elif selected_key is not None:
+            self.statusBar().showMessage(
+                f"Custom processor disabled: "
+                f"{selected_key}",
+                3000,
+            )
+    
         self._dlc.configure(settings, processor=processor)
         self._model_path_store.save_if_valid(settings.model_path)
         return True
@@ -2330,9 +2543,28 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Remember model path on exit
         self._model_path_store.save_if_valid(self.model_path_edit.text().strip())
+
         # Remember processor folder on exit
         if hasattr(self, "processor_folder_edit"):
             self._settings_store.set_processor_folder(self.processor_folder_edit.text().strip())
+
+        # Remember user-preferred inference camera on exit.
+        if hasattr(self, "_inference_camera_id"):
+            self._settings_store.set_inference_camera_id(self._inference_camera_id)
+
+        # Remember selected processor on exit
+        if hasattr(self, "processor_combo"):
+            self._settings_store.set_processor_key(self.processor_combo.currentData())
+
+        # Remember processor-control checkbox state on exit
+        if hasattr(self, "use_custom_proc_checkbox"):
+            self._settings_store.set_processor_control_enabled(self.use_custom_proc_checkbox.isChecked())
+
+        # Flush QSettings best-effort
+        try:
+            self.settings.sync()
+        except Exception:
+            logger.exception("Failed to sync QSettings on close", exc_info=True)
 
         # Close the window
         super().closeEvent(event)
