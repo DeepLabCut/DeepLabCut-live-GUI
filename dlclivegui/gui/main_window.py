@@ -98,13 +98,19 @@ class DLCLiveMainWindow(QMainWindow):
         self._model_path_store = ModelPathStore(self.settings)
         self._settings_store = DLCLiveGUISettingsStore(self.settings)
 
+        last_cfg_path = self._settings_store.get_last_config_path()
+        last_cfg_file = self._valid_config_file_path(last_cfg_path)
         if config is None:
             # 1) snapshot
             cfg = self._settings_store.load_full_config_snapshot()
             if cfg is not None:
                 config = cfg
-                self._config_path = None
-                logger.info("Loaded configuration from QSettings snapshot.")
+                self._config_path = last_cfg_file
+                if self._config_path is not None:
+                    logger.info(f"Loaded configuration from QSettings snapshot; associated file: {self._config_path}")
+                else:
+                    logger.info("Loaded configuration from QSettings snapshot without associated config file.")
+
             else:
                 # 2) last config file path
                 last_cfg_path = self._settings_store.get_last_config_path()
@@ -224,6 +230,19 @@ class DLCLiveMainWindow(QMainWindow):
         super().resizeEvent(event)
         if not self.multi_camera_controller.is_running():
             self._show_logo_and_text()
+
+    def _valid_config_file_path(self, path: str | None) -> Path | None:
+        if not path:
+            return None
+
+        try:
+            p = Path(path).expanduser()
+            if p.exists() and p.is_file():
+                return p.resolve()
+        except Exception:
+            logger.debug("Invalid config file path: %s", path, exc_info=True)
+
+        return None
 
     # ------------------------------------------------------------------ UI
     def _init_theme_actions(self) -> None:
@@ -1010,10 +1029,36 @@ class DLCLiveMainWindow(QMainWindow):
             bbox_color=self._bbox_color,
         )
 
+    def _suggest_config_dialog_path(self) -> str:
+        """Return best initial path for load/save config dialogs."""
+        if getattr(self, "_config_path", None) is not None:
+            try:
+                return str(self._config_path)
+            except Exception:
+                pass
+
+        last_cfg = self._settings_store.get_last_config_path()
+        valid_last = self._valid_config_file_path(last_cfg)
+        if valid_last is not None:
+            return str(valid_last)
+
+        if last_cfg:
+            try:
+                p = Path(last_cfg).expanduser()
+                parent = p.parent
+                if parent.exists() and parent.is_dir():
+                    return str(parent / (p.name or "config.json"))
+            except Exception:
+                logger.debug("Failed to derive config dialog path from %s", last_cfg, exc_info=True)
+
+        return str(Path.home() / "config.json")
+
     # ------------------------------------------------------------------
     # Actions
     def _action_load_config(self) -> None:
-        file_name, _ = QFileDialog.getOpenFileName(self, "Load configuration", str(Path.home()), "JSON files (*.json)")
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "Load configuration", self._suggest_config_dialog_path(), "JSON files (*.json)"
+        )
         if not file_name:
             return
         try:
@@ -1023,6 +1068,12 @@ class DLCLiveMainWindow(QMainWindow):
             return
         self._settings_store.set_last_config_path(file_name)
         self._settings_store.save_full_config_snapshot(config)
+
+        try:
+            self.settings.sync()
+        except Exception:
+            logger.debug("Failed to sync settings after loading config", exc_info=True)
+
         self._config = config
         self._config_path = Path(file_name)
         self._apply_config(config)
@@ -1034,19 +1085,22 @@ class DLCLiveMainWindow(QMainWindow):
         if self._config_path is None:
             self._action_save_config_as()
             return
-        self._save_config_to_path(self._config_path)
+        if self._save_config_to_path(self._config_path):
+            self._config_path = self._config_path.expanduser()
 
     def _action_save_config_as(self) -> None:
-        file_name, _ = QFileDialog.getSaveFileName(self, "Save configuration", str(Path.home()), "JSON files (*.json)")
+        file_name, _ = QFileDialog.getSaveFileName(
+            self, "Save configuration", self._suggest_config_dialog_path(), "JSON files (*.json)"
+        )
         if not file_name:
             return
-        path = Path(file_name)
+        path = Path(file_name).expanduser()
         if path.suffix.lower() != ".json":
             path = path.with_suffix(".json")
-        self._config_path = path
-        self._save_config_to_path(path)
+        if self._save_config_to_path(path):
+            self._config_path = path
 
-    def _save_config_to_path(self, path: Path) -> None:
+    def _save_config_to_path(self, path: Path) -> bool:
         try:
             config = self._current_config(allow_empty_model_path=True)
             config.save(path)
@@ -1054,8 +1108,9 @@ class DLCLiveMainWindow(QMainWindow):
             self._settings_store.save_full_config_snapshot(config)
         except Exception as exc:  # pragma: no cover - GUI interaction
             self._show_error(str(exc))
-            return
+            return False
         self.statusBar().showMessage(f"Saved configuration to {path}", 5000)
+        return True
 
     def _action_browse_model(self) -> None:
         # Prefer persisted last-used directory, then config.dlc.model_directory, then home
