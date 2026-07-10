@@ -130,6 +130,16 @@ class VideoRecorder:
     def is_running(self) -> bool:
         return self._writer_thread is not None and self._writer_thread.is_alive()
 
+    @property
+    def output_path(self) -> Path:
+        """Video output path."""
+        return self._output
+
+    @property
+    def timestamp_json_path(self) -> Path:
+        """Timestamp JSON sidecar path written by _save_timestamps()."""
+        return self._output.with_suffix("").with_suffix(self._output.suffix + "_timestamps.json")
+
     def start(self) -> None:
         if WriteGear is None:
             raise RuntimeError("vidgear is required for video recording. Install it with 'pip install vidgear'.")
@@ -581,7 +591,7 @@ class VideoRecorder:
             logger.info("No timestamps to save")
             return
 
-        timestamp_file = self._output.with_suffix("").with_suffix(self._output.suffix + "_timestamps.json")
+        timestamp_file = self.timestamp_json_path
 
         try:
             with self._stats_lock:
