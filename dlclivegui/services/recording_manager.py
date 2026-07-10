@@ -32,6 +32,9 @@ class RecordingManager:
         self._dispatch_thread: threading.Thread | None = None
         self._dispatch_stop = threading.Event()
 
+        # Utility for operation on latest recording file context (e.g., for processor hooks)
+        self._last_recording_file_context: dict | None = None
+
     @property
     def is_active(self) -> bool:
         with self._lock:
@@ -265,6 +268,9 @@ class RecordingManager:
                 self._run_dir = None
             return None
 
+        with self._lock:
+            self._last_recording_file_context = self._build_recording_file_context_unlocked()
+
         return run_dir
 
     def stop_all(self) -> None:
@@ -272,6 +278,11 @@ class RecordingManager:
 
         with self._lock:
             recorders = list(self._recorders.items())
+            run_dir = self._run_dir
+            session_dir = self._session_dir
+            self._last_recording_file_context = self._build_recording_file_context_unlocked(
+                recorders=recorders, run_dir=run_dir, session_dir=session_dir
+            )
             self._recorders.clear()
 
         for cam_id, rec in recorders:
@@ -423,3 +434,64 @@ class RecordingManager:
                 f"backlog {totals['backlog']} | "
                 f"dropped {totals['dropped']}"
             )
+
+    def _build_recording_file_context_unlocked(
+        self,
+        recorders: list[tuple[str, VideoRecorder]] | None = None,
+        run_dir: Path | None = None,
+        session_dir: Path | None = None,
+    ) -> dict:
+        """Build a file context for active or recently stopped recorders.
+
+        Must be called with self._lock held if using internal state.
+        """
+        if recorders is None:
+            recorders = list(self._recorders.items())
+
+        if run_dir is None:
+            run_dir = self._run_dir
+
+        if session_dir is None:
+            session_dir = self._session_dir
+
+        video_files: dict[str, Path] = {}
+        timestamp_json_files: dict[str, Path] = {}
+
+        for cam_id, recorder in recorders:
+            video_path = getattr(recorder, "output_path", None)
+            timestamp_path = getattr(recorder, "timestamp_json_path", None)
+
+            if video_path is not None:
+                video_files[str(cam_id)] = Path(video_path)
+
+            if timestamp_path is not None:
+                timestamp_json_files[str(cam_id)] = Path(timestamp_path)
+
+        return {
+            "run_dir": run_dir,
+            "session_dir": session_dir,
+            "video_files": video_files,
+            "timestamp_json_files": timestamp_json_files,
+        }
+
+    def get_recording_file_context(self) -> dict:
+        """Return current or last recording file context.
+
+        This is used by optional custom processors to save compatibility sidecars
+        next to the videos after RecordingManager.stop_all() has finalized them.
+        """
+        with self._lock:
+            if self._recorders:
+                context = self._build_recording_file_context_unlocked()
+                self._last_recording_file_context = context
+                return dict(context)
+
+            if self._last_recording_file_context is not None:
+                return dict(self._last_recording_file_context)
+
+            return {
+                "run_dir": self._run_dir,
+                "session_dir": self._session_dir,
+                "video_files": {},
+                "timestamp_json_files": {},
+            }
