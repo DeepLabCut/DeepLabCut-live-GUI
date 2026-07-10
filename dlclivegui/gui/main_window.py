@@ -1106,6 +1106,12 @@ class DLCLiveMainWindow(QMainWindow):
             config.save(path)
             self._settings_store.set_last_config_path(str(path))
             self._settings_store.save_full_config_snapshot(config)
+
+            try:
+                self.settings.sync()
+            except Exception:
+                logger.debug("Failed to sync settings after saving config", exc_info=True)
+
         except Exception as exc:  # pragma: no cover - GUI interaction
             self._show_error(str(exc))
             return False
