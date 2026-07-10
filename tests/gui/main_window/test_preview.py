@@ -1,8 +1,13 @@
+# tests/gui/main_window/test_preview.py
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from PySide6.QtGui import QPixmap
+
+from dlclivegui.services.multi_camera_controller import get_camera_id
 
 
 @pytest.mark.gui
@@ -85,3 +90,35 @@ class TestPreviewLifecycle:
 
         assert not w.preview_button.isEnabled()
         assert w.stop_preview_button.isEnabled()
+
+    def test_processing_runtime_fallback_does_not_overwrite_preferred_inference_camera(self, window):
+        w = window
+
+        active_cams = w._config.multi_camera.get_active_cameras()
+        if len(active_cams) < 2:
+            pytest.skip("This regression test requires at least two active cameras.")
+
+        fallback_cam = active_cams[0]
+        preferred_cam = active_cams[1]
+
+        fallback_id = get_camera_id(fallback_cam)
+        preferred_id = get_camera_id(preferred_cam)
+
+        w._inference_camera_id = preferred_id
+        w._active_inference_camera_id = preferred_id
+        w._running_cams_ids = set()
+        w._dlc_active = False
+
+        frame = np.zeros((4, 4, 3), dtype=np.uint8)
+        frame_data = SimpleNamespace(
+            frames={fallback_id: frame},
+            display_ids={fallback_id: "Fallback camera"},
+            source_camera_id=fallback_id,
+            timestamps={fallback_id: 123.0},
+        )
+
+        w._on_multi_frame_processing_ready(frame_data)
+
+        assert w._inference_camera_id == preferred_id
+        assert w._active_inference_camera_id == fallback_id
+        assert w.dlc_camera_combo.currentData() == fallback_id
