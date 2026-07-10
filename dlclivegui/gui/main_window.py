@@ -1789,6 +1789,7 @@ class DLCLiveMainWindow(QMainWindow):
         if run_dir is None:
             self._show_error("Failed to start recording.")
             return
+        self._notify_processor_recording_started(run_dir)
         self.multi_camera_controller.set_recording_sink(self._rec_manager.write_frame)
         self.multi_camera_controller.set_recording_frame_do_emit(True)
 
@@ -1830,6 +1831,20 @@ class DLCLiveMainWindow(QMainWindow):
             daemon=True,
         ).start()
 
+    def _get_dlc_processor_instance(self):
+        """Return the active custom DLC processor instance, if available."""
+        processor = getattr(self._dlc, "_processor", None)
+
+        if processor is not None:
+            return processor
+
+        # Fallback: if DLCLive owns it internally.
+        dlc_obj = getattr(self._dlc, "_dlc", None)
+        if dlc_obj is not None:
+            return getattr(dlc_obj, "processor", None)
+
+        return None
+
     def _save_processor_data_if_available(self) -> None:
         """Best-effort generic processor save.
 
@@ -1841,12 +1856,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         Return values are only logged; failure should not crash the GUI.
         """
-        processor = getattr(self._dlc, "_processor", None)
-
-        # Fallback in case DLCLive owns the processor but _processor was not updated.
-        if processor is None:
-            dlc_obj = getattr(self._dlc, "_dlc", None)
-            processor = getattr(dlc_obj, "processor", None) if dlc_obj is not None else None
+        processor = self._get_dlc_processor_instance()
 
         if processor is None:
             logger.debug("Processor save skipped: no processor instance available.")
@@ -1863,8 +1873,82 @@ class DLCLiveMainWindow(QMainWindow):
         except Exception:
             logger.exception("Processor save() failed.")
 
+    def _notify_processor_recording_started(self, run_dir) -> None:
+        processor = self._get_dlc_processor_instance()
+        if processor is None:
+            return
+
+        hook = getattr(processor, "on_recording_started", None)
+        if not callable(hook):
+            return
+
+        try:
+            context = self._build_processor_recording_context(run_dir)
+            hook(context)
+            logger.info("Notified processor recording started: %s", context)
+        except Exception:
+            logger.exception("Processor on_recording_started hook failed")
+
+    from pathlib import Path
+
+    def _build_processor_recording_context(self, run_dir) -> dict:
+        run_dir = Path(run_dir) if run_dir is not None else None
+
+        file_context = {}
+        try:
+            file_context = self._rec_manager.get_recording_file_context()
+        except Exception:
+            logger.exception("Failed to get recording file context from RecordingManager")
+            file_context = {}
+
+        if run_dir is None:
+            run_dir = file_context.get("run_dir", None)
+        if run_dir is not None:
+            run_dir = Path(run_dir)
+
+        session_name = ""
+        if hasattr(self, "session_name_edit"):
+            session_name = self.session_name_edit.text().strip()
+
+        filename = ""
+        if hasattr(self, "filename_edit"):
+            filename = self.filename_edit.text().strip()
+
+        filename_stem = Path(filename or session_name or "recording").stem
+
+        ctx = {
+            "run_dir": run_dir,
+            "session_name": session_name,
+            "filename": filename,
+            "filename_stem": filename_stem,
+            "processor_base_path": run_dir / filename_stem if run_dir is not None else None,
+        }
+        ctx.update(file_context)
+        return ctx
+
+    def _notify_processor_recording_stopped(self) -> None:
+        processor = self._get_dlc_processor_instance()
+        if processor is None:
+            return False
+
+        hook = getattr(processor, "on_recording_stopped", None)
+        if not callable(hook):
+            return False
+
+        try:
+            run_dir = getattr(self._rec_manager, "run_dir", None)
+            context = self._build_processor_recording_context(run_dir)
+            hook(context)
+            logger.info("Notified processor recording stopped")
+            return True
+        except Exception:
+            logger.exception("Processor on_recording_stopped hook failed")
+            return False
+
     def _on_recording_stopped_async(self) -> None:
-        self._save_processor_data_if_available()
+        handled_by_stop_hook = self._notify_processor_recording_stopped()
+        if not handled_by_stop_hook:
+            self._save_processor_data_if_available()
 
         self._recording_stopping = False
         self.start_record_button.setEnabled(True)
