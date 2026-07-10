@@ -11,16 +11,23 @@ pytestmark = pytest.mark.unit
 
 
 class InMemoryQSettings:
-    """Stand-in for QSettings"""
+    """Small stand-in for QSettings."""
 
     def __init__(self):
         self._d = {}
+        self.synced = False
 
     def value(self, key: str, default=None):
         return self._d.get(key, default)
 
     def setValue(self, key: str, value):
         self._d[key] = value
+
+    def remove(self, key: str):
+        self._d.pop(key, None)
+
+    def sync(self):
+        self.synced = True
 
 
 # -----------------------------
@@ -348,3 +355,160 @@ def test_model_path_store_suggest_selected_file_returns_none_when_missing(tmp_pa
     settings.setValue("dlc/last_model_path", str(missing))
 
     assert mps.suggest_selected_file() is None
+
+
+# -----------------------------
+#  Inference camera  ID
+# -----------------------------
+def test_settings_store_inference_camera_id_roundtrip():
+    s = InMemoryQSettings()
+    settstore = store.DLCLiveGUISettingsStore(qsettings=s)
+
+    assert settstore.get_inference_camera_id() is None
+
+    settstore.set_inference_camera_id("opencv:0")
+    assert settstore.get_inference_camera_id() == "opencv:0"
+
+    settstore.set_inference_camera_id(None)
+    assert settstore.get_inference_camera_id() is None
+
+    settstore.set_inference_camera_id("")
+    assert settstore.get_inference_camera_id() is None
+
+
+# -----------------------------
+# Processor settings
+# -----------------------------
+def test_settings_store_processor_folder_roundtrip_when_valid(tmp_path: Path):
+    s = InMemoryQSettings()
+    settstore = store.DLCLiveGUISettingsStore(qsettings=s)
+
+    folder = tmp_path / "processors"
+    folder.mkdir()
+
+    settstore.set_processor_folder(str(folder))
+
+    assert settstore.get_processor_folder(default="fallback") == str(folder.resolve())
+
+
+def test_settings_store_processor_folder_ignores_invalid_value(tmp_path: Path):
+    s = InMemoryQSettings()
+    settstore = store.DLCLiveGUISettingsStore(qsettings=s)
+
+    missing = tmp_path / "missing"
+
+    settstore.set_processor_folder(str(missing))
+
+    assert settstore.get_processor_folder(default="fallback") == "fallback"
+
+
+def test_settings_store_get_processor_folder_returns_default_if_stored_missing(tmp_path: Path):
+    s = InMemoryQSettings()
+    settstore = store.DLCLiveGUISettingsStore(qsettings=s)
+
+    missing = tmp_path / "missing"
+    s.setValue("dlc/processor_folder", str(missing))
+
+    assert settstore.get_processor_folder(default="fallback") == "fallback"
+
+
+def test_settings_store_processor_key_roundtrip():
+    s = InMemoryQSettings()
+    settstore = store.DLCLiveGUISettingsStore(qsettings=s)
+
+    assert settstore.get_processor_key() is None
+
+    settstore.set_processor_key("my_processor")
+    assert settstore.get_processor_key() == "my_processor"
+
+    settstore.set_processor_key(None)
+    assert settstore.get_processor_key() is None
+
+    settstore.set_processor_key("")
+    assert settstore.get_processor_key() is None
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("false", False),
+        ("1", True),
+        ("0", False),
+        ("yes", True),
+        ("no", False),
+        ("on", True),
+        ("off", False),
+        (1, True),
+        (0, False),
+    ],
+)
+def test_settings_store_processor_control_bool_parsing(stored, expected):
+    s = InMemoryQSettings()
+    s.setValue("dlc/processor_control_enabled", stored)
+
+    settstore = store.DLCLiveGUISettingsStore(qsettings=s)
+
+    assert settstore.get_processor_control_enabled(default=not expected) is expected
+
+
+def test_settings_store_processor_control_enabled_roundtrip():
+    s = InMemoryQSettings()
+    settstore = store.DLCLiveGUISettingsStore(qsettings=s)
+
+    assert settstore.get_processor_control_enabled(default=False) is False
+
+    settstore.set_processor_control_enabled(True)
+    assert settstore.get_processor_control_enabled(default=False) is True
+
+    settstore.set_processor_control_enabled(False)
+    assert settstore.get_processor_control_enabled(default=True) is False
+
+
+# -----------------------------
+#  Recording
+# -----------------------------
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        ("true", True),
+        ("false", False),
+        ("1", True),
+        ("0", False),
+        ("yes", True),
+        ("no", False),
+        ("on", True),
+        ("off", False),
+    ],
+)
+def test_settings_store_use_timestamp_bool_variants(stored, expected):
+    s = InMemoryQSettings()
+    s.setValue("recording/use_timestamp", stored)
+
+    settstore = store.DLCLiveGUISettingsStore(qsettings=s)
+
+    assert settstore.get_use_timestamp(default=not expected) is expected
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        ("true", True),
+        ("false", False),
+        ("1", True),
+        ("0", False),
+        ("yes", True),
+        ("no", False),
+        ("on", True),
+        ("off", False),
+    ],
+)
+def test_settings_store_fast_encoding_bool_variants(stored, expected):
+    s = InMemoryQSettings()
+    s.setValue("recording/fast_encoding", stored)
+
+    settstore = store.DLCLiveGUISettingsStore(qsettings=s)
+
+    assert settstore.get_fast_encoding(default=not expected) is expected
