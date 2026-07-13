@@ -18,8 +18,12 @@ from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import camera_identity_key
 
 # from dlclivegui.config import CameraSettings
-from dlclivegui.config import SINGLE_CAMERA_WORKER_DO_LOG_TIMING, CameraTriggerSettings, CameraSettings
-from dlclivegui.config import MULTI_CAMERA_WORKER_DO_LOG_TIMING, SINGLE_CAMERA_WORKER_DO_LOG_TIMING, CameraSettings
+from dlclivegui.config import (
+    MULTI_CAMERA_WORKER_DO_LOG_TIMING,
+    SINGLE_CAMERA_WORKER_DO_LOG_TIMING,
+    CameraSettings,
+    CameraTriggerSettings,
+)
 from dlclivegui.utils.stats import WorkerTimingStats
 
 LOGGER = logging.getLogger(__name__)
