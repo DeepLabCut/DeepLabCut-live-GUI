@@ -185,6 +185,89 @@ class GenTLCameraBackend(CameraBackend):
             "hardware_trigger": SupportLevel.BEST_EFFORT,
         }
 
+    def _debug_trigger_nodes(self, node_map, *, context: str = "") -> None:
+        names = (
+            "TriggerMode",
+            "TriggerSelector",
+            "TriggerSource",
+            "TriggerActivation",
+            "AcquisitionMode",
+            # Generic line nodes, if available.
+            "LineSelector",
+            "LineMode",
+            "LineSource",
+            # TIS 37U / DMK 37BUX287 strobe/output nodes.
+            "GPIn",
+            "GPOut",
+            "StrobeEnable",
+            "StrobePolarity",
+            "StrobeOperation",
+            "StrobeDuration",
+            "StrobeDelay",
+        )
+
+        label = f"GenTL trigger debug {context}".strip()
+
+        for name in names:
+            node = self._node(node_map, name)
+            if node is None:
+                continue
+
+            value = self._node_value(node_map, name, None)
+
+            extras = []
+
+            symbolics = self._node_symbolics(node)
+            if symbolics:
+                extras.append(f"symbolics={symbolics}")
+
+            for attr in ("access_mode", "is_writable", "is_readable"):
+                try:
+                    extras.append(f"{attr}={getattr(node, attr)}")
+                except Exception:
+                    pass
+
+            LOG.debug("%s: %s=%r %s", label, name, value, " ".join(extras))
+
+    def _debug_frame_rate_nodes(self, node_map, *, context: str = "") -> None:
+        names = (
+            "AcquisitionFrameRateEnable",
+            "AcquisitionFrameRateControlEnable",
+            "AcquisitionFrameRate",
+            "AcquisitionFrameRateAbs",
+            "AcquisitionResultingFrameRate",
+            "ResultingFrameRate",
+            "AcquisitionFrameRateResulting",
+            "DeviceFrameRate",
+            "ExposureAuto",
+            "ExposureTime",
+            "ExposureTimeAbs",
+            "DeviceLinkThroughputLimit",
+            "DeviceLinkThroughputLimitMode",
+            "PayloadSize",
+            "Width",
+            "Height",
+            "PixelFormat",
+        )
+
+        label = f"GenTL FPS debug {context}".strip()
+
+        for name in names:
+            node = self._node(node_map, name)
+            if node is None:
+                continue
+
+            value = self._node_value(node_map, name, None)
+
+            extras = []
+            for attr in ("min", "max", "inc"):
+                try:
+                    extras.append(f"{attr}={getattr(node, attr)}")
+                except Exception:
+                    pass
+
+            LOG.debug("%s: %s=%r %s", label, name, value, " ".join(extras))
+
     # ------------------------------------------------------------------
     # Discovery
     # ------------------------------------------------------------------
@@ -462,6 +545,7 @@ class GenTLCameraBackend(CameraBackend):
 
                     self._configure_trigger(node_map)
                     self._apply_effective_fetch_timeout()
+                    self._debug_trigger_nodes(node_map, context="after configuration before acquisition")
 
                     actual_trigger = self._trigger_to_dict(self._trigger)
                     actual_trigger["fetch_timeout"] = self._timeout
@@ -1016,6 +1100,32 @@ class GenTLCameraBackend(CameraBackend):
             return None
 
     @staticmethod
+    def _node_value(node_map, name: str, default=None):
+        """Best-effort read of a GenICam node value.
+
+        Debug helpers must not make open() fail just because a value cannot be read.
+        Harvesters-style fake/test nodes usually expose `.value`; some SDK-style
+        nodes may expose `GetValue()`.
+        """
+        node = GenTLCameraBackend._node(node_map, name)
+        if node is None:
+            return default
+
+        try:
+            return node.value
+        except Exception:
+            pass
+
+        try:
+            getter = getattr(node, "GetValue", None)
+            if getter is not None:
+                return getter()
+        except Exception:
+            pass
+
+        return default
+
+    @staticmethod
     def _node_symbolics(node) -> list[str]:
         try:
             return list(getattr(node, "symbolics", []) or [])
@@ -1214,16 +1324,35 @@ class GenTLCameraBackend(CameraBackend):
     def _configure_trigger_input(self, node_map, cfg, *, strict: bool = False) -> None:
         role = str(self._trigger_attr(cfg, "role", "external") or "external").strip().lower()
         selector = str(self._trigger_attr(cfg, "selector", "FrameStart") or "FrameStart")
-        source = str(self._trigger_attr(cfg, "source", "Line0") or "Line0")
         activation = str(self._trigger_attr(cfg, "activation", "RisingEdge") or "RisingEdge")
+        source = str(self._trigger_attr(cfg, "source", "auto") or "auto").strip()
 
         # Disable trigger while changing trigger-related nodes.
         self._set_enum_node(node_map, "TriggerMode", "Off", strict=False)
 
         selector_ok = self._set_enum_node(node_map, "TriggerSelector", selector, strict=strict)
-        source, source_resolved = self._resolve_trigger_source(node_map, source, strict=strict)
-        source_ok = source_resolved and self._set_enum_node(node_map, "TriggerSource", source, strict=strict)
-        activation_ok = self._set_enum_node(node_map, "TriggerActivation", activation, strict=strict)
+
+        resolved_source, source_supported = self._resolve_trigger_source(
+            node_map,
+            source,
+            strict=strict,
+        )
+
+        source_ok = False
+        if source_supported:
+            source_ok = self._set_enum_node(
+                node_map,
+                "TriggerSource",
+                resolved_source,
+                strict=strict,
+            )
+
+        activation_ok = self._set_enum_node(
+            node_map,
+            "TriggerActivation",
+            activation,
+            strict=False,
+        )
 
         # TriggerSelector and TriggerSource are required routing nodes.
         # If either failed in non-strict mode, do not arm TriggerMode=On.
@@ -1232,12 +1361,13 @@ class GenTLCameraBackend(CameraBackend):
             LOG.warning(
                 "Could not apply GenTL trigger input routing "
                 "(selector_ok=%s, source_ok=%s); disabling trigger. "
-                "requested role=%s selector=%s source=%s activation=%s",
+                "requested role=%s selector=%s source=%s resolved_source=%s activation=%s",
                 selector_ok,
                 source_ok,
                 role,
                 selector,
                 source,
+                resolved_source,
                 activation,
             )
             self._configure_trigger_off(node_map, strict=False)
@@ -1259,54 +1389,153 @@ class GenTLCameraBackend(CameraBackend):
             return
 
         LOG.info(
-            "GenTL trigger input configured: role=%s selector=%s source=%s activation=%s activation_ok=%s",
+            "GenTL trigger input configured: role=%s selector=%s source_requested=%s "
+            "source=%s activation=%s selector_ok=%s source_ok=%s activation_ok=%s",
             role,
             selector,
             source,
+            resolved_source,
             activation,
+            selector_ok,
+            source_ok,
             activation_ok,
         )
 
     def _configure_trigger_master(self, node_map, cfg, *, strict: bool = False) -> None:
+        """Configure this camera as a free-running master that emits STROBE_OUT pulses.
+
+        For DMK 37BUX287 / TIS 37U series, the physical output is controlled by
+        StrobeEnable/StrobePolarity/StrobeOperation rather than SFNC LineSelector/
+        LineMode/LineSource nodes.
+        """
         output_line = str(self._trigger_attr(cfg, "output_line", "Line2") or "Line2")
         output_source = str(self._trigger_attr(cfg, "output_source", "ExposureActive") or "ExposureActive")
 
-        # Master camera runs freerun and exposes an output signal.
+        # Optional extra fields if present in trigger dict/model.
+        strobe_polarity = str(self._trigger_attr(cfg, "strobe_polarity", "ActiveHigh") or "ActiveHigh")
+        strobe_operation = str(self._trigger_attr(cfg, "strobe_operation", "Exposure") or "Exposure")
+        strobe_duration = self._trigger_attr(cfg, "strobe_duration", None)
+        strobe_delay = self._trigger_attr(cfg, "strobe_delay", None)
+
+        # Master camera should be free-running.
         self._configure_trigger_off(node_map, strict=False)
 
-        line_selected = self._set_enum_node(
-            node_map,
-            "LineSelector",
-            output_line,
-            strict=strict,
-        )
+        # ------------------------------------------------------------------
+        # Preferred path for The Imaging Source 37U / DMK 37BUX287:
+        # StrobeEnable, StrobePolarity, StrobeOperation, StrobeDuration, StrobeDelay
+        # ------------------------------------------------------------------
+        strobe_enable_node = self._node(node_map, "StrobeEnable")
 
-        # In non-strict mode, do not continue configuring output behavior if the
-        # requested line could not be selected. Otherwise we may accidentally drive
-        # whichever GPIO line the camera had selected previously/defaulted to.
-        if not line_selected:
+        if strobe_enable_node is not None:
+            # Disable first while changing parameters.
+            self._set_enum_node(node_map, "StrobeEnable", "Off", strict=False)
+
+            polarity_ok = self._set_enum_node(
+                node_map,
+                "StrobePolarity",
+                strobe_polarity,
+                strict=False,
+            )
+
+            operation_ok = self._set_enum_node(
+                node_map,
+                "StrobeOperation",
+                strobe_operation,
+                strict=False,
+            )
+
+            if strobe_duration is not None:
+                try:
+                    node = self._node(node_map, "StrobeDuration")
+                    if node is not None:
+                        node.value = int(strobe_duration)
+                        LOG.info("Configured GenTL StrobeDuration=%s", int(strobe_duration))
+                except Exception as exc:
+                    if strict:
+                        raise RuntimeError(f"Failed to set StrobeDuration={strobe_duration}: {exc}") from exc
+                    LOG.warning("Failed to set StrobeDuration=%s: %s", strobe_duration, exc)
+
+            if strobe_delay is not None:
+                try:
+                    node = self._node(node_map, "StrobeDelay")
+                    if node is not None:
+                        node.value = int(strobe_delay)
+                        LOG.info("Configured GenTL StrobeDelay=%s", int(strobe_delay))
+                except Exception as exc:
+                    if strict:
+                        raise RuntimeError(f"Failed to set StrobeDelay={strobe_delay}: {exc}") from exc
+                    LOG.warning("Failed to set StrobeDelay=%s: %s", strobe_delay, exc)
+
+            enable_ok = self._set_enum_node(
+                node_map,
+                "StrobeEnable",
+                "On",
+                strict=strict,
+            )
+
+            if enable_ok:
+                LOG.info(
+                    "GenTL trigger master configured via Strobe*: "
+                    "StrobeEnable=On StrobePolarity=%s polarity_ok=%s "
+                    "StrobeOperation=%s operation_ok=%s",
+                    strobe_polarity,
+                    polarity_ok,
+                    strobe_operation,
+                    operation_ok,
+                )
+                return
+
+            if strict:
+                raise RuntimeError("Could not enable GenTL StrobeEnable=On")
+
             LOG.warning(
-                "Could not select GenTL output line '%s'; skipping trigger output configuration.",
+                "StrobeEnable node exists but could not be enabled; falling back to generic Line* output configuration."
+            )
+
+        # ------------------------------------------------------------------
+        # Generic SFNC fallback for cameras that expose LineSelector/LineMode/LineSource.
+        # ------------------------------------------------------------------
+        line_selector = self._node(node_map, "LineSelector")
+        if line_selector is not None:
+            line_selected = self._set_enum_node(
+                node_map,
+                "LineSelector",
                 output_line,
+                strict=strict,
             )
-            return
 
-        mode_ok = self._set_enum_node(node_map, "LineMode", "Output", strict=strict)
-        source_ok = self._set_enum_node(node_map, "LineSource", output_source, strict=strict)
+            if not line_selected:
+                LOG.warning(
+                    "Could not select GenTL output line '%s'; skipping Line* output configuration.",
+                    output_line,
+                )
+            else:
+                mode_ok = self._set_enum_node(node_map, "LineMode", "Output", strict=strict)
+                source_ok = self._set_enum_node(node_map, "LineSource", output_source, strict=strict)
 
-        if not (mode_ok and source_ok):
-            LOG.warning(
-                "GenTL trigger master output configuration incomplete (LineMode ok=%s, LineSource ok=%s).",
-                mode_ok,
-                source_ok,
-            )
-            return
+                if mode_ok and source_ok:
+                    LOG.info(
+                        "GenTL trigger master configured via Line*: output_line=%s output_source=%s",
+                        output_line,
+                        output_source,
+                    )
+                    return
 
-        LOG.info(
-            "GenTL trigger master configured: output_line=%s output_source=%s",
-            output_line,
-            output_source,
+                LOG.warning(
+                    "GenTL Line* trigger output configuration incomplete (LineMode ok=%s, LineSource ok=%s).",
+                    mode_ok,
+                    source_ok,
+                )
+
+        msg = (
+            "Could not configure GenTL trigger master output. "
+            "No supported Strobe* or Line* output path was successfully configured."
         )
+
+        if strict:
+            raise RuntimeError(msg)
+
+        LOG.warning(msg)
 
     def _restore_trigger_idle(self, node_map) -> None:
         """Best-effort restore to a safe non-triggering state after acquisition stops.
