@@ -1,8 +1,111 @@
 # dlclivegui/utils/stats.py
 from __future__ import annotations
 
+import logging
+import time
+
 from dlclivegui.services.dlc_processor import ProcessorStats
 from dlclivegui.services.video_recorder import RecorderStats
+
+
+class WorkerTimingStats:
+    """Tiny timing accumulator for camera worker performance diagnostics.
+
+    Usage:
+        with stats.measure("read"):
+            frame, ts = backend.read()
+
+    Logs aggregate timings once per log_interval seconds.
+    """
+
+    def __init__(
+        self, camera_id: str, *, logger: logging.Logger | None = None, log_interval: float = 1.0, enabled: bool = True
+    ):
+        self.camera_id = camera_id
+        self.log_interval = float(log_interval)
+        self.enabled = bool(enabled)
+        self.logger = logger or logging.getLogger(__name__)
+        if self.enabled:  # force logger to proper level
+            if not self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.setLevel(logging.DEBUG)
+
+        self._last_log = time.perf_counter()
+        self._frames = 0
+        self._timeouts = 0
+        self._errors = 0
+        self._totals: dict[str, float] = {}
+        self._counts: dict[str, int] = {}
+
+    class _Measure:
+        def __init__(self, parent: WorkerTimingStats, name: str):
+            self.parent = parent
+            self.name = name
+            self.t0 = 0.0
+
+        def __enter__(self):
+            if self.parent.enabled:
+                self.t0 = time.perf_counter()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            if not self.parent.enabled:
+                return False
+
+            dt = time.perf_counter() - self.t0
+            self.parent._totals[self.name] = self.parent._totals.get(self.name, 0.0) + dt
+            self.parent._counts[self.name] = self.parent._counts.get(self.name, 0) + 1
+            return False
+
+    def measure(self, name: str):
+        return self._Measure(self, name)
+
+    def note_frame(self) -> None:
+        if self.enabled:
+            self._frames += 1
+
+    def note_timeout(self) -> None:
+        if self.enabled:
+            self._timeouts += 1
+
+    def note_error(self) -> None:
+        if self.enabled:
+            self._errors += 1
+
+    def maybe_log(self) -> None:
+        if not self.enabled:
+            return
+
+        now = time.perf_counter()
+        elapsed = now - self._last_log
+        if elapsed < self.log_interval:
+            return
+
+        fps = self._frames / max(elapsed, 1e-9)
+
+        parts = [
+            f"[Worker {self.camera_id}]",
+            f"fps={fps:.1f}",
+            f"frames={self._frames}",
+        ]
+
+        if self._timeouts:
+            parts.append(f"timeouts={self._timeouts}")
+        if self._errors:
+            parts.append(f"errors={self._errors}")
+
+        for name in sorted(self._totals):
+            count = max(self._counts.get(name, 0), 1)
+            avg_ms = 1000.0 * self._totals[name] / count
+            parts.append(f"avg_{name}_ms={avg_ms:.3f}")
+
+        self.logger.debug(" ".join(parts))
+
+        self._last_log = now
+        self._frames = 0
+        self._timeouts = 0
+        self._errors = 0
+        self._totals.clear()
+        self._counts.clear()
 
 
 def format_recorder_stats(stats: RecorderStats) -> str:

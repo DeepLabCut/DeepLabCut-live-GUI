@@ -12,6 +12,13 @@ Rotation = Literal[0, 90, 180, 270]
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
 Precision = Literal["FP32", "FP16"]
 ModelType = Literal["pytorch", "tensorflow"]
+TriggerRole = Literal["off", "external", "master", "follower"]
+TriggerActivation = Literal["RisingEdge", "FallingEdge", "AnyEdge", "LevelHigh", "LevelLow"]
+TriggerStrobePolarity = Literal["ActiveHigh", "ActiveLow"]
+TriggerStrobeOperation = Literal["Exposure", "FixedDuration"]
+
+SINGLE_CAMERA_WORKER_DO_LOG_TIMING = False
+MULTI_CAMERA_WORKER_DO_LOG_TIMING = True
 
 
 class CameraSettings(BaseModel):
@@ -37,6 +44,27 @@ class CameraSettings(BaseModel):
     rotation: Rotation = 0
     enabled: bool = True
     properties: dict[str, Any] = Field(default_factory=dict)
+
+    def pretty(self) -> str:
+        crop = (
+            "none"
+            if self.get_crop_region() is None
+            else f"({self.crop_x0}, {self.crop_y0}) -> ({self.crop_x1 or 'edge'}, {self.crop_y1 or 'edge'})"
+        )
+        return (
+            f"CameraSettings[\n"
+            f"  name={self.name!r}, index={self.index}, backend={self.backend!r}, enabled={self.enabled}\n"
+            f"  fps={self.fps}, size={self.width or 'auto'}x{self.height or 'auto'}, "
+            f"exposure={self.exposure or 'auto'}, gain={self.gain or 'auto'}\n"
+            f"  rotation={self.rotation}, crop={crop}\n"
+            f"]"
+        )
+
+    def __str__(self) -> str:
+        return self.pretty()
+
+    def __repr__(self) -> str:
+        return self.pretty()
 
     @field_validator("fps", mode="before")
     @classmethod
@@ -168,6 +196,158 @@ class CameraSettings(BaseModel):
                 pass
         return out
 
+    def backend_options(self, backend: str | None = None) -> dict[str, Any]:
+        key = backend or self.backend
+        props = self.properties if isinstance(self.properties, dict) else {}
+        ns = props.get(str(key).lower(), {})
+        return ns if isinstance(ns, dict) else {}
+
+    def get_trigger_settings(self, backend: str | None = None) -> CameraTriggerSettings:
+        ns = self.backend_options(backend)
+        return CameraTriggerSettings.from_any(ns.get("trigger"))
+
+    def set_trigger_settings(self, trigger: CameraTriggerSettings, backend: str | None = None) -> None:
+        key = backend or self.backend
+        if not isinstance(self.properties, dict):
+            self.properties = {}
+        ns = self.properties.setdefault(str(key).lower(), {})
+        if not isinstance(ns, dict):
+            ns = {}
+            self.properties[str(key).lower()] = ns
+        ns["trigger"] = trigger.to_properties()
+
+    def with_save_defaults(self) -> CameraSettings:
+        out = self.model_copy(deep=True)
+
+        backend = (out.backend or "").lower()
+        if backend != "gentl":
+            return out
+
+        if not isinstance(out.properties, dict):
+            out.properties = {}
+
+        ns = out.properties.setdefault("gentl", {})
+        if not isinstance(ns, dict):
+            ns = {}
+            out.properties["gentl"] = ns
+
+        ns.setdefault("trigger", CameraTriggerSettings().to_properties())
+
+        return out
+
+
+class CameraTriggerSettings(BaseModel):
+    """
+    Generic hardware-trigger settings.
+
+    Backend-specific code may ignore fields that are unsupported by a given
+    camera/SDK.
+
+    For GenTL/TIS DMK 37BUX287:
+      - follower/external maps mainly to TriggerMode, TriggerSelector,
+        TriggerActivation. TriggerSource may be read-only and is best-effort.
+      - master output maps primarily to StrobeEnable, StrobePolarity,
+        StrobeOperation, StrobeDuration, and StrobeDelay.
+    """
+
+    role: TriggerRole = "off"
+
+    # Input trigger config: external/follower
+    selector: str = "FrameStart"
+    source: str = "auto"
+    activation: TriggerActivation | str = "RisingEdge"
+
+    # Generic/SFNC output config: master fallback for cameras exposing Line* nodes.
+    output_line: str = "Line2"
+    output_source: str = "ExposureActive"
+
+    # Strobe output config: master path for TIS/DMK 37U cameras.
+    strobe_polarity: TriggerStrobePolarity | str = "ActiveHigh"
+    strobe_operation: TriggerStrobeOperation | str = "Exposure"
+    strobe_duration: int | None = None  # µs, used when strobe_operation=FixedDuration
+    strobe_delay: int | None = None  # µs
+
+    # Runtime behavior
+    timeout: float | None = None
+    strict: bool = False
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _coerce_role(cls, v):
+        if v is None:
+            return "off"
+
+        s = str(v).strip().lower()
+        aliases = {
+            "": "off",
+            "none": "off",
+            "false": "off",
+            "disabled": "off",
+            "disable": "off",
+            "off": "off",
+            "true": "external",
+            "on": "external",
+            "trigger": "external",
+            "triggered": "external",
+            "external": "external",
+            "follower": "follower",
+            "slave": "follower",
+            "master": "master",
+            "main": "master",
+        }
+        return aliases.get(s, s)
+
+    @field_validator("timeout", mode="before")
+    @classmethod
+    def _coerce_timeout(cls, v):
+        if v in (None, ""):
+            return None
+        try:
+            fv = float(v)
+        except Exception:
+            return None
+        return fv if fv > 0 else None
+
+    @field_validator("strobe_duration", "strobe_delay", mode="before")
+    @classmethod
+    def _coerce_optional_nonnegative_int(cls, v):
+        if v in (None, ""):
+            return None
+        try:
+            iv = int(float(v))
+        except Exception:
+            return None
+        return iv if iv >= 0 else None
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _coerce_source(cls, v):
+        if v is None:
+            return "auto"
+
+        s = str(v).strip()
+        if not s:
+            return "auto"
+
+        aliases = {
+            "default": "auto",
+            "automatic": "auto",
+            "device": "auto",
+            "camera": "auto",
+        }
+        return aliases.get(s.lower(), s)
+
+    @classmethod
+    def from_any(cls, value) -> CameraTriggerSettings:
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, dict):
+            return cls(**value)
+        return cls()
+
+    def to_properties(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True)
+
 
 class MultiCameraSettings(BaseModel):
     cameras: list[CameraSettings] = Field(default_factory=list)
@@ -206,11 +386,18 @@ class MultiCameraSettings(BaseModel):
         return cls(cameras=cameras, max_cameras=max_cameras, tile_layout=tile_layout)
 
     def to_dict(self) -> dict[str, Any]:
+        out = self.with_save_defaults()
         return {
-            "cameras": [cam.model_dump() for cam in self.cameras],
-            "max_cameras": self.max_cameras,
-            "tile_layout": self.tile_layout,
+            "cameras": [cam.model_dump() for cam in out.cameras],
+            "max_cameras": out.max_cameras,
+            "tile_layout": out.tile_layout,
         }
+
+    def with_save_defaults(self) -> MultiCameraSettings:
+        """Return a copy with save defaults applied to all cameras."""
+        out = self.model_copy(deep=True)
+        out.cameras = [cam.with_save_defaults() for cam in out.cameras]
+        return out
 
 
 class DynamicCropModel(BaseModel):
@@ -377,10 +564,13 @@ class ApplicationSettings(BaseModel):
         )
 
     def to_dict(self) -> dict[str, Any]:
+        camera = self.camera.with_save_defaults()
+        multi_camera = self.multi_camera.with_save_defaults()
+
         return {
             "version": self.version,
-            "camera": self.camera.model_dump(),
-            "multi_camera": self.multi_camera.to_dict(),
+            "camera": camera.model_dump(),
+            "multi_camera": multi_camera.to_dict(),
             "dlc": self.dlc.model_dump(),
             "recording": self.recording.model_dump(),
             "bbox": self.bbox.model_dump(),
