@@ -122,61 +122,6 @@ def test_initialization_failure(qtbot, monkeypatch):
 
 
 @pytest.mark.unit
-def test_controller_uses_stable_camera_id_not_display_id(qtbot, patch_factory):
-    mc = MultiCameraController()
-
-    cam = CameraSettings(
-        name="C1",
-        backend="gentl",
-        index=0,
-        fps=30.0,
-        enabled=True,
-        properties={
-            "gentl": {
-                "device_id": "serial:SER0",
-                "serial_number": "SER0",
-            }
-        },
-    ).apply_defaults()
-
-    stable_id = get_camera_id(cam)
-    display_id = get_display_id(cam)
-
-    assert stable_id == "gentl:serial:SER0"
-    assert display_id == "gentl:0"
-    assert stable_id != display_id
-
-    seen = []
-
-    def on_ready(mfd):
-        seen.append(mfd)
-
-    mc.frame_ready.connect(on_ready)
-
-    try:
-        with qtbot.waitSignal(mc.all_started, timeout=1500):
-            mc.start([cam])
-
-        qtbot.waitUntil(lambda: bool(seen), timeout=2000)
-
-        mfd = seen[-1]
-
-        assert mfd.source_camera_id == stable_id
-        assert stable_id in mfd.frames
-        assert stable_id in mfd.timestamps
-
-        assert display_id not in mfd.frames
-        assert display_id not in mfd.timestamps
-
-        assert mfd.display_ids is not None
-        assert mfd.display_ids[stable_id] == display_id
-
-    finally:
-        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
-            mc.stop(wait=True)
-
-
-@pytest.mark.unit
 def test_get_camera_id_prefers_stable_device_id():
     cam = CameraSettings(
         name="GenTL Cam",
@@ -411,12 +356,9 @@ def test_controller_uses_stable_camera_id_not_display_id(qtbot, patch_factory):
     assert stable_id == "gentl:serial:SER0"
     assert display_id == "C1"
     assert stable_id != display_id
+
     seen = []
-
-    def on_ready(mfd):
-        seen.append(mfd)
-
-    mc.frame_ready.connect(on_ready)
+    mc.frame_ready.connect(seen.append)
 
     try:
         with qtbot.waitSignal(mc.all_started, timeout=1500):
@@ -426,12 +368,9 @@ def test_controller_uses_stable_camera_id_not_display_id(qtbot, patch_factory):
 
         mfd = seen[-1]
 
-        assert stable_id in mfd.frames
-        assert mfd.display_ids[stable_id] == "C1"
         assert mfd.source_camera_id == stable_id
         assert stable_id in mfd.frames
         assert stable_id in mfd.timestamps
-
         assert display_id not in mfd.frames
         assert display_id not in mfd.timestamps
 
