@@ -325,6 +325,7 @@ class MultiCameraController(QObject):
 
         self._gui_display_last_emit = now
         return True
+
     def _log_trigger_wait_throttled(self, exc: BaseException) -> None:
         """Log hardware-trigger wait timeouts at a controlled rate.
 
