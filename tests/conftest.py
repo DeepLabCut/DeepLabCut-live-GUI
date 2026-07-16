@@ -154,6 +154,18 @@ def fake_backend_factory(fake_backend_cls):
 # ---------------------------------------------------------------------
 # Test doubles
 # ---------------------------------------------------------------------
+class FakeRunner:
+    """Minimal fake DLCLive runner used by DLCLiveProcessor._process_frame."""
+
+    def __init__(self, parent):
+        self._parent = parent
+        self.device = "cpu"
+        self.model = None
+        self.net = None
+
+    def get_pose(self, processed_frame):
+        self._parent.pose_calls += 1
+        return np.ones((2, 3), dtype=float)
 
 
 class FakeDLCLive:
@@ -163,13 +175,30 @@ class FakeDLCLive:
         self.opts = opts
         self.init_called = False
         self.pose_calls = 0
+        self.process_frame_calls = 0
+
+        self.processor = opts.get("processor")
+        self.cfg = {"fake": True}
+        self.runner = FakeRunner(self)
+        self.pose = None
 
     def init_inference(self, frame):
         self.init_called = True
 
+    def process_frame(self, frame):
+        self.process_frame_calls += 1
+        return frame
+
     def get_pose(self, frame, frame_time=None):
+        # Keep this for compatibility with older tests, but production code now
+        # uses self.runner.get_pose(...).
         self.pose_calls += 1
         return np.ones((2, 3), dtype=float)
+
+    def _post_process_pose(self, processed_frame, frame_time=None):
+        if self.pose is None:
+            self.pose = self.runner.get_pose(processed_frame)
+        return self.pose
 
 
 @pytest.fixture
@@ -325,7 +354,7 @@ def start_all_spy(monkeypatch, tmp_path):
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
 
-    from dlclivegui.gui import recording_manager as rm_mod
+    from dlclivegui.services import recording_manager as rm_mod
 
     monkeypatch.setattr(rm_mod.RecordingManager, "start_all", _fake_start_all)
     return calls
@@ -409,7 +438,7 @@ def recording_settings(app_config_two_cams):
 
 @pytest.fixture
 def patch_video_recorder(monkeypatch):
-    import dlclivegui.gui.recording_manager as rm_mod
+    import dlclivegui.services.recording_manager as rm_mod
 
     monkeypatch.setattr(rm_mod, "VideoRecorder", FakeVideoRecorder)
     return FakeVideoRecorder
@@ -428,7 +457,7 @@ def recording_frame_spy(monkeypatch, window):
 
 @pytest.fixture
 def patch_build_run_dir(monkeypatch, tmp_path):
-    import dlclivegui.gui.recording_manager as rm_mod
+    import dlclivegui.services.recording_manager as rm_mod
 
     spy = {"session_dir": None, "use_timestamp": None}
     run_dir = tmp_path / "videos" / "Sess_SANITIZED" / "run_TEST"

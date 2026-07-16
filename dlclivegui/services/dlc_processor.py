@@ -16,9 +16,11 @@ from typing import Any
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from dlclivegui.config import DLCProcessorSettings, ModelType
+from dlclivegui.config import DLC_DO_LOG_TIMING, DLCProcessorSettings, ModelType
 from dlclivegui.processors.processor_utils import instantiate_from_scan
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
+from dlclivegui.utils.stats import WorkerTimingStats
+from dlclivegui.utils.utils import format_thread_stack
 
 logger = logging.getLogger(__name__)
 STOP_WORKER_TIMEOUT = 10.0  # # seconds to wait in STOPPING state before scheduling background reaping
@@ -181,6 +183,13 @@ class DLCLiveProcessor(QObject):
         self._gpu_inference_times: deque[float] = deque(maxlen=60)
         self._processor_overhead_times: deque[float] = deque(maxlen=60)
 
+        self._timing = WorkerTimingStats(
+            "DLCLiveProcessor",
+            logger=logger,
+            log_interval=1.0,
+            enabled=bool(DLC_DO_LOG_TIMING or ENABLE_PROFILING),
+        )
+
     @staticmethod
     def get_model_backend(model_path: str) -> Engine:
         return Engine.from_model_path(model_path)
@@ -232,24 +241,40 @@ class DLCLiveProcessor(QObject):
     def enqueue_frame(self, frame: np.ndarray, timestamp: float) -> None:
         # Keep lifecycle lock held only for quick state checks and snapshots.
         with self._lifecycle_lock:
-            if self._state in (WorkerState.STOPPING, WorkerState.FAULTED) or self._stop_event.is_set():
+            if (
+                self._state in (WorkerState.STOPPING, WorkerState.FAULTED, WorkerState.STARTING)
+                or self._stop_event.is_set()
+            ):
                 return
             t = self._worker_thread
             q = self._queue
             should_start = t is None or not t.is_alive()
 
-        frame_c = frame.copy()
+        with self._timing.measure("DLC.enqueue.copy_frame"):
+            frame_c = frame.copy()
         enq_time = time.perf_counter()
 
         if should_start:
             # Re-acquire the lifecycle lock to safely (re)start the worker if needed.
             with self._lifecycle_lock:
                 # Re-check state in case it changed while we were copying the frame.
-                if self._state in (WorkerState.STOPPING, WorkerState.FAULTED) or self._stop_event.is_set():
+                if (
+                    self._state in (WorkerState.STOPPING, WorkerState.FAULTED, WorkerState.STARTING)
+                    or self._stop_event.is_set()
+                ):
                     return
                 t = self._worker_thread
                 if t is None or not t.is_alive():
-                    # _start_worker_locked expects the lifecycle lock to be held.
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Starting DLC worker from first frame: "
+                            "shape=%s dtype=%s contiguous=%s strides=%s timestamp=%.6f",
+                            frame_c.shape,
+                            frame_c.dtype,
+                            frame_c.flags["C_CONTIGUOUS"],
+                            frame_c.strides,
+                            timestamp,
+                        )
                     self._start_worker_locked(frame_c, timestamp)
                     return
                 # Worker is now running; refresh queue snapshot.
@@ -258,13 +283,30 @@ class DLCLiveProcessor(QObject):
         if q is None:
             return
 
-        try:
-            q.put_nowait((frame_c, timestamp, enq_time))
-            with self._stats_lock:
-                self._frames_enqueued += 1
-        except queue.Full:
-            with self._stats_lock:
-                self._frames_dropped += 1
+        item = (frame_c, timestamp, enq_time)
+
+        while True:
+            try:
+                with self._timing.measure("DLC.enqueue.put"):
+                    q.put_nowait(item)
+                with self._stats_lock:
+                    self._frames_enqueued += 1
+                return
+
+            except queue.Full:
+                try:
+                    with self._timing.measure("DLC.enqueue.drop_stale"):
+                        q.get_nowait()
+                        try:
+                            q.task_done()
+                        except ValueError:
+                            pass
+
+                    with self._stats_lock:
+                        self._frames_dropped += 1
+
+                except queue.Empty:
+                    continue
 
     def get_stats(self) -> ProcessorStats:
         """Get current processing statistics."""
@@ -317,11 +359,91 @@ class DLCLiveProcessor(QObject):
                 avg_processor_overhead=avg_proc_overhead,
             )
 
+    def _debug_log_dlc_runner_device(self) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+
+        try:
+            import torch
+
+            logger.debug(
+                "Torch CUDA state: available=%s built=%s device_count=%s current_device=%s device_name=%s "
+                "allocated=%.2fMB reserved=%.2fMB",
+                torch.cuda.is_available(),
+                torch.backends.cuda.is_built(),
+                torch.cuda.device_count(),
+                torch.cuda.current_device() if torch.cuda.is_available() else None,
+                torch.cuda.get_device_name(0) if torch.cuda.is_available() and torch.cuda.device_count() else None,
+                torch.cuda.memory_allocated(0) / (1024 * 1024) if torch.cuda.is_available() else 0.0,
+                torch.cuda.memory_reserved(0) / (1024 * 1024) if torch.cuda.is_available() else 0.0,
+            )
+        except Exception:
+            logger.debug("Could not query torch CUDA state", exc_info=True)
+
+        dlc = self._dlc
+        runner = getattr(dlc, "runner", None)
+
+        logger.debug(
+            "DLCLive runner: type=%s runner.device=%r runner.model=%r runner.net=%r",
+            type(runner).__name__ if runner is not None else None,
+            getattr(runner, "device", None),
+            type(getattr(runner, "model", None)).__name__ if getattr(runner, "model", None) is not None else None,
+            type(getattr(runner, "net", None)).__name__ if getattr(runner, "net", None) is not None else None,
+        )
+
+        seen: set[int] = set()
+
+        def walk(obj, path: str, depth: int = 0) -> None:
+            if obj is None or depth > 7:
+                return
+
+            oid = id(obj)
+            if oid in seen:
+                return
+            seen.add(oid)
+
+            try:
+                params = getattr(obj, "parameters", None)
+                if callable(params):
+                    first_param = next(iter(params()), None)
+                    if first_param is not None:
+                        logger.debug(
+                            "Torch module at %s: parameter device=%s is_cuda=%s dtype=%s shape=%s",
+                            path,
+                            first_param.device,
+                            first_param.is_cuda,
+                            first_param.dtype,
+                            tuple(first_param.shape),
+                        )
+            except Exception:
+                pass
+
+            for name in (
+                "runner",
+                "model",
+                "net",
+                "pose_model",
+                "dlc_model",
+                "module",
+                "engine",
+                "predictor",
+                "detector",
+                "backbone",
+            ):
+                try:
+                    child = getattr(obj, name, None)
+                except Exception:
+                    child = None
+                if child is not None:
+                    walk(child, f"{path}.{name}", depth + 1)
+
+        walk(self._dlc, "self._dlc")
+
     def _start_worker_locked(self, init_frame: np.ndarray, init_timestamp: float) -> None:
         # lifecycle_lock must already be held
         if self._worker_thread is not None and self._worker_thread.is_alive():
             return
-        self._queue = queue.Queue(maxsize=1)
+        self._queue = None
         self._stop_event.clear()
         self._state = WorkerState.STARTING
         self._worker_thread = threading.Thread(
@@ -349,7 +471,7 @@ class DLCLiveProcessor(QObject):
         t.join(timeout=STOP_WORKER_TIMEOUT)
         if t.is_alive():
             qsize = self._queue.qsize() if self._queue is not None else -1
-            logger.warning("DLC worker thread did not terminate cleanly (qsize=%s)", qsize)
+            logger.warning("DLC worker thread did not terminate cleanly (qsize=%s)\n%s", qsize, format_thread_stack(t))
             self._schedule_reap(t)
             return False
 
@@ -412,7 +534,8 @@ class DLCLiveProcessor(QObject):
         def timed_process(pose, _op=original, _holder=holder, **kwargs):
             start = time.perf_counter()
             try:
-                return _op(pose, **kwargs)
+                with self._timing.measure("DLC.processor.process"):
+                    return _op(pose, **kwargs)
             finally:
                 _holder[0] = time.perf_counter() - start
 
@@ -422,6 +545,24 @@ class DLCLiveProcessor(QObject):
         finally:
             # Restore even if inference/errors occur
             self._processor.process = original
+
+    @staticmethod
+    def _prepare_input_frame(frame: np.ndarray) -> np.ndarray:
+        """Normalize camera frames for DLCLive inference."""
+        arr = np.asarray(frame)
+
+        if arr.ndim == 2:
+            # Mono8 / grayscale -> 3-channel
+            arr = np.repeat(arr[:, :, None], 3, axis=2)
+        elif arr.ndim == 3 and arr.shape[2] == 4:
+            arr = arr[:, :, :3]
+        elif arr.ndim != 3 or arr.shape[2] != 3:
+            raise ValueError(f"Unsupported DLCLive input frame shape: {arr.shape}")
+
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8, copy=False)
+
+        return np.ascontiguousarray(arr)
 
     def _process_frame(
         self,
@@ -438,11 +579,23 @@ class DLCLiveProcessor(QObject):
         if self._dlc is None:
             raise RuntimeError("DLCLive instance is not initialized.")
         # Time GPU inference (and processor overhead when present)
+        with self._timing.measure("DLC.prepare_frame"):
+            frame = self._prepare_input_frame(frame)
         with self._timed_processor() as proc_holder:
             inference_start = time.perf_counter()
-            raw_pose: Any = self._dlc.get_pose(frame, frame_time=timestamp)
+
+            with self._timing.measure("DLC.process_frame"):
+                processed_frame = self._dlc.process_frame(frame)
+
+            with self._timing.measure("DLC.runner.get_pose"):
+                self._dlc.pose = self._dlc.runner.get_pose(processed_frame)
+
+            with self._timing.measure("DLC.post_process_pose"):
+                raw_pose: Any = self._dlc._post_process_pose(processed_frame, frame_time=timestamp)
+
             inference_time = time.perf_counter() - inference_start
-        pose_arr: np.ndarray = validate_pose_array(raw_pose, source_backend=PoseBackends.DLC_LIVE)
+        with self._timing.measure("DLC.validate_pose"):
+            pose_arr: np.ndarray = validate_pose_array(raw_pose, source_backend=PoseBackends.DLC_LIVE)
         pose_packet = PosePacket(
             schema_version=0,
             keypoints=pose_arr,
@@ -460,7 +613,8 @@ class DLCLiveProcessor(QObject):
 
         # Emit pose (measure signal overhead)
         signal_start = time.perf_counter()
-        self.pose_ready.emit(PoseResult(pose=pose_packet.keypoints, timestamp=timestamp, packet=pose_packet))
+        with self._timing.measure("DLC.emit.pose_ready"):
+            self.pose_ready.emit(PoseResult(pose=pose_packet.keypoints, timestamp=timestamp, packet=pose_packet))
         signal_time = time.perf_counter() - signal_start
 
         end_ts = time.perf_counter()
@@ -481,6 +635,8 @@ class DLCLiveProcessor(QObject):
                 self._gpu_inference_times.append(gpu_inference_time)
                 self._processor_overhead_times.append(processor_overhead)
 
+        self._timing.note_frame()
+        self._timing.maybe_log()
         self.frame_processed.emit()
 
     def _worker_loop(self, init_frame: np.ndarray, init_timestamp: float) -> None:
@@ -489,60 +645,98 @@ class DLCLiveProcessor(QObject):
             if not self._settings.model_path:
                 raise RuntimeError("No DLCLive model path configured.")
 
-            init_start = time.perf_counter()
-            dyn = self._settings.dynamic
-            if not isinstance(dyn, (list, tuple)) or len(dyn) != 3:
-                try:
-                    dyn = dyn.to_tuple()
-                except Exception as e:
-                    raise RuntimeError("Invalid dynamic crop settings format.") from e
-            enabled, margin, max_missing = dyn
+            with self._timing.measure("DLC.build_options"):
+                dyn = self._settings.dynamic
+                if not isinstance(dyn, (list, tuple)) or len(dyn) != 3:
+                    try:
+                        dyn = dyn.to_tuple()
+                    except Exception as e:
+                        raise RuntimeError("Invalid dynamic crop settings format.") from e
+                enabled, margin, max_missing = dyn
 
-            options = {
-                "model_path": self._settings.model_path,
-                "model_type": self._settings.model_type,
-                "processor": self._processor,
-                "dynamic": [enabled, margin, max_missing],
-                "resize": self._settings.resize,
-                "precision": self._settings.precision,
-                "single_animal": self._settings.single_animal,
-            }
-            if self._settings.device is not None:
-                options["device"] = self._settings.device
+                options = {
+                    "model_path": self._settings.model_path,
+                    "model_type": self._settings.model_type,
+                    "processor": self._processor,
+                    "dynamic": [enabled, margin, max_missing],
+                    "resize": self._settings.resize,
+                    "precision": self._settings.precision,
+                    "single_animal": self._settings.single_animal,
+                }
+                if self._settings.device is not None:
+                    options["device"] = self._settings.device
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "DLC worker starting: model_path=%s model_type=%s device=%s "
+                    "init_frame_shape=%s dtype=%s contiguous=%s",
+                    self._settings.model_path,
+                    self._settings.model_type,
+                    self._settings.device,
+                    init_frame.shape,
+                    init_frame.dtype,
+                    init_frame.flags["C_CONTIGUOUS"],
+                )
 
             try:
                 if DLCLive is None:
                     raise RuntimeError(
                         "DLCLive class is not available. Ensure the dlclive package is installed and can be imported."
                     )
-                self._dlc = DLCLive(**options)
+                with self._timing.measure("DLC.construct"):
+                    self._dlc = DLCLive(**options)
+                self._timing.maybe_log()
             except Exception as exc:
+                self._timing.note_error()
+                self._timing.maybe_log()
                 with self._lifecycle_lock:
                     self._state = WorkerState.FAULTED
                 raise RuntimeError(
                     f"Failed to initialize DLCLive with model '{self._settings.model_path}': {exc}"
                 ) from exc
 
+            if self._stop_event.is_set():
+                logger.debug("DLC worker stop requested during construction; exiting before init_inference.")
+                return
+
+            with self._timing.measure("DLC.prepare_init_frame"):
+                init_frame = self._prepare_input_frame(init_frame)
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Calling DLCLive.init_inference with frame shape=%s dtype=%s contiguous=%s",
+                    init_frame.shape,
+                    init_frame.dtype,
+                    init_frame.flags["C_CONTIGUOUS"],
+                )
             # First inference to initialize
-            init_inference_start = time.perf_counter()
-            self._dlc.init_inference(init_frame)
-            init_inference_time = time.perf_counter() - init_inference_start
+            with self._timing.measure("DLC.init_inference"):
+                self._dlc.init_inference(init_frame)
+
+            self._debug_log_dlc_runner_device()
+            self._timing.note_frame()
+            self._timing.maybe_log()
+
+            if self._stop_event.is_set():
+                logger.debug("DLC worker stop requested after init_inference; exiting before RUNNING state.")
+                return
 
             # Pass DLCLive cfg to processor if available
             if hasattr(self._dlc, "processor") and hasattr(self._dlc.processor, "set_dlc_cfg"):
-                self._dlc.processor.set_dlc_cfg(getattr(self._dlc, "cfg", None))
+                with self._timing.measure("DLC.processor.set_dlc_cfg"):
+                    self._dlc.processor.set_dlc_cfg(getattr(self._dlc, "cfg", None))
 
             self._initialized = True
             self.initialized.emit(True)
             with self._lifecycle_lock:
+                if self._stop_event.is_set():
+                    logger.debug("DLC worker stop requested before RUNNING state; exiting.")
+                    return
+
+                self._queue = queue.Queue(maxsize=1)
                 self._state = WorkerState.RUNNING
 
-            total_init_time = time.perf_counter() - init_start
-            logger.info(
-                "DLCLive model initialized successfully (total: %.3fs, init_inference: %.3fs)",
-                total_init_time,
-                init_inference_time,
-            )
+            logger.info("DLCLive model initialized successfully")
 
             # Emit pose for init frame & update stats (not dequeued)
             self._process_frame(init_frame, init_timestamp, time.perf_counter(), queue_wait_time=0.0)
@@ -583,6 +777,8 @@ class DLCLiveProcessor(QObject):
                         try:
                             self._process_frame(frame, ts, enq, queue_wait_time=0.0)
                         except Exception as exc:
+                            self._timing.note_error()
+                            self._timing.maybe_log()
                             logger.exception("Pose inference failed", exc_info=exc)
                             self.error.emit(str(exc))
                         finally:
@@ -595,11 +791,14 @@ class DLCLiveProcessor(QObject):
             # Normal operation: timed get
             try:
                 wait_start = time.perf_counter()
-                item = q.get(timeout=0.05)
+                with self._timing.measure("DLC.queue_get"):
+                    item = q.get(timeout=0.05)
                 queue_wait_time = time.perf_counter() - wait_start
             except queue.Empty:
                 continue
             except Exception as exc:
+                self._timing.note_error()
+                self._timing.maybe_log()
                 logger.exception("Error getting item from queue", exc_info=exc)
                 with self._lifecycle_lock:
                     self._state = WorkerState.FAULTED
@@ -610,6 +809,8 @@ class DLCLiveProcessor(QObject):
                 frame, ts, enq = item
                 self._process_frame(frame, ts, enq, queue_wait_time=queue_wait_time)
             except Exception as exc:
+                self._timing.note_error()
+                self._timing.maybe_log()
                 logger.exception("Pose inference failed", exc_info=exc)
                 self.error.emit(str(exc))
             finally:
@@ -619,6 +820,8 @@ class DLCLiveProcessor(QObject):
                     pass
 
         logger.info("DLC worker thread exiting")
+
+        self._timing.maybe_log()
 
 
 class DLCService:

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QTimer
 
+from ...services.camera_controller import SingleCameraWorker
 from ...services.multi_camera_controller import MultiCameraController
 
 if TYPE_CHECKING:
@@ -56,7 +57,7 @@ class PreviewSession:
 
 
 def apply_rotation(frame, rotation):
-    return MultiCameraController.apply_rotation(frame, rotation)
+    return SingleCameraWorker.apply_rotation(frame, rotation)
 
 
 def apply_crop(frame, x0, y0, x1, y1):
@@ -66,7 +67,7 @@ def apply_crop(frame, x0, y0, x1, y1):
     x1 = max(x0, min(x1, w))
     y1 = max(y0, min(y1, h))
 
-    return MultiCameraController.apply_crop(frame, (x0, y0, x1, y1))
+    return SingleCameraWorker.apply_crop(frame, (x0, y0, x1, y1))
 
 
 def resize_to_fit(frame, max_w=400, max_h=300):

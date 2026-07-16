@@ -7,26 +7,25 @@ import logging
 import time
 from dataclasses import dataclass
 from functools import partial
-from threading import Event, Lock
+from threading import Lock
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 
-from dlclivegui.cameras import CameraFactory
-from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import camera_identity_key
 
 # from dlclivegui.config import CameraSettings
 from dlclivegui.config import (
     GUI_MAX_DISPLAY_FPS,
     MULTI_CAMERA_WORKER_DO_LOG_TIMING,
-    SINGLE_CAMERA_WORKER_DO_LOG_TIMING,
     CameraSettings,
     CameraTriggerSettings,
 )
 from dlclivegui.utils.stats import WorkerTimingStats
+
+from .camera_controller import SingleCameraWorker
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,181 +42,6 @@ class MultiFrameData:
     source_camera_id: str = ""  # ID of camera that triggered this emission
     tiled_frame: np.ndarray | None = None  # Combined tiled frame (deprecated, done in GUI)
     display_ids: dict[str, str] = None  # camera_id -> display_id (for labeling)
-
-
-class SingleCameraWorker(QObject):
-    """Worker for a single camera in multi-camera mode."""
-
-    frame_captured = Signal(str, object, float, object)  # camera_id, frame, timestamp, timestamp_metadata
-    error_occurred = Signal(str, str)  # camera_id, error_message
-    runtime_info = Signal(str, object)  # camera_id, dict of runtime info
-    started = Signal(str)  # camera_id
-    stopped = Signal(str)  # camera_id
-
-    def __init__(self, camera_id: str, settings: CameraSettings):
-        super().__init__()
-        self._camera_id = camera_id
-        self._settings = copy.deepcopy(settings)
-        self._stop_event = Event()
-        self._backend: CameraBackend | None = None
-        self._max_consecutive_errors = 5
-        self._retry_delay = 0.1
-        self._trigger_timeout_delay = 0.05
-
-        self._trigger_wait_log_interval = 2.0
-        self._last_trigger_wait_log = 0.0
-        self._trigger_wait_suppressed_count = 0
-
-        # Performance logs
-        self._timing = WorkerTimingStats(
-            camera_id, logger=LOGGER, log_interval=1.0, enabled=SINGLE_CAMERA_WORKER_DO_LOG_TIMING
-        )
-
-    @Slot()
-    def run(self) -> None:
-        self._stop_event.clear()
-
-        try:
-            LOGGER.debug(
-                "[Worker %s] before create: backend=%s index=%s properties=%s",
-                self._camera_id,
-                self._settings.backend,
-                self._settings.index,
-                self._settings.properties,
-            )
-
-            self._backend = CameraFactory.create(self._settings)
-
-            LOGGER.debug(
-                "[Worker %s] after create: backend=%s index=%s properties=%s",
-                self._camera_id,
-                self._backend.settings.backend,
-                self._backend.settings.index,
-                self._backend.settings.properties,
-            )
-
-            self._backend.open()
-            self.runtime_info.emit(
-                self._camera_id,
-                {
-                    "actual_fps": getattr(self._backend, "actual_fps", None),
-                    "actual_resolution": getattr(self._backend, "actual_resolution", None),
-                    "actual_pixel_format": getattr(self._backend, "actual_pixel_format", None),
-                    "actual_output_format": getattr(self._backend, "actual_output_format", None),
-                },
-            )
-        except Exception as exc:
-            LOGGER.exception(f"Failed to initialize camera {self._camera_id}", exc_info=exc)
-            self.error_occurred.emit(self._camera_id, f"Failed to initialize camera: {exc}")
-            self.stopped.emit(self._camera_id)
-            return
-
-        self.started.emit(self._camera_id)
-        consecutive_errors = 0
-
-        while not self._stop_event.is_set():
-            try:
-                with self._timing.measure("Single.read"):
-                    captured = self._backend.read()
-                    frame = captured.frame
-                    timestamp = captured.software_timestamp
-                    timestamp_metadata = captured.timestamp_metadata
-                if frame is None or frame.size == 0:
-                    consecutive_errors += 1
-                    if consecutive_errors >= self._max_consecutive_errors:
-                        self.error_occurred.emit(
-                            self._camera_id, "Too many empty frames.\nWas the device disconnected ?"
-                        )
-                        break
-                    if self._stop_event.wait(self._retry_delay):
-                        break
-                    continue
-
-                consecutive_errors = 0
-                with self._timing.measure("Single.emit.frame_captured"):
-                    self.frame_captured.emit(self._camera_id, frame, timestamp, timestamp_metadata)
-
-                self._timing.note_frame()
-                self._timing.maybe_log()
-
-            except TimeoutError as exc:
-                self._timing.note_timeout()
-                self._timing.maybe_log()
-                if self._stop_event.is_set():
-                    break
-
-                # In hardware-trigger mode, a timeout usually means:
-                # "no trigger pulse arrived during this poll interval".
-                # This is expected and should not count as a camera failure.
-                if bool(getattr(self._backend, "waits_for_hardware_trigger", False)):
-                    self._log_trigger_wait_throttled(exc)
-                    consecutive_errors = 0
-
-                    if self._stop_event.wait(self._trigger_timeout_delay):
-                        break  # Stop event set during wait
-                    continue
-
-                consecutive_errors += 1
-                if consecutive_errors >= self._max_consecutive_errors:
-                    self.error_occurred.emit(self._camera_id, f"Camera read timeout: {exc}")
-                    break
-                if self._stop_event.wait(self._retry_delay):
-                    break
-                continue
-
-            except Exception as exc:
-                self._timing.note_error()
-                self._timing.maybe_log()
-                consecutive_errors += 1
-                if self._stop_event.is_set():
-                    break
-                if consecutive_errors >= self._max_consecutive_errors:
-                    self.error_occurred.emit(self._camera_id, f"Camera read error: {exc}")
-                    break
-                if self._stop_event.wait(self._retry_delay):
-                    break
-                continue
-
-        # Cleanup
-        if self._backend is not None:
-            try:
-                self._backend.close()
-            except Exception:
-                pass
-        self.stopped.emit(self._camera_id)
-
-    def stop(self) -> None:
-        self._stop_event.set()
-
-    def _log_trigger_wait_throttled(self, exc: BaseException) -> None:
-        """Log hardware-trigger wait timeouts at a controlled rate.
-
-        In trigger-waiting modes, read timeouts are expected polling misses.
-        Without throttling, the log can be flooded at ~10-20 messages/sec/camera.
-        """
-        now = time.monotonic()
-
-        if now - self._last_trigger_wait_log < self._trigger_wait_log_interval:
-            self._trigger_wait_suppressed_count += 1
-            return
-
-        suppressed = self._trigger_wait_suppressed_count
-        self._trigger_wait_suppressed_count = 0
-        self._last_trigger_wait_log = now
-
-        if suppressed:
-            LOGGER.debug(
-                "[Worker %s] waiting for hardware trigger: %s (suppressed %d repeated timeout logs)",
-                self._camera_id,
-                exc,
-                suppressed,
-            )
-        else:
-            LOGGER.debug(
-                "[Worker %s] waiting for hardware trigger: %s",
-                self._camera_id,
-                exc,
-            )
 
 
 def get_display_id(settings: CameraSettings) -> str:
@@ -286,9 +110,9 @@ class MultiCameraController(QObject):
 
     # Signals
     frame_ready = Signal(object)  # MultiFrameData (full cam FPS; inference only)
-    recording_frame_ready = Signal(
-        str, object, float, object
-    )  # camera_id, frame, timestamp, timestamp_metadata (full cam FPS; for recording)
+    # recording_frame_ready = Signal(
+    #     str, object, float, object
+    # )  # camera_id, frame, timestamp, timestamp_metadata (full cam FPS; for recording)
     display_ready = Signal(object)  # MultiFrameData for GUI display (throttled to GUI_MAX_DISPLAY_FPS)
     camera_started = Signal(str, object)  # camera_id, settings
     camera_stopped = Signal(str)  # camera_id
@@ -312,6 +136,7 @@ class MultiCameraController(QObject):
         self._stopping = False
         self._all_stopped_emitted = False
         self._recording_frame_emission_enabled: bool = False
+        self._recording_sink = None
         self._started_cameras: set = set()
         self._display_ids: dict[str, str] = {}  # camera_id -> display_id (for labeling)
         self._camera_display_order: list[str] = []
@@ -345,12 +170,9 @@ class MultiCameraController(QObject):
         return timing
 
     def set_recording_frame_do_emit(self, enabled: bool) -> None:
-        """Enable/disable the lightweight per-camera recording frame signal.
-
-        This avoids sending recording-only traffic when the user is only previewing
-        or running DLC.
-        """
         self._recording_frame_emission_enabled = bool(enabled)
+        for worker in list(self._workers.values()):
+            worker.set_recording_enabled(enabled)
 
     def _should_emit_display_ready(self) -> bool:
         """Return True when the UI/display path should be updated.
@@ -455,6 +277,8 @@ class MultiCameraController(QObject):
         self._display_ids[cam_id] = display_id
         dc = self._settings[cam_id]
         worker = SingleCameraWorker(cam_id, dc)
+        worker.set_recording_sink(self._recording_sink)
+        worker.set_recording_enabled(self._recording_frame_emission_enabled)
         thread = QThread()
         worker.moveToThread(thread)
 
@@ -472,7 +296,13 @@ class MultiCameraController(QObject):
         worker.stopped.connect(thread.quit)
         thread.start()
 
+    def set_recording_sink(self, sink) -> None:
+        self._recording_sink = sink
+        for worker in list(self._workers.values()):
+            worker.set_recording_sink(sink)
+
     def _cleanup_camera(self, camera_id: str, *, finalize: bool = True) -> None:
+        # remove stored frame data
         with self._frame_lock:
             self._frames.pop(camera_id, None)
             self._timestamps.pop(camera_id, None)
@@ -611,20 +441,20 @@ class MultiCameraController(QObject):
         frame_data: MultiFrameData | None = None
 
         with timing.measure("Multi.slot.total"):
-            settings = self._settings.get(camera_id)
+            # self._settings.get(camera_id)
 
-            with timing.measure("Multi.apply_transforms"):
-                if settings and settings.rotation:
-                    frame = MultiCameraController.apply_rotation(frame, settings.rotation)
+            # with timing.measure("Multi.apply_transforms"):
+            #     if settings and settings.rotation:
+            #         frame = MultiCameraController.apply_rotation(frame, settings.rotation)
 
-                if settings:
-                    crop_region = settings.get_crop_region()
-                    if crop_region:
-                        frame = MultiCameraController.apply_crop(frame, crop_region)
+            #     if settings:
+            #         crop_region = settings.get_crop_region()
+            #         if crop_region:
+            #             frame = MultiCameraController.apply_crop(frame, crop_region)
 
-            if self._recording_frame_emission_enabled:
-                with timing.measure("Multi.emit.recording_frame_ready"):
-                    self.recording_frame_ready.emit(camera_id, frame, timestamp, timestamp_metadata)
+            # if self._recording_frame_emission_enabled:
+            #     with timing.measure("Multi.emit.recording_frame_ready"):
+            #         self.recording_frame_ready.emit(camera_id, frame, timestamp)
 
             with self._frame_lock:
                 with timing.measure("Multi.store_latest"):
@@ -699,32 +529,6 @@ class MultiCameraController(QObject):
                 out[camera_id] = fps
 
         return out
-
-    @staticmethod
-    def apply_rotation(frame: np.ndarray, degrees: int) -> np.ndarray:
-        """Apply rotation to frame."""
-        if degrees == 90:
-            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        elif degrees == 180:
-            return cv2.rotate(frame, cv2.ROTATE_180)
-        elif degrees == 270:
-            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        return frame
-
-    @staticmethod
-    def apply_crop(frame: np.ndarray, crop_region: tuple[int, int, int, int]) -> np.ndarray:
-        """Apply crop to frame."""
-        x0, y0, x1, y1 = crop_region
-        height, width = frame.shape[:2]
-
-        x0 = max(0, min(x0, width))
-        y0 = max(0, min(y0, height))
-        x1 = max(x0, min(x1, width)) if x1 > 0 else width
-        y1 = max(y0, min(y1, height)) if y1 > 0 else height
-
-        if x0 < x1 and y0 < y1:
-            return frame[y0:y1, x0:x1]
-        return frame
 
     @staticmethod
     def apply_resize(frame: np.ndarray, max_w: int, max_h: int, allow_upscale: bool = False) -> np.ndarray:
