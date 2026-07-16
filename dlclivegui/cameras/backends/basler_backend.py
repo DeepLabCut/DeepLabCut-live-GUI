@@ -949,6 +949,7 @@ class BaslerCameraBackend(CameraBackend):
             return
 
         if role == "software":
+            # TODO: @C-Achard 2026-07-16 - software mode not implemented yet
             self._configure_trigger_software(cfg, strict=strict)
             return
 
