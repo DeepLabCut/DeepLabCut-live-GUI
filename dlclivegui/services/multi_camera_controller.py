@@ -470,7 +470,7 @@ class MultiCameraController(QObject):
 
         self._workers.clear()
         self._settings.clear()
-        self._runtime_info.clear()
+        # self._runtime_info.clear()
         self._started_cameras.clear()
         self._failed_cameras.clear()
         self._display_ids.clear()
