@@ -328,39 +328,9 @@ class MultiCameraController(QObject):
         self._gui_display_last_emit = now
         return True
 
-    def _log_trigger_wait_throttled(self, exc: BaseException) -> None:
-        """Log hardware-trigger wait timeouts at a controlled rate.
-
-        In trigger-waiting modes, read timeouts are expected polling misses.
-        Without throttling, the log can be flooded at ~10-20 messages/sec/camera.
-        """
-        now = time.monotonic()
-
-        if now - self._last_trigger_wait_log < self._trigger_wait_log_interval:
-            self._trigger_wait_suppressed_count += 1
-            return
-
-        suppressed = self._trigger_wait_suppressed_count
-        self._trigger_wait_suppressed_count = 0
-        self._last_trigger_wait_log = now
-
-        if suppressed:
-            LOGGER.debug(
-                "[Worker %s] waiting for hardware trigger: %s (suppressed %d repeated timeout logs)",
-                self._camera_id,
-                exc,
-                suppressed,
-            )
-        else:
-            LOGGER.debug(
-                "[Worker %s] waiting for hardware trigger: %s",
-                self._camera_id,
-                exc,
-            )
-
     def start(self, camera_settings: list[CameraSettings]) -> None:
         """Start multiple cameras."""
-        if self._running:
+        if self._running or self._stopping:
             LOGGER.warning("Multi-camera controller already running")
             return
 
@@ -408,6 +378,8 @@ class MultiCameraController(QObject):
             seen[key] = camera_id
 
         self._running = True
+        self._stopping = False
+        self._all_stopped_emitted = False
         self._frames.clear()
         self._timestamps.clear()
         self._started_cameras.clear()
@@ -476,11 +448,12 @@ class MultiCameraController(QObject):
             self._maybe_finalize_stop()
 
     def _maybe_finalize_stop(self) -> None:
+        """Finalize shutdown after every owned camera thread has finished."""
+        # FUTURE FIXME: clear runtime info
         if not self._stopping:
             return
 
-        live_threads = [thread for thread in self._threads.values() if thread is not None and thread.isRunning()]
-        if live_threads:
+        if any(thread is not None and thread.isRunning() for thread in self._threads.values()):
             return
 
         for camera_id, thread in list(self._threads.items()):
@@ -490,10 +463,14 @@ class MultiCameraController(QObject):
         if self._threads:
             return
 
+        self._running = False
+        self._recording_frame_emission_enabled = False
         self._timing_per_cam.clear()
         self._gui_display_last_emit = 0.0
+
         self._workers.clear()
         self._settings.clear()
+        self._runtime_info.clear()
         self._started_cameras.clear()
         self._failed_cameras.clear()
         self._display_ids.clear()
@@ -506,9 +483,11 @@ class MultiCameraController(QObject):
         self._expected_cameras = 0
         self._stopping = False
 
-        if not self._all_stopped_emitted:
-            self._all_stopped_emitted = True
-            self.all_stopped.emit()
+        if self._all_stopped_emitted:
+            return
+
+        self._all_stopped_emitted = True
+        self.all_stopped.emit()
 
     def stop(self, wait: bool = True) -> None:
         """Request shutdown of all cameras.
@@ -520,12 +499,13 @@ class MultiCameraController(QObject):
         if not self._running and not self._stopping:
             return
 
-        self._running = False
-        self._stopping = True
-        self._all_stopped_emitted = False
+        if self._running:
+            self._running = False
+            self._stopping = True
+            self._all_stopped_emitted = False
 
-        for worker in list(self._workers.values()):
-            worker.stop()
+            for worker in list(self._workers.values()):
+                worker.stop()
 
         if not wait:
             self._maybe_finalize_stop()
@@ -568,7 +548,8 @@ class MultiCameraController(QObject):
         if still_running:
             LOGGER.critical(
                 "Camera shutdown incomplete; threads remain active: %s. "
-                "all_stopped will not be emitted because restarting cameras is unsafe.",
+                "all_stopped will not be emitted until every remaining thread actually finishes. "
+                "Restarting cameras is unsafe in the meantime.",
                 still_running,
             )
             return
@@ -821,30 +802,33 @@ class MultiCameraController(QObject):
         was_started = camera_id in self._started_cameras
         self._started_cameras.discard(camera_id)
         self._display_ids.pop(camera_id, None)
+
         self.camera_stopped.emit(camera_id)
-        LOGGER.info(f"Camera {camera_id} stopped (was_started={was_started})")
+        LOGGER.info("Camera %s stopped (was_started=%s)", camera_id, was_started)
 
-        # Cleanup thread
-        if camera_id in self._threads:
-            thread = self._threads.get(camera_id)
-            if thread is not None and thread.isRunning():
-                thread.quit()
+        thread = self._threads.get(camera_id)
+        if thread is not None and thread.isRunning():
+            thread.quit()
 
-        # Remove frame data
         with self._frame_lock:
             self._frames.pop(camera_id, None)
             self._timestamps.pop(camera_id, None)
 
-        # Check if all cameras have reported and none started
         total_reported = len(self._started_cameras) + len(self._failed_cameras)
-        if total_reported == self._expected_cameras and not self._started_cameras:
-            # All cameras failed to start
-            if self._running and self._failed_cameras:
-                self._running = False
-                failure_list = list(self._failed_cameras.items())
-                self.initialization_failed.emit(failure_list)
-                self.all_stopped.emit()
-                return
+        all_initialization_failed = (
+            total_reported == self._expected_cameras and not self._started_cameras and bool(self._failed_cameras)
+        )
+
+        if all_initialization_failed and self._running:
+            self._running = False
+            self._stopping = True
+            self.initialization_failed.emit(list(self._failed_cameras.items()))
+            return
+
+        # If no camera remains after a runtime stop, enter shutdown finalization.
+        if was_started and not self._started_cameras and self._running:
+            self._running = False
+            self._stopping = True
 
     def _on_camera_error(self, camera_id: str, message: str) -> None:
         """Handle camera error event."""
