@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import dlclivegui.services.video_recorder as vr_mod
+from dlclivegui.utils.timestamps import FrameTimestampMetadata
 
 # ----------------------------
 # Helpers
@@ -228,10 +229,13 @@ def test_stop_writes_timestamps_sidecar_json(patch_writegear, output_path, rgb_f
     data = json.loads(ts_path.read_text())
     assert data["video_file"] == output_path.name
     assert data["num_frames"] == 2
-    assert data["timestamps"] == [10.0, 12.0]
     assert data["start_time"] == 10.0
     assert data["end_time"] == 12.0
     assert data["duration_seconds"] == 2.0
+    assert data["schema_version"] == 2
+    assert data["timestamp_sources"]["hardware_timestamp"] is None
+    assert data["frame_timestamps"][0]["software_timestamp"] == 10.0
+    assert data["frame_timestamps"][1]["software_timestamp"] == 12.0
 
 
 def test_encoder_write_error_sets_encode_error_and_future_writes_raise(patch_writegear, output_path, rgb_frame):
@@ -418,3 +422,109 @@ def test_video_recorder_expands_gray_by_default(monkeypatch, tmp_path):
     rec.stop()
 
     assert written[0].shape == (10, 20, 3)
+
+
+class TestVideoRecorderTimestampSidecar:
+    def test_stop_writes_software_only_timestamp_sidecar_json(
+        self,
+        patch_writegear,
+        output_path,
+        rgb_frame,
+    ):
+        rec = vr_mod.VideoRecorder(output_path, buffer_size=10)
+        rec.start()
+
+        rec.write(rgb_frame, timestamp=10.0)
+        rec.write(rgb_frame, timestamp=12.0)
+
+        wait_until(lambda: len(FakeWriteGear.instances[0].frames) >= 2)
+        rec.stop()
+
+        ts_path = output_path.with_suffix("").with_suffix(output_path.suffix + "_timestamps.json")
+        assert ts_path.exists()
+
+        data = json.loads(ts_path.read_text())
+
+        assert data["schema_version"] == 2
+        assert data["video_file"] == output_path.name
+        assert data["num_frames"] == 2
+
+        assert data["timestamp_sources"]["software_timestamp"]["kind"] == "software_wall_clock"
+        assert data["timestamp_sources"]["hardware_timestamp"] is None
+
+        assert data["frame_timestamps"] == [
+            {
+                "frame_index": 0,
+                "software_timestamp": 10.0,
+            },
+            {
+                "frame_index": 1,
+                "software_timestamp": 12.0,
+            },
+        ]
+
+    def test_stop_writes_hardware_timestamp_metadata_sidecar_json(
+        self,
+        patch_writegear,
+        output_path,
+        rgb_frame,
+    ):
+        rec = vr_mod.VideoRecorder(output_path, buffer_size=10)
+        rec.start()
+
+        meta = FrameTimestampMetadata(
+            source="grab_result.GetTimeStamp",
+            backend="basler",
+            default_reported="seconds",
+            seconds=0.001,
+            raw_value=1_000_000,
+            raw_unit="ticks",
+            tick_frequency_hz=1_000_000_000.0,
+            timebase="Basler camera timestamp counter",
+            kind="camera_clock",
+        )
+
+        rec.write(rgb_frame, timestamp=10.0, timestamp_metadata=meta)
+
+        wait_until(lambda: len(FakeWriteGear.instances[0].frames) >= 1)
+        rec.stop()
+
+        ts_path = output_path.with_suffix("").with_suffix(output_path.suffix + "_timestamps.json")
+        assert ts_path.exists()
+
+        data = json.loads(ts_path.read_text())
+
+        assert data["schema_version"] == 2
+        assert data["video_file"] == output_path.name
+        assert data["num_frames"] == 1
+
+        # Backward-compatible software timestamp list.
+        assert data["start_time"] == 10.0
+        assert data["end_time"] == 10.0
+        assert data["duration_seconds"] == 0.0
+
+        # Static hardware source metadata is written once.
+        hw_source = data["timestamp_sources"]["hardware_timestamp"]
+        assert hw_source == {
+            "source": "grab_result.GetTimeStamp",
+            "backend": "basler",
+            "default_reported": "seconds",
+            "raw_unit": "ticks",
+            "tick_frequency_hz": 1_000_000_000.0,
+            "timebase": "Basler camera timestamp counter",
+            "kind": "camera_clock",
+            "extra": {},
+        }
+
+        # Per-frame records contain only per-frame values.
+        frame_ts = data["frame_timestamps"]
+        assert len(frame_ts) == 1
+
+        rec0 = frame_ts[0]
+        assert rec0["frame_index"] == 0
+        assert rec0["software_timestamp"] == 10.0
+        assert rec0["hardware_timestamp"] == {
+            "seconds": 0.001,
+            "raw_value": 1_000_000,
+        }
+        assert rec0["hardware_timestamp_default"] == 0.001

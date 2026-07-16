@@ -526,6 +526,9 @@ class FakePylon:
         def Release(self):
             self.released = True
 
+        def GetTimeStamp(self):
+            return 123456789
+
     class InstantCamera:
         def __init__(self, device):
             self._device = device
@@ -550,6 +553,7 @@ class FakePylon:
 
             self.AcquisitionFrameRateEnable = FakePylon._Feature(False)
             self.AcquisitionFrameRate = FakePylon._Feature(30.0)
+            self.GevTimestampTickFrequency = FakePylon._Feature(1_000_000_000.0)
 
             self.MaxNumBuffer = FakePylon._Feature(10)
 

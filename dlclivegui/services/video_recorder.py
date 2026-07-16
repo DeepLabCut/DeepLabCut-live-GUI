@@ -94,6 +94,7 @@ class VideoRecorder:
         self._writer: Any | None = None
         self._frame_size = frame_size
         self._frame_rate = frame_rate
+        self._hardware_timestamp_source: dict[str, Any] | None = None
         self._codec = codec
         self._crf = int(crf)
         self._buffer_size = max(1, int(buffer_size))
@@ -115,7 +116,7 @@ class VideoRecorder:
         self._written_times: deque[float] = deque(maxlen=600)
         self._encode_error: Exception | None = None
         self._last_log_time = 0.0
-        self._frame_timestamps: list[float] = []
+        self._frame_timestamps: list[dict[str, Any]] = []
         # Timing
         self._process_timing = WorkerTimingStats(
             f"RecorderProcess[{self._output.name}]", logger=logger, log_interval=1.0, enabled=REC_DO_LOG_TIMING
@@ -211,6 +212,7 @@ class VideoRecorder:
             self._last_latency = 0.0
             self._written_times.clear()
             self._frame_timestamps.clear()
+            self._hardware_timestamp_source = None
             self._encode_error = None
             self._stop_event.clear()
             self._writer_thread = threading.Thread(
@@ -224,7 +226,9 @@ class VideoRecorder:
         self._frame_size = frame_size
         self._frame_rate = frame_rate
 
-    def write(self, frame: np.ndarray, timestamp: float | None = None) -> bool:
+    def write(
+        self, frame: np.ndarray, timestamp: float | None = None, timestamp_metadata: object | None = None
+    ) -> bool:
         error = self._current_error()
         if error is not None:
             raise RuntimeError(f"Video encoding failed: {error}") from error
@@ -289,7 +293,7 @@ class VideoRecorder:
 
         try:
             with self._process_timing.measure("Recorder.queue_put"):
-                q.put((frame, timestamp), block=False)
+                q.put((frame, timestamp, timestamp_metadata), block=False)
         except queue.Full:
             with self._stats_lock:
                 self._dropped_frames += 1
@@ -432,7 +436,7 @@ class VideoRecorder:
                     if item is _SENTINEL:
                         break
                     else:
-                        frame, timestamp = item
+                        frame, timestamp, timestamp_metadata = item
                         start = time.perf_counter()
 
                         try:
@@ -442,6 +446,31 @@ class VideoRecorder:
 
                             with self._writer_timing.measure("Recorder.writer_write"):
                                 writer.write(frame)
+
+                            record: dict[str, Any] = {
+                                "frame_index": self._frames_written,
+                                "software_timestamp": float(timestamp),
+                            }
+
+                            if timestamp_metadata is not None:
+                                if (
+                                    hasattr(timestamp_metadata, "to_source_dict")
+                                    and self._hardware_timestamp_source is None
+                                ):
+                                    self._hardware_timestamp_source = timestamp_metadata.to_source_dict()
+
+                                if hasattr(timestamp_metadata, "to_frame_dict"):
+                                    record["hardware_timestamp"] = timestamp_metadata.to_frame_dict()
+                                    if hasattr(timestamp_metadata, "get_default_reported"):
+                                        default_value = timestamp_metadata.get_default_reported()
+                                        if default_value is not None:
+                                            record["hardware_timestamp_default"] = default_value
+                                elif isinstance(timestamp_metadata, dict):
+                                    record["hardware_timestamp"] = dict(timestamp_metadata)
+                                else:
+                                    record["hardware_timestamp"] = repr(timestamp_metadata)
+
+                            self._frame_timestamps.append(record)
 
                         except Exception as exc:
                             with self._stats_lock:
@@ -459,7 +488,6 @@ class VideoRecorder:
                                 self._total_latency += elapsed
                                 self._last_latency = elapsed
                                 self._written_times.append(now)
-                                self._frame_timestamps.append(timestamp)
                                 if now - self._last_log_time >= 1.0:
                                     self._compute_write_fps_locked()
                                     self._last_log_time = now
@@ -506,27 +534,46 @@ class VideoRecorder:
             logger.info("No timestamps to save")
             return
 
-        # Create timestamps file path
         timestamp_file = self._output.with_suffix("").with_suffix(self._output.suffix + "_timestamps.json")
 
         try:
             with self._stats_lock:
-                timestamps = self._frame_timestamps.copy()
+                frame_timestamps = self._frame_timestamps.copy()
+                hardware_timestamp_source = (
+                    dict(self._hardware_timestamp_source) if self._hardware_timestamp_source is not None else None
+                )
 
-            # Prepare metadata
+            software_timestamps = [
+                float(rec["software_timestamp"]) for rec in frame_timestamps if "software_timestamp" in rec
+            ]
+
             data = {
+                "schema_version": 2,
                 "video_file": str(self._output.name),
-                "num_frames": len(timestamps),
-                "timestamps": timestamps,
-                "start_time": timestamps[0] if timestamps else None,
-                "end_time": timestamps[-1] if timestamps else None,
-                "duration_seconds": timestamps[-1] - timestamps[0] if len(timestamps) > 1 else 0.0,
+                "num_frames": len(frame_timestamps),
+                # "timestamps": software_timestamps,
+                "timestamp_sources": {
+                    "software_timestamp": {
+                        "source": "host_time.time",
+                        "backend": "host",
+                        "kind": "software_wall_clock",
+                        "timebase": "Unix epoch",
+                        "unit": "seconds",
+                        "description": "Host-side software timestamp captured during acquisition.",
+                    },
+                    "hardware_timestamp": hardware_timestamp_source,
+                },
+                "frame_timestamps": frame_timestamps,
+                "start_time": software_timestamps[0] if software_timestamps else None,
+                "end_time": software_timestamps[-1] if software_timestamps else None,
+                "duration_seconds": (
+                    software_timestamps[-1] - software_timestamps[0] if len(software_timestamps) > 1 else 0.0
+                ),
             }
 
-            # Write to JSON
             with open(timestamp_file, "w") as f:
                 json.dump(data, f, indent=2)
 
-            logger.info(f"Saved {len(timestamps)} frame timestamps to {timestamp_file}")
+            logger.info("Saved %d frame timestamps to %s", len(frame_timestamps), timestamp_file)
         except Exception as exc:
-            logger.exception(f"Failed to save timestamps to {timestamp_file}: {exc}")
+            logger.exception("Failed to save timestamps to %s: %s", timestamp_file, exc)
