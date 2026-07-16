@@ -63,8 +63,11 @@ from dlclivegui.config import (
 )
 
 from ..processors.processor_utils import (
+    create_spec_from_scan,
     default_processors_dir,
     instantiate_from_scan,
+    log_processor_context,
+    processor_builds_in_worker,
     scan_processor_folder,
     scan_processor_package,
 )
@@ -1786,6 +1789,7 @@ class DLCLiveMainWindow(QMainWindow):
         if run_dir is None:
             self._show_error("Failed to start recording.")
             return
+        self._notify_processor_recording_started(run_dir)
         self.multi_camera_controller.set_recording_sink(self._rec_manager.write_frame)
         self.multi_camera_controller.set_recording_frame_do_emit(True)
 
@@ -1827,7 +1831,125 @@ class DLCLiveMainWindow(QMainWindow):
             daemon=True,
         ).start()
 
+    def _get_dlc_processor_instance(self):
+        """Return the active custom DLC processor instance, if available."""
+        processor = getattr(self._dlc, "_processor", None)
+
+        if processor is not None:
+            return processor
+
+        # Fallback: if DLCLive owns it internally.
+        dlc_obj = getattr(self._dlc, "_dlc", None)
+        if dlc_obj is not None:
+            return getattr(dlc_obj, "processor", None)
+
+        return None
+
+    def _save_processor_data_if_available(self) -> None:
+        """Best-effort generic processor save.
+
+        The GUI intentionally does not pass a path here. This lets custom processors
+        use their own save_path / filename / internal policy.
+
+        Expected processor contract:
+            processor.save() -> int | bool | None
+
+        Return values are only logged; failure should not crash the GUI.
+        """
+        processor = self._get_dlc_processor_instance()
+
+        if processor is None:
+            logger.debug("Processor save skipped: no processor instance available.")
+            return
+
+        save = getattr(processor, "save", None)
+        if not callable(save):
+            logger.debug("Processor save skipped: processor has no callable save().")
+            return
+
+        try:
+            result = save()
+            logger.info("Processor save() completed with result: %r", result)
+        except Exception:
+            logger.exception("Processor save() failed.")
+
+    def _notify_processor_recording_started(self, run_dir) -> None:
+        processor = self._get_dlc_processor_instance()
+        if processor is None:
+            return
+
+        hook = getattr(processor, "on_recording_started", None)
+        if not callable(hook):
+            return
+
+        try:
+            context = self._build_processor_recording_context(run_dir)
+            hook(context)
+            logger.info("Notified processor recording started: %s", context)
+        except Exception:
+            logger.exception("Processor on_recording_started hook failed")
+
+    from pathlib import Path
+
+    def _build_processor_recording_context(self, run_dir) -> dict:
+        run_dir = Path(run_dir) if run_dir is not None else None
+
+        file_context = {}
+        try:
+            file_context = self._rec_manager.get_recording_file_context()
+        except Exception:
+            logger.exception("Failed to get recording file context from RecordingManager")
+            file_context = {}
+
+        if run_dir is None:
+            run_dir = file_context.get("run_dir", None)
+        if run_dir is not None:
+            run_dir = Path(run_dir)
+
+        session_name = ""
+        if hasattr(self, "session_name_edit"):
+            session_name = self.session_name_edit.text().strip()
+
+        filename = ""
+        if hasattr(self, "filename_edit"):
+            filename = self.filename_edit.text().strip()
+
+        filename_stem = Path(filename or session_name or "recording").stem
+
+        ctx = {
+            "run_dir": run_dir,
+            "session_name": session_name,
+            "filename": filename,
+            "filename_stem": filename_stem,
+            "processor_base_path": run_dir / filename_stem if run_dir is not None else None,
+        }
+        ctx.update(file_context)
+        return ctx
+
+    def _notify_processor_recording_stopped(self) -> None:
+        processor = self._get_dlc_processor_instance()
+        if processor is None:
+            return False
+
+        hook = getattr(processor, "on_recording_stopped", None)
+        if not callable(hook):
+            return False
+
+        try:
+            run_dir = getattr(self._rec_manager, "run_dir", None)
+            context = self._build_processor_recording_context(run_dir)
+            hook(context)
+            logger.info("Notified processor recording stopped")
+            return True
+        except Exception:
+            logger.exception("Processor on_recording_stopped hook failed")
+            return False
+
     def _on_recording_stopped_async(self) -> None:
+        handled_by_stop_hook = self._notify_processor_recording_stopped()
+        if not handled_by_stop_hook:
+            self._save_processor_data_if_available()
+
         self._recording_stopping = False
         self.start_record_button.setEnabled(True)
         self.stop_record_button.setEnabled(False)
@@ -1953,33 +2075,70 @@ class DLCLiveMainWindow(QMainWindow):
         except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
             self._show_error(f"Invalid DLCLive settings: {exc}")
             return False
+
         if not settings.model_path:
             self._show_error("Please select a DLCLive model before starting inference.")
             return False
 
-        # Instantiate processor if selected
         processor = None
+        processor_spec = None
+
         if self._processor_control_enabled():
             selected_key = self.processor_combo.currentData()
             self._settings_store.set_processor_key(selected_key)
 
             if selected_key is not None and self._scanned_processors:
                 try:
-                    # For now, instantiate with no parameters
-                    processor = instantiate_from_scan(self._scanned_processors, selected_key)
-                    processor_name = self._scanned_processors[selected_key]["name"]
+                    processor_info = self._scanned_processors[selected_key]
+                    processor_class = processor_info["class"]
+                    processor_name = processor_info.get("name", processor_class.__name__)
+
+                    if processor_builds_in_worker(processor_class):
+                        processor_spec = create_spec_from_scan(
+                            self._scanned_processors,
+                            selected_key,
+                        )
+                        processor = None
+
+                        log_processor_context(
+                            f"MainWindow._configure_dlc - SPEC: {processor_class.__name__}",
+                            logger,
+                        )
+
+                    else:
+                        processor = instantiate_from_scan(
+                            self._scanned_processors,
+                            selected_key,
+                        )
+                        processor_spec = None
+
+                        log_processor_context(
+                            f"MainWindow._configure_dlc - INSTANCE: {type(processor).__name__}",
+                            logger,
+                        )
+
                     self.statusBar().showMessage(f"Loaded processor: {processor_name}", 3000)
+
                 except Exception as e:
-                    error_msg = f"Failed to instantiate processor: {e}"
+                    error_msg = f"Failed to configure processor: {e}"
                     self._show_error(error_msg)
-                    logger.error(error_msg)
+                    logger.exception(error_msg)
                     return False
+
         else:
             selected_key = self.processor_combo.currentData()
             if selected_key is not None:
-                self.statusBar().showMessage(f"Processor selection ignored (control disabled): {selected_key}", 3000)
+                self.statusBar().showMessage(
+                    f"Processor selection ignored (control disabled): {selected_key}",
+                    3000,
+                )
 
-        self._dlc.configure(settings, processor=processor)
+        self._dlc.configure(
+            settings,
+            processor=processor,
+            processor_spec=processor_spec,
+        )
+
         self._model_path_store.save_if_valid(settings.model_path)
         return True
 

@@ -17,7 +17,13 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from dlclivegui.config import DLC_DO_LOG_TIMING, DLCProcessorSettings, ModelType
-from dlclivegui.processors.processor_utils import instantiate_from_scan
+from dlclivegui.processors.dlc_processor_socket import BaseProcessorSocket
+from dlclivegui.processors.processor_utils import (
+    ProcessorSpec,
+    create_spec_from_scan,
+    instantiate_from_scan,
+    log_processor_context,
+)
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
 from dlclivegui.utils.stats import WorkerTimingStats
 from dlclivegui.utils.utils import format_thread_stack
@@ -156,6 +162,8 @@ class DLCLiveProcessor(QObject):
         self._settings = DLCProcessorSettings()
         self._dlc: Any | None = None
         self._processor: Any | None = None
+        self._processor_spec: ProcessorSpec | None = None
+        self.processor_built_from_spec = False
         # Worker thread and queue
         self._queue: queue.Queue[Any] | None = None
         self._worker_thread: threading.Thread | None = None
@@ -194,15 +202,27 @@ class DLCLiveProcessor(QObject):
     def get_model_backend(model_path: str) -> Engine:
         return Engine.from_model_path(model_path)
 
-    def configure(self, settings: DLCProcessorSettings, processor: Any | None = None) -> None:
+    def configure(
+        self, settings: DLCProcessorSettings, processor: Any | None = None, processor_spec: ProcessorSpec | None = None
+    ) -> None:
         with self._lifecycle_lock:
             if self._state != WorkerState.STOPPED:
                 raise RuntimeError("Cannot configure DLCLiveProcessor while it is running. Please stop it first.")
+            if processor is not None and processor_spec is not None:
+                raise ValueError(
+                    "Cannot provide both a processor instance and a processor_spec. Please provide only one."
+                )
             self._settings = settings
             self._processor = processor
+            self._processor_spec = processor_spec
+            self.processor_built_from_spec = False
 
-    def reset(self) -> None:
+    def reset(self, reset_processor_plugin: bool = False) -> None:
         """Stop the worker thread and drop the current DLCLive instance."""
+        had_runtime = (
+            self._worker_thread is not None or self._dlc is not None or self._initialized or reset_processor_plugin
+        )
+
         stopped = self._stop_worker()
         if not stopped:
             with self._lifecycle_lock:
@@ -211,6 +231,10 @@ class DLCLiveProcessor(QObject):
                 "Reset requested but worker thread is still alive; skipping DLCLive reset to avoid potential issues."
             )
             return
+
+        if had_runtime and self._processor is not None:
+            self._cleanup_processor()
+
         self._dlc = None
         self._initialized = False
         with self._stats_lock:
@@ -226,10 +250,28 @@ class DLCLiveProcessor(QObject):
             self._gpu_inference_times.clear()
             self._processor_overhead_times.clear()
 
+    def _cleanup_processor(self) -> None:
+        proc = self._processor
+        if proc is None:
+            return
+
+        stop = getattr(proc, "stop", None)
+        if callable(stop):
+            try:
+                log_processor_context(f"Stopping processor: {type(proc).__name__}", logger)
+                stop()
+            except Exception:
+                logger.exception("Failed to stop processor cleanly")
+
+        self._processor = None
+        self._processor_built_from_spec = False
+
     def shutdown(self) -> None:
         stopped = self._stop_worker()
         if not stopped:
             with self._lifecycle_lock:
+                if self._processor is not None:
+                    self._cleanup_processor()
                 self._pending_reset = True
             logger.warning(
                 "Shutdown requested but worker thread is still alive; DLCLive instance may not be fully released."
@@ -446,6 +488,7 @@ class DLCLiveProcessor(QObject):
         self._queue = None
         self._stop_event.clear()
         self._state = WorkerState.STARTING
+        log_processor_context("Starting DLCLive worker thread", logger)
         self._worker_thread = threading.Thread(
             target=self._worker_loop,
             args=(init_frame, init_timestamp),
@@ -578,6 +621,7 @@ class DLCLiveProcessor(QObject):
         """
         if self._dlc is None:
             raise RuntimeError("DLCLive instance is not initialized.")
+        # log_processor_context(f"DLCLiveProcessor._process_frame: timestamp={timestamp:.6f}", logger)
         # Time GPU inference (and processor overhead when present)
         with self._timing.measure("DLC.prepare_frame"):
             frame = self._prepare_input_frame(frame)
@@ -641,10 +685,11 @@ class DLCLiveProcessor(QObject):
 
     def _worker_loop(self, init_frame: np.ndarray, init_timestamp: float) -> None:
         try:
-            # -------- Initialization (unchanged) --------
+            # -------- Initialization --------
             if not self._settings.model_path:
                 raise RuntimeError("No DLCLive model path configured.")
 
+            log_processor_context("DLCLiveProcessor._worker_loop", logger)
             with self._timing.measure("DLC.build_options"):
                 dyn = self._settings.dynamic
                 if not isinstance(dyn, (list, tuple)) or len(dyn) != 3:
@@ -654,10 +699,33 @@ class DLCLiveProcessor(QObject):
                         raise RuntimeError("Invalid dynamic crop settings format.") from e
                 enabled, margin, max_missing = dyn
 
+                custom_proc = None
+
+                if self._processor is not None:
+                    custom_proc = self._processor
+                    log_processor_context(
+                        f"Using existing processor instance: {type(custom_proc).__name__}",
+                        logger,
+                    )
+
+                elif self._processor_spec is not None:
+                    log_processor_context(
+                        f"Building processor from spec: {self._processor_spec.name}",
+                        logger,
+                    )
+                    custom_proc = self._processor_spec.build()
+
+                    with self._lifecycle_lock:
+                        self._processor = custom_proc
+                        self._processor_built_from_spec = True
+
+                else:
+                    custom_proc = None
+
                 options = {
                     "model_path": self._settings.model_path,
                     "model_type": self._settings.model_type,
-                    "processor": self._processor,
+                    "processor": custom_proc,
                     "dynamic": [enabled, margin, max_missing],
                     "resize": self._settings.resize,
                     "precision": self._settings.precision,
@@ -685,6 +753,7 @@ class DLCLiveProcessor(QObject):
                     )
                 with self._timing.measure("DLC.construct"):
                     self._dlc = DLCLive(**options)
+                    log_processor_context("DLCLive instance constructed", logger)
                 self._timing.maybe_log()
             except Exception as exc:
                 self._timing.note_error()
@@ -712,6 +781,7 @@ class DLCLiveProcessor(QObject):
             # First inference to initialize
             with self._timing.measure("DLC.init_inference"):
                 self._dlc.init_inference(init_frame)
+                log_processor_context("DLCLive init_inference completed", logger)
 
             self._debug_log_dlc_runner_device()
             self._timing.note_frame()
@@ -859,13 +929,33 @@ class DLCService:
                 raise RuntimeError("Cannot configure DLCLiveProcessor while it is running. Please stop it first.")
 
         processor = None
+        processor_spec = None
+
         if selected_key is not None and scanned_processors:
             try:
-                processor = instantiate_from_scan(scanned_processors, selected_key)
+                processor_info = scanned_processors[selected_key]
+                processor_class = processor_info["class"]
+
+                if BaseProcessorSocket.do_build_in_worker(processor_class):
+                    processor_spec = create_spec_from_scan(scanned_processors, selected_key)
+
+                    log_processor_context(
+                        f"DLCLiveProcessor.configure - SPEC: {processor_class.__name__}",
+                        logger,
+                    )
+                else:
+                    processor = instantiate_from_scan(scanned_processors, selected_key)
+
+                    log_processor_context(
+                        f"DLCLiveProcessor.configure - INSTANCE: {type(processor).__name__}",
+                        logger,
+                    )
+
             except Exception as exc:
-                logger.error("Failed to instantiate processor: %s", exc)
+                logger.error("Failed to configure processor: %s", exc, exc_info=True)
                 return False
-        self._proc.configure(settings, processor=processor)
+
+        self._proc.configure(settings, processor=processor, processor_spec=processor_spec)
         return True
 
     def start(self):

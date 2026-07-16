@@ -41,6 +41,11 @@ class BaseProcessorSocket(Processor):
     PROCESSOR_DESCRIPTION = "Base class for socket-based processors with multi-client support"
     PROCESSOR_PARAMS = {}
 
+    # Experimental:
+    # Socket/Teensy/Unity processors often start threads, sockets, serial ports, etc.
+    # Build them inside the DLCLive worker to match legacy Tk GUI behavior.
+    PROCESSOR_BUILD_IN_WORKER = False
+
     def __init__(
         self,
         bind=None,
@@ -81,6 +86,8 @@ class BaseProcessorSocket(Processor):
         self._vid_recording = Event()
         self.curr_step = 0
         self.save_original = save_original
+        self.recording_context = {}
+        self.save_path = None
 
         # Networking (optional)
         self.address = bind
@@ -260,8 +267,14 @@ class BaseProcessorSocket(Processor):
     # STOP / SHUTDOWN
     # --------------------------------------------------------------------------------------
 
-    def stop(self):
+    def stop(self, save: bool = False, file=None):
         """Gracefully stop listener and clients."""
+        if save:
+            try:
+                self.save(file)
+            except Exception:
+                logger.exception("Failed to save processor data on stop")
+
         if self._stop.is_set():
             return
 
@@ -365,22 +378,78 @@ class BaseProcessorSocket(Processor):
             self.original_pose.clear()
 
     def save(self, file=None):
-        if not file:
+        target = file
+
+        if target is None:
+            target = getattr(self, "save_path", None)
+
+        if target is None:
+            logger.warning("Processor save skipped: no file or save_path provided.")
             return 0
+
         try:
             save_dict = self.get_data()
-            path2save = Path(__file__).parent.parent.parent / "data" / file
-            path2save.parent.mkdir(parents=True, exist_ok=True)
+            save_path = Path(target)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+
             if self.save_original:
                 original_pose = save_dict.pop("original_pose")
-                self.save_original_pose(original_pose, save_dict["frame_time"], save_dict["time_stamp"], path2save)
-            with open(path2save, "wb") as f:
+                self.save_original_pose(
+                    original_pose,
+                    save_dict["frame_time"],
+                    save_dict["time_stamp"],
+                    save_path,
+                )
+
+            with open(save_path, "wb") as f:
                 pickle.dump(save_dict, f)
-            logger.info(f"Saved data to {path2save}")
+
+            logger.info(f"Saved processor data to {save_path}")
             return 1
+
         except Exception as e:
             logger.error(f"Save failed: {e}")
             return -1
+
+    def set_recording_context(self, context: dict | None) -> None:
+        """Set GUI-provided recording context.
+
+        This is intentionally generic. Custom processors may use it to derive
+        processor-specific output paths.
+
+        Expected keys may include:
+            run_dir
+            session_name
+            filename
+            filename_stem
+            processor_base_path
+            video_files
+            timestamp_files
+        """
+        self.recording_context = dict(context or {})
+
+        base_path = self.recording_context.get("processor_base_path")
+        if base_path is not None:
+            self.save_path = Path(base_path)
+
+    def set_save_path(self, path) -> None:
+        """Set default save path used by save() when no file is provided."""
+        self.save_path = Path(path) if path is not None else None
+
+    def get_save_path(self):
+        """Return default save path, if any."""
+        return getattr(self, "save_path", None)
+
+    def on_recording_started(self, context: dict) -> None:
+        """Optional hook called by GUI when recording starts."""
+        self.set_recording_context(context)
+
+    def on_recording_stopped(self, context: dict) -> None:
+        """Optional hook called by GUI when recording stops.
+
+        Base implementation only updates context. Custom processors can override.
+        """
+        self.set_recording_context(context)
 
     def save_original_pose(
         self,
