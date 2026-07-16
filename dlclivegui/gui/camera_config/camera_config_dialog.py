@@ -820,16 +820,16 @@ class CameraConfigDialog(QDialog):
 
     def _ensure_default_trigger_config(self, cam: CameraSettings) -> None:
         backend = (cam.backend or "").lower()
-        if backend != "gentl":
+        if backend not in {"gentl", "basler"}:
             return
 
         if not isinstance(cam.properties, dict):
             cam.properties = {}
 
-        ns = cam.properties.setdefault("gentl", {})
+        ns = cam.properties.setdefault(backend, {})
         if not isinstance(ns, dict):
             ns = {}
-            cam.properties["gentl"] = ns
+            cam.properties[backend] = ns
 
         ns.setdefault("trigger", CameraTriggerSettings().model_dump(exclude_none=True))
 

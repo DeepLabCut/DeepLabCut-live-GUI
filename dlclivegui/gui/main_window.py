@@ -9,10 +9,6 @@ import os
 import time
 from pathlib import Path
 
-# NOTE @C-Achard: his could be added in settings eventually
-# Forces pypylon to create 2 emulation virtual cameras,
-# mostly for testing. This shold not be enabled for release.
-# os.environ["PYLON_CAMEMU"] = "2"
 import cv2
 import numpy as np
 from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl
@@ -1631,7 +1627,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Stop any active recording first
         self._stop_multi_camera_recording()
 
-        self.multi_camera_controller.stop()
+        self.multi_camera_controller.stop(wait=True)
         self._stop_inference(show_message=False)
         self._fps_tracker.clear()
         self._last_display_time = 0.0
