@@ -455,6 +455,14 @@ class TriggerConfigDialog(QDialog):
             return
 
         ns = _backend_namespace(self._cam)
-        ns["trigger"] = trigger.to_properties()
+        trigger_props = trigger.to_properties()
+
+        if not self._profile.show_strobe_fields:
+            trigger_props.pop("strobe_polarity", None)
+            trigger_props.pop("strobe_operation", None)
+            trigger_props.pop("strobe_duration", None)
+            trigger_props.pop("strobe_delay", None)
+
+        ns["trigger"] = trigger_props
 
         self.accept()

@@ -269,6 +269,12 @@ def app_config_two_cams(tmp_path) -> ApplicationSettings:
     return make_app_config(tmp_path=tmp_path, num_cams=2, backend="fake", enabled=True, fps=30.0)
 
 
+@pytest.fixture
+def camera_worker_settings(app_config_two_cams) -> CameraSettings:
+    """Single enabled fake camera settings for SingleCameraWorker tests."""
+    return app_config_two_cams.multi_camera.cameras[0].model_copy(deep=True)
+
+
 # ---------------------------------------------------------------------
 # Main window fixture
 # ---------------------------------------------------------------------
