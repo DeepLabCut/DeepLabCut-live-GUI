@@ -931,7 +931,7 @@ class BaslerCameraBackend(CameraBackend):
             return requested, True
 
         if requested.lower() == "auto":
-            for candidate in ("Line1", "Line2", "Line3", "Line4", "Line0", "Software", "Action1"):
+            for candidate in ("Line1", "Line2", "Line3", "Line4", "Line0", "Action1"):
                 if candidate in available:
                     LOG.info("Basler TriggerSource auto-selected '%s'. Available: %s", candidate, available)
                     return candidate, True
