@@ -165,7 +165,6 @@ class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):  # pragma: 
         # Calculate head angle relative to body
         cross = body_axis[0] * head_axis[1] - head_axis[0] * body_axis[1]
         sign = copysign(1, cross)  # Positive when looking left
-
         try:
             head_angle = acos(body_axis @ head_axis) * sign
         except ValueError:
@@ -335,7 +334,6 @@ class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no 
         # Calculate head angle relative to body
         cross = body_axis[0] * head_axis[1] - head_axis[0] * body_axis[1]
         sign = copysign(1, cross)  # Positive when looking left
-
         try:
             head_angle = acos(body_axis @ head_axis) * sign
         except ValueError:

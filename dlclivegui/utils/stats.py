@@ -70,6 +70,7 @@ class WorkerTimingStats:
             self.parent = parent
             self.name = name
             self.t0 = 0.0
+            self.elapsed = 0.0
 
         def __enter__(self):
             if self.parent.enabled:
@@ -80,8 +81,8 @@ class WorkerTimingStats:
             if not self.parent.enabled:
                 return False
 
-            dt = time.perf_counter() - self.t0
-            self.parent._totals[self.name] = self.parent._totals.get(self.name, 0.0) + dt
+            self.elapsed = time.perf_counter() - self.t0
+            self.parent._totals[self.name] = self.parent._totals.get(self.name, 0.0) + self.elapsed
             self.parent._counts[self.name] = self.parent._counts.get(self.name, 0) + 1
             return False
 

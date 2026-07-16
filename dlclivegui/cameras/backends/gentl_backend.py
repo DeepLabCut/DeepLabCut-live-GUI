@@ -90,6 +90,8 @@ class GenTLCameraBackend(CameraBackend):
             ns = {}
 
         self._fast_start: bool = bool(ns.get("fast_start", False))
+        self._preserve_mono: bool = bool(getattr(settings, "preserve_mono", False) or ns.get("preserve_mono", False))
+        self._logged_first_frame: bool = False
 
         raw_device_id = ns.get("device_id") or props.get("device_id")
         legacy_serial = ns.get("serial_number") or ns.get("serial") or props.get("serial_number") or props.get("serial")
@@ -178,9 +180,19 @@ class GenTLCameraBackend(CameraBackend):
         return self._camera_pixel_format or (self._pixel_format if self._pixel_format != "auto" else None)
 
     @property
+    def recommended_preserve_mono(self) -> bool | None:
+        if not self._camera_pixel_format:
+            return None
+        return self._is_camera_mono()
+
+    @property
     def actual_output_format(self) -> str | None:
-        """Current GenTL backend emits OpenCV-native BGR uint8 frames."""
-        return self._actual_output_format or "BGR8"
+        """Backend output frame format emitted to the app, e.g. 'Mono8' or 'BGR8'."""
+        if self._actual_output_format:
+            return self._actual_output_format
+        if not self._camera_pixel_format:
+            return None
+        return "Mono8" if self._should_output_mono() else "BGR8"
 
     @classmethod
     def is_available(cls) -> bool:
@@ -196,6 +208,7 @@ class GenTLCameraBackend(CameraBackend):
             "device_discovery": SupportLevel.SUPPORTED,
             "stable_identity": SupportLevel.SUPPORTED,
             "hardware_trigger": SupportLevel.BEST_EFFORT,
+            "preserve_mono": SupportLevel.SUPPORTED,
         }
 
     def _debug_trigger_nodes(self, node_map, *, context: str = "") -> None:
@@ -606,6 +619,13 @@ class GenTLCameraBackend(CameraBackend):
         role = str(self._trigger_attr(getattr(self, "_trigger", None), "role", "off") or "off").lower()
         return role in {"external", "follower"}
 
+    def _is_camera_mono(self) -> bool:
+        fmt = str(self._camera_pixel_format or self._pixel_format or "").strip()
+        return fmt.startswith("Mono")
+
+    def _should_output_mono(self) -> bool:
+        return bool(self._preserve_mono and self._is_camera_mono())
+
     @staticmethod
     def _output_format_for_frame(frame: np.ndarray) -> str:
         if frame.ndim == 2:
@@ -660,6 +680,25 @@ class GenTLCameraBackend(CameraBackend):
             except Exception:
                 pass
         self._actual_output_format = self._output_format_for_frame(frame)
+        try:
+            ns = self._ensure_settings_ns()
+            ns["actual_output_format"] = self._actual_output_format
+            ns["preserve_mono"] = self._preserve_mono
+        except Exception:
+            pass
+        if not self._logged_first_frame:
+            self._logged_first_frame = True
+            LOG.info(
+                "[GenTL] first frame device_id=%s shape=%s dtype=%s nbytes=%.2f MB "
+                "camera_pixel_format=%s output_format=%s preserve_mono=%s",
+                self._device_id,
+                frame.shape,
+                frame.dtype,
+                frame.nbytes / (1024 * 1024),
+                self._camera_pixel_format,
+                self.actual_output_format,
+                self._preserve_mono,
+            )
 
         return CapturedFrame(
             frame=frame,
@@ -1286,7 +1325,7 @@ class GenTLCameraBackend(CameraBackend):
         if requested.lower() == "auto":
             for candidate in ("Line0", "Line1", "Line2", "Any"):
                 if candidate in available:
-                    LOG.info(
+                    LOG.debug(
                         "GenTL TriggerSource auto-selected '%s'. Available: %s",
                         candidate,
                         available,
@@ -1374,6 +1413,14 @@ class GenTLCameraBackend(CameraBackend):
             pixel_format_node.value = selected
             self._pixel_format = str(pixel_format_node.value)
             self._camera_pixel_format = self._pixel_format
+            try:
+                ns = self._ensure_settings_ns()
+                ns["actual_pixel_format"] = self._camera_pixel_format
+                ns["detected_pixel_format"] = self._camera_pixel_format
+                ns["actual_output_format"] = self.actual_output_format
+                ns["preserve_mono"] = self._preserve_mono
+            except Exception:
+                pass
 
             LOG.debug("GenTL pixel format selected: %s", self._pixel_format)
 
@@ -1475,7 +1522,7 @@ class GenTLCameraBackend(CameraBackend):
             self._trigger = CameraTriggerSettings()
             return
 
-        LOG.info(
+        LOG.debug(
             "GenTL trigger input configured: role=%s selector=%s source_requested=%s "
             "source=%s activation=%s selector_ok=%s source_ok=%s activation_ok=%s",
             role,
@@ -1536,7 +1583,7 @@ class GenTLCameraBackend(CameraBackend):
                     node = self._node(node_map, "StrobeDuration")
                     if node is not None:
                         node.value = int(strobe_duration)
-                        LOG.info("Configured GenTL StrobeDuration=%s", int(strobe_duration))
+                        LOG.debug("Configured GenTL StrobeDuration=%s", int(strobe_duration))
                 except Exception as exc:
                     if strict:
                         raise RuntimeError(f"Failed to set StrobeDuration={strobe_duration}: {exc}") from exc
@@ -1547,7 +1594,7 @@ class GenTLCameraBackend(CameraBackend):
                     node = self._node(node_map, "StrobeDelay")
                     if node is not None:
                         node.value = int(strobe_delay)
-                        LOG.info("Configured GenTL StrobeDelay=%s", int(strobe_delay))
+                        LOG.debug("Configured GenTL StrobeDelay=%s", int(strobe_delay))
                 except Exception as exc:
                     if strict:
                         raise RuntimeError(f"Failed to set StrobeDelay={strobe_delay}: {exc}") from exc
@@ -1561,7 +1608,7 @@ class GenTLCameraBackend(CameraBackend):
             )
 
             if enable_ok:
-                LOG.info(
+                LOG.debug(
                     "GenTL trigger master configured via Strobe*: "
                     "StrobeEnable=On StrobePolarity=%s polarity_ok=%s "
                     "StrobeOperation=%s operation_ok=%s",
@@ -1601,7 +1648,7 @@ class GenTLCameraBackend(CameraBackend):
                 source_ok = self._set_enum_node(node_map, "LineSource", output_source, strict=strict)
 
                 if mode_ok and source_ok:
-                    LOG.info(
+                    LOG.debug(
                         "GenTL trigger master configured via Line*: output_line=%s output_source=%s",
                         output_line,
                         output_source,
@@ -1720,7 +1767,7 @@ class GenTLCameraBackend(CameraBackend):
             return
 
         target = float(self.settings.fps)
-        LOG.info("Configuring GenTL frame rate: requested %.3f FPS", target)
+        LOG.debug("Configuring GenTL frame rate: requested %.3f FPS", target)
 
         for attr in ("AcquisitionFrameRateEnable", "AcquisitionFrameRateControlEnable"):
             try:
@@ -1728,7 +1775,7 @@ class GenTLCameraBackend(CameraBackend):
                 before = getattr(node, "value", None)
                 node.value = True
                 after = getattr(node, "value", None)
-                LOG.info("Enabled GenTL %s: before=%r after=%r", attr, before, after)
+                LOG.debug("Enabled GenTL %s: before=%r after=%r", attr, before, after)
                 break
             except Exception:
                 pass
@@ -1740,7 +1787,7 @@ class GenTLCameraBackend(CameraBackend):
                 node.value = target
                 after = getattr(node, "value", None)
 
-                LOG.info(
+                LOG.debug(
                     "Set GenTL %s: before=%r requested=%.3f after=%r",
                     attr,
                     before,
@@ -1879,6 +1926,9 @@ class GenTLCameraBackend(CameraBackend):
                 frame = cv2.cvtColor(frame, cv2.COLOR_BayerGR2BGR)
             elif fmt == "BayerBG8":
                 frame = cv2.cvtColor(frame, cv2.COLOR_BayerBG2BGR)
+            elif self._should_output_mono():
+                # Keep Mono* cameras as 2D uint8 frames when explicitly requested.
+                pass
             else:
                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
