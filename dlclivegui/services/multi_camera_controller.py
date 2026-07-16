@@ -276,6 +276,8 @@ class MultiCameraController(QObject):
         self._timestamps: dict[str, float] = {}
         self._frame_lock = Lock()
         self._running = False
+        self._stopping = False
+        self._all_stopped_emitted = False
         self._started_cameras: set = set()
         self._display_ids: dict[str, str] = {}  # camera_id -> display_id (for labeling)
         self._camera_display_order: list[str] = []
@@ -454,8 +456,7 @@ class MultiCameraController(QObject):
         worker.stopped.connect(thread.quit)
         thread.start()
 
-    def _cleanup_camera(self, camera_id: str) -> None:
-        # remove stored frame data
+    def _cleanup_camera(self, camera_id: str, *, finalize: bool = True) -> None:
         with self._frame_lock:
             self._frames.pop(camera_id, None)
             self._timestamps.pop(camera_id, None)
@@ -463,81 +464,35 @@ class MultiCameraController(QObject):
         worker = self._workers.pop(camera_id, None)
         thread = self._threads.pop(camera_id, None)
         self._settings.pop(camera_id, None)
+        self._display_ids.pop(camera_id, None)
+        self._started_cameras.discard(camera_id)
 
         if worker is not None:
             worker.deleteLater()
         if thread is not None:
             thread.deleteLater()
 
-    def stop(self, wait: bool = True) -> None:
-        """Stop all cameras."""
-        if not self._running:
+        if finalize:
+            self._maybe_finalize_stop()
+
+    def _maybe_finalize_stop(self) -> None:
+        if not self._stopping:
             return
 
-        self._running = False
+        live_threads = [thread for thread in self._threads.values() if thread is not None and thread.isRunning()]
+        if live_threads:
+            return
 
-        # Signal all workers to stop
-        for worker in self._workers.values():
-            worker.stop()
+        for camera_id, thread in list(self._threads.items()):
+            if thread is None or not thread.isRunning():
+                self._cleanup_camera(camera_id, finalize=False)
 
-        # Wait for threads to finish
-        if wait:
-            still_running: list[str] = []
-            for cam_id, thread in list(self._threads.items()):
-                if thread is None:
-                    self._cleanup_camera(cam_id)
-                    continue
-                if not thread.isRunning():
-                    self._cleanup_camera(cam_id)
-                    continue
-
-                thread.quit()
-                if thread.wait(QUIT_WAIT_MS):
-                    self._cleanup_camera(cam_id)
-                    continue  # Clean exit
-
-                LOGGER.error(
-                    "Camera thread %s did not quit within %dms; forcing terminate()",
-                    cam_id,
-                    QUIT_WAIT_MS,
-                )
-
-                thread.terminate()
-                if thread.wait(TERMINATE_WAIT_MS):
-                    self._cleanup_camera(cam_id)
-                    continue  # Terminated successfully
-
-                LOGGER.critical(
-                    "Camera thread %s refused to terminate after terminate()+wait(%dms). "
-                    "Keeping references to avoid use-after-free/segfaults. "
-                    "Application restart may be required.",
-                    cam_id,
-                    TERMINATE_WAIT_MS,
-                )
-                still_running.append(cam_id)
-
-            if still_running:
-                self._started_cameras.clear()
-                self._failed_cameras.clear()
-                with self._frame_lock:
-                    self._frames.clear()
-                    self._timestamps.clear()
-                self._expected_cameras = 0
-
-                LOGGER.critical(
-                    "Force stop failed for camera threads: %s. "
-                    "Sending all_stopped to leave GUI in running state, "
-                    "but background camera threads may still be active and interfere with future camera starts. "
-                    "Application restart may be required.",
-                    still_running,
-                )
-                self.all_stopped.emit()
-                return
+        if self._threads:
+            return
 
         self._timing_per_cam.clear()
         self._gui_display_last_emit = 0.0
         self._workers.clear()
-        self._threads.clear()
         self._settings.clear()
         self._started_cameras.clear()
         self._failed_cameras.clear()
@@ -547,9 +502,78 @@ class MultiCameraController(QObject):
         with self._frame_lock:
             self._frames.clear()
             self._timestamps.clear()
-        self._expected_cameras = 0
 
-        self.all_stopped.emit()
+        self._expected_cameras = 0
+        self._stopping = False
+
+        if not self._all_stopped_emitted:
+            self._all_stopped_emitted = True
+            self.all_stopped.emit()
+
+    def stop(self, wait: bool = True) -> None:
+        """Request shutdown of all cameras.
+
+        If wait is True, block while attempting cooperative and forced shutdown.
+        If wait is False, retain all worker/thread references and emit all_stopped
+        later, after every QThread has actually finished.
+        """
+        if not self._running and not self._stopping:
+            return
+
+        self._running = False
+        self._stopping = True
+        self._all_stopped_emitted = False
+
+        for worker in list(self._workers.values()):
+            worker.stop()
+
+        if not wait:
+            self._maybe_finalize_stop()
+            return
+
+        still_running: list[str] = []
+
+        for camera_id, thread in list(self._threads.items()):
+            if thread is None or not thread.isRunning():
+                self._cleanup_camera(camera_id, finalize=False)
+                continue
+
+            thread.quit()
+
+            if thread.wait(QUIT_WAIT_MS):
+                self._cleanup_camera(camera_id, finalize=False)
+                continue
+
+            LOGGER.error(
+                "Camera thread %s did not quit within %dms; forcing terminate()",
+                camera_id,
+                QUIT_WAIT_MS,
+            )
+
+            thread.terminate()
+
+            if thread.wait(TERMINATE_WAIT_MS):
+                self._cleanup_camera(camera_id, finalize=False)
+                continue
+
+            LOGGER.critical(
+                "Camera thread %s refused to terminate after terminate()+wait(%dms). "
+                "Keeping references to avoid destroying a running QThread. "
+                "Application restart may be required.",
+                camera_id,
+                TERMINATE_WAIT_MS,
+            )
+            still_running.append(camera_id)
+
+        if still_running:
+            LOGGER.critical(
+                "Camera shutdown incomplete; threads remain active: %s. "
+                "all_stopped will not be emitted because restarting cameras is unsafe.",
+                still_running,
+            )
+            return
+
+        self._maybe_finalize_stop()
 
     def _on_frame_captured(self, camera_id: str, frame: np.ndarray, timestamp: float) -> None:
         """Handle a frame from one camera."""
@@ -821,15 +845,6 @@ class MultiCameraController(QObject):
                 self.initialization_failed.emit(failure_list)
                 self.all_stopped.emit()
                 return
-
-        # Check if all running cameras have stopped (normal shutdown)
-        if (
-            not self._started_cameras
-            and self._running
-            and all(not t.isRunning() for t in self._threads.values() if t is not None)
-        ):
-            self._running = False
-            self.all_stopped.emit()
 
     def _on_camera_error(self, camera_id: str, message: str) -> None:
         """Handle camera error event."""
