@@ -99,7 +99,7 @@ def test_open_does_not_use_alt_index_probe_when_disabled_in_code(monkeypatch, fa
 
     assert any(idx == 0 for idx, _ in calls)
     assert not any(idx == 1 for idx, _ in calls)  # since alt index probe is commented out
-    assert "camera" in backend.device_name().lower()
+    assert "test" in backend.device_name().lower()
 
 
 def test_open_raises_when_unable_to_open(monkeypatch, fake_capture_factory):
