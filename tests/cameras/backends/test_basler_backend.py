@@ -462,3 +462,44 @@ def test_basler_close_turns_input_trigger_off(
     be.close()
 
     assert cam.TriggerMode.GetValue() == "Off"
+
+
+def test_basler_hardware_trigger_maps_pylon_timeout_to_timeout_error(
+    monkeypatch,
+    patch_basler_sdk,
+    basler_settings_factory,
+):
+    import dlclivegui.cameras.backends.basler_backend as bb
+
+    class FakePylonTimeout(Exception):
+        pass
+
+    settings = basler_settings_factory(
+        properties={
+            "basler": {
+                "trigger": {
+                    "role": "follower",
+                    "source": "Line1",
+                }
+            }
+        }
+    )
+    backend = bb.BaslerCameraBackend(settings)
+    backend.open()
+
+    def raise_timeout(*_args, **_kwargs):
+        raise FakePylonTimeout("Grab timed out")
+
+    monkeypatch.setattr(backend._camera, "RetrieveResult", raise_timeout)
+
+    try:
+        with pytest.raises(
+            TimeoutError,
+            match="waiting for hardware trigger",
+        ) as exc_info:
+            backend.read()
+
+        assert isinstance(exc_info.value.__cause__, FakePylonTimeout)
+
+    finally:
+        backend.close()

@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -667,7 +668,10 @@ def patch_basler_sdk(monkeypatch, fake_pylon_module):
     """Patch Basler backend to use FakePylon."""
     import dlclivegui.cameras.backends.basler_backend as bb
 
+    fake_genicam = SimpleNamespace(TimeoutException=FakePylonTimeoutException)
+
     monkeypatch.setattr(bb, "pylon", fake_pylon_module, raising=False)
+    monkeypatch.setattr(bb, "genicam", fake_genicam)
     return fake_pylon_module
 
 
