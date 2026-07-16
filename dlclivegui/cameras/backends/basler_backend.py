@@ -26,9 +26,10 @@ if ENABLE_PYLON_EMU:
     os.environ["PYLON_CAMEMU"] = "4"
 
 try:  # pragma: no cover - optional dependency
-    from pypylon import pylon
+    from pypylon import genicam, pylon
 except Exception:  # pragma: no cover - optional dependency
-    pylon = None  # type: ignore
+    genicam = None  # type: ignore[assignment]
+    pylon = None  # type: ignore[assignment]
 
 
 @register_backend("basler")
@@ -364,6 +365,16 @@ class BaslerCameraBackend(CameraBackend):
         return dc
 
     @staticmethod
+    def _is_pylon_timeout_exception(exc: BaseException) -> bool:
+        """Return whether an exception is PyPylon's SDK timeout exception."""
+        timeout_type = getattr(genicam, "TimeoutException", None)
+
+        if not isinstance(timeout_type, type):
+            return False
+
+        return isinstance(exc, timeout_type)
+
+    @staticmethod
     def _positive_float(value) -> float | None:
         """Return float(value) if > 0 else None."""
         try:
@@ -648,7 +659,7 @@ class BaslerCameraBackend(CameraBackend):
                 except Exception:
                     pass
 
-            if self.waits_for_hardware_trigger:
+            if self.waits_for_hardware_trigger and self._is_pylon_timeout_exception(exc):
                 self._timing.note_timeout()
                 self._timing.maybe_log()
                 raise TimeoutError(f"Basler timeout while waiting for hardware trigger: {exc}") from exc
