@@ -487,8 +487,10 @@ def test_basler_hardware_trigger_maps_pylon_timeout_to_timeout_error(
     backend = bb.BaslerCameraBackend(settings)
     backend.open()
 
+    pylon_to = bb.genicam.TimeoutException
+
     def raise_timeout(*_args, **_kwargs):
-        raise FakePylonTimeout("Grab timed out")
+        raise pylon_to("Simulated timeout")
 
     monkeypatch.setattr(backend._camera, "RetrieveResult", raise_timeout)
 
@@ -499,7 +501,7 @@ def test_basler_hardware_trigger_maps_pylon_timeout_to_timeout_error(
         ) as exc_info:
             backend.read()
 
-        assert isinstance(exc_info.value.__cause__, FakePylonTimeout)
+        assert isinstance(exc_info.value.__cause__, bb.genicam.TimeoutException)
 
     finally:
         backend.close()
