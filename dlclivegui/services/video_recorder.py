@@ -32,7 +32,51 @@ _SENTINEL = object()
 
 
 class VideoRecorder:
-    """Thin wrapper around :class:`vidgear.gears.WriteGear`."""
+    """Asynchronous video recorder backed by VidGear/FFmpeg.
+
+    `VideoRecorder` wraps VidGear's `WriteGear` writer with a bounded in-memory
+    queue and a dedicated writer thread. Calls to `write()` perform minimal frame
+    validation/preprocessing, enqueue accepted frames without blocking, and return
+    immediately. The writer thread consumes queued frames and writes them to disk,
+    while also recording timestamps for successfully written frames.
+
+    The recorder is intended for high-throughput camera pipelines where frame
+    acquisition should not block on video encoding. If the internal queue fills,
+    incoming frames are dropped and counted in recorder statistics. Timestamp
+    sidecar files are written on `stop()` for frames that were actually written.
+
+    Args:
+        output: Output video path.
+        frame_size: Expected frame size as `(height, width)`. If provided,
+            incoming frames with different dimensions are rejected and the
+            recorder enters an error state.
+        frame_rate: Output video frame rate. If missing or non-positive, the
+            recorder falls back to 30 FPS and logs a warning.
+        codec: FFmpeg video codec name passed to WriteGear, for example
+            `"libx264"`.
+        crf: Constant Rate Factor passed to compatible FFmpeg encoders. Lower
+            values generally increase quality and file size.
+        buffer_size: Maximum number of frames that may wait in the recorder
+            queue before new frames are dropped.
+        convert_grayscale_to_rgb: Whether 2D grayscale frames should be expanded
+            to 3-channel RGB before writing. Set to `False` to preserve mono
+            frames when supported by the chosen writer/codec path.
+        writer_options: Optional dictionary of additional keyword arguments passed
+            to `WriteGear`. If provided, this overrides the default options.
+
+    Attributes:
+        is_running: Whether the writer thread is currently alive.
+
+    Raises:
+        RuntimeError: If VidGear is unavailable, if the recorder is abandoned
+            after a failed stop, or if a previous encoding error is detected
+            during `write()`.
+
+    Notes:
+        This class does not guarantee that every submitted frame is written.
+        Frames may be dropped when the queue is full, and timestamps are only
+        saved for frames successfully consumed by the writer thread.
+    """
 
     def __init__(
         self,
@@ -43,6 +87,7 @@ class VideoRecorder:
         crf: int = 23,
         buffer_size: int = 240,
         convert_grayscale_to_rgb: bool = True,
+        writer_options: dict[str, Any] | None = None,
     ):
         # Config
         self._output = Path(output)
@@ -53,6 +98,7 @@ class VideoRecorder:
         self._crf = int(crf)
         self._buffer_size = max(1, int(buffer_size))
         self._convert_grayscale_to_rgb = bool(convert_grayscale_to_rgb)
+        self._writer_options = dict(writer_options) if writer_options is not None else None
         # Worker state
         self._queue: queue.Queue[Any] | None = None
         self._writer_thread: threading.Thread | None = None
@@ -122,7 +168,7 @@ class VideoRecorder:
 
             logger.info(
                 "Starting VideoRecorder output=%s frame_size=%s frame_rate=%.3f "
-                "codec=%s crf=%s buffer_size=%s convert_grayscale_to_rgb=%s",
+                "codec=%s crf=%s buffer_size=%s convert_grayscale_to_rgb=%s writer_options=%s",
                 self._output,
                 self._frame_size,
                 fps_value,
@@ -130,15 +176,21 @@ class VideoRecorder:
                 self._crf,
                 self._buffer_size,
                 self._convert_grayscale_to_rgb,
+                self._writer_options,
             )
 
+            codec_value = (self._codec or "libx264").strip() or "libx264"
             writer_kwargs: dict[str, Any] = {
                 "compression_mode": True,
                 "logging": False,
                 "-input_framerate": fps_value,
-                "-vcodec": (self._codec or "libx264").strip() or "libx264",
+                "-vcodec": codec_value,
                 "-crf": int(self._crf),
             }
+
+            if self._writer_options is not None:
+                writer_kwargs.update(self._writer_options)
+
             # if not self._convert_grayscale_to_rgb:
             #     writer_kwargs.update(
             #         {
@@ -332,12 +384,21 @@ class VideoRecorder:
             avg_latency = self._total_latency / self._frames_written if self._frames_written else 0.0
             last_latency = self._last_latency
             write_fps = self._compute_write_fps_locked()
-        buffer_seconds = queue_size * avg_latency if avg_latency > 0 else 0.0
+
+        if write_fps > 0:
+            buffer_seconds = queue_size / write_fps
+        elif avg_latency > 0:
+            buffer_seconds = queue_size * avg_latency
+        elif last_latency > 0:
+            buffer_seconds = queue_size * last_latency
+        else:
+            buffer_seconds = 0.0
         return RecorderStats(
             frames_enqueued=frames_enqueued,
             frames_written=frames_written,
             dropped_frames=dropped,
             queue_size=queue_size,
+            buffer_size=self._buffer_size,
             average_latency=avg_latency,
             last_latency=last_latency,
             write_fps=write_fps,

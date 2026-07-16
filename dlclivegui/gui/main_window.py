@@ -137,6 +137,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._raw_frame: np.ndarray | None = None
         self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
+        self._pending_recording_after_preview = False
         self._active_camera_settings: CameraSettings | None = None
         self._last_drop_warning = 0.0
         self._last_recorder_summary = "Recorder idle"
@@ -632,13 +633,29 @@ class DLCLiveMainWindow(QMainWindow):
 
         form.addRow(grid)
 
-        # Record with overlays
+        # Recording options
         self.record_with_overlays_checkbox = QCheckBox("Record video with overlays")
         self.record_with_overlays_checkbox.setToolTip(
             "Enable to include pose overlays in recorded video (keypoints & bounding boxes)"
         )
         self.record_with_overlays_checkbox.setChecked(False)
-        form.addRow(self.record_with_overlays_checkbox)
+
+        self.fast_encoding_checkbox = QCheckBox("Use faster encoding parameters")
+        self.fast_encoding_checkbox.setToolTip(
+            "Use faster FFmpeg parameters for supported codecs.\n"
+            "For libx264/libx265 this uses preset=ultrafast and tune=zerolatency.\n"
+            "This can improve recording throughput but may increase file size."
+        )
+        self.fast_encoding_checkbox.setChecked(False)
+
+        recording_options = QWidget()
+        recording_options_layout = QHBoxLayout(recording_options)
+        recording_options_layout.setContentsMargins(0, 0, 0, 0)
+        recording_options_layout.addWidget(self.record_with_overlays_checkbox)
+        recording_options_layout.addWidget(self.fast_encoding_checkbox)
+        recording_options_layout.addStretch(1)
+
+        form.addRow(recording_options)
 
         # Wrap recording buttons in a widget to prevent shifting
         recording_button_widget = QWidget()
@@ -771,6 +788,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Multi-camera controller signals (used for both single and multi-camera modes)
         self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_processing_ready)
         self.multi_camera_controller.display_ready.connect(self._on_multi_frame_display_ready)
+        self.multi_camera_controller.recording_frame_ready.connect(self._on_recording_frame_ready)
         self.multi_camera_controller.all_started.connect(self._on_multi_camera_started)
         self.multi_camera_controller.all_stopped.connect(self._on_multi_camera_stopped)
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
@@ -782,19 +800,17 @@ class DLCLiveMainWindow(QMainWindow):
         self._dlc.initialized.connect(self._on_dlc_initialised)
         self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
         self.dlc_camera_combo.currentTextChanged.connect(self.dlc_camera_combo.update_shrink_width)
+        self.allow_processor_ctrl_checkbox.stateChanged.connect(lambda _s: self._update_dlc_controls_enabled())
+        self.allow_processor_ctrl_checkbox.stateChanged.connect(lambda _s: self._update_processor_status())
 
         # Recording settings
         ## Session name persistence + preview updates
-        if hasattr(self, "session_name_edit"):
-            self.session_name_edit.editingFinished.connect(self._on_session_name_editing_finished)
-        if hasattr(self, "use_timestamp_checkbox"):
-            self.use_timestamp_checkbox.stateChanged.connect(self._on_use_timestamp_changed)
-        if hasattr(self, "output_directory_edit"):
-            self.output_directory_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
-        if hasattr(self, "filename_edit"):
-            self.filename_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
-        if hasattr(self, "container_combo"):
-            self.container_combo.currentTextChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.session_name_edit.editingFinished.connect(self._on_session_name_editing_finished)
+        self.use_timestamp_checkbox.stateChanged.connect(self._on_use_timestamp_changed)
+        self.output_directory_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.filename_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.container_combo.currentTextChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.fast_encoding_checkbox.stateChanged.connect(self._on_fast_encoding_changed)
 
     # ------------------------------------------------------------------
     # Config
@@ -821,6 +837,11 @@ class DLCLiveMainWindow(QMainWindow):
             self.codec_combo.addItem(recording.codec)
             self.codec_combo.setCurrentIndex(self.codec_combo.count() - 1)
         self.crf_spin.setValue(int(recording.crf))
+
+        if hasattr(self, "fast_encoding_checkbox"):
+            config_fast_encoding = bool(getattr(recording, "fast_encoding", False))
+            self.fast_encoding_checkbox.setChecked(self._settings_store.get_fast_encoding(default=config_fast_encoding))
+
         ## Restore persisted session name if empty
         if hasattr(self, "session_name_edit"):
             if not self.session_name_edit.text().strip():
@@ -931,6 +952,9 @@ class DLCLiveMainWindow(QMainWindow):
             container=self.container_combo.currentText().strip() or "mp4",
             codec=self.codec_combo.currentText().strip() or "libx264",
             crf=int(self.crf_spin.value()),
+            fast_encoding=bool(
+                getattr(self, "fast_encoding_checkbox", None) and self.fast_encoding_checkbox.isChecked()
+            ),
         )
 
     def _bbox_settings_from_ui(self) -> BoundingBoxSettings:
@@ -1189,6 +1213,9 @@ class DLCLiveMainWindow(QMainWindow):
         self._settings_store.set_use_timestamp(self.use_timestamp_checkbox.isChecked())
         self._update_recording_path_preview()
 
+    def _on_fast_encoding_changed(self, _state: int) -> None:
+        self._settings_store.set_fast_encoding(self.fast_encoding_checkbox.isChecked())
+
     def _on_colormap_changed(self, _index: int) -> None:
         self._colormap = color_ui.get_cmap_name_from_combo(self.cmap_combo, fallback=self._colormap)
         if self._current_frame is not None:
@@ -1372,15 +1399,33 @@ class DLCLiveMainWindow(QMainWindow):
             )
         return output
 
+    def _on_recording_frame_ready(self, camera_id: str, frame: np.ndarray, timestamp: float) -> None:
+        """Handle full-rate per-camera frames for recording only.
+
+        Intentionally lean:
+        - no MultiFrameData processing
+        - no DLC routing
+        - no display state updates
+        - no FPS tracker
+        - optional overlays only if user requested recording overlays
+        """
+        if not self._rec_manager.is_active:
+            return
+
+        if self.record_with_overlays_checkbox.isChecked():
+            frame = self._render_overlays_for_recording(camera_id, frame)
+
+        self._rec_manager.write_frame(camera_id, frame, timestamp)
+
     def _on_multi_frame_processing_ready(self, frame_data: MultiFrameData) -> None:
         """Handle frames from multiple cameras.
 
         Priority:
-        1. DLC processing (highest priority - enqueue immediately, only for DLC camera)
-        2. Recording (queued writes, non-blocking)
+            - DLC processing (highest priority - enqueue immediately, only for DLC camera)
         """
         self._multi_camera_frames = frame_data.frames
         self._multi_camera_display_ids = frame_data.display_ids or {}
+        self._try_start_pending_recording()
         src_id = frame_data.source_camera_id
         if src_id:
             self._fps_tracker.note_frame(src_id)  # Track FPS
@@ -1418,22 +1463,11 @@ class DLCLiveMainWindow(QMainWindow):
             self._raw_frame = frame
             self._dlc_tile_offset, self._dlc_tile_scale = compute_tile_info(dlc_cam_id, frame, frame_data.frames)
 
-        # PRIORITY 1: DLC processing - only enqueue when DLC camera frame arrives!
+        # PRIORITY: DLC processing - only enqueue when DLC camera frame arrives!
         if self._dlc_active and is_dlc_camera_frame and dlc_cam_id in frame_data.frames:
             frame = frame_data.frames[dlc_cam_id]
             timestamp = frame_data.timestamps.get(dlc_cam_id, time.time())
             self._dlc.enqueue_frame(frame, timestamp)
-
-        # PRIORITY 2: Recording (queued, non-blocking)
-        if self._rec_manager.is_active and src_id in frame_data.frames:
-            frame = frame_data.frames[src_id]
-
-            if self.record_with_overlays_checkbox.isChecked():
-                # Draw overlays for recording
-                frame = self._render_overlays_for_recording(src_id, frame)
-
-            ts = frame_data.timestamps.get(src_id, time.time())
-            self._rec_manager.write_frame(src_id, frame, ts)
 
     def _on_multi_frame_display_ready(self, frame_data: MultiFrameData) -> None:
         """Throttled UI/display path.
@@ -1452,11 +1486,13 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage(f"Multi-camera preview started: {active_count} camera(s)", 5000)
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
+        self._update_dlc_controls_enabled()
 
     def _on_multi_camera_stopped(self) -> None:
         """Handle all cameras stopped event."""
         # Stop all multi-camera recorders
         self._stop_multi_camera_recording()
+        self._pending_recording_after_preview = False
 
         self.preview_button.setEnabled(True)
         self.stop_preview_button.setEnabled(False)
@@ -1468,9 +1504,11 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage("Multi-camera preview stopped", 3000)
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
+        self._update_dlc_controls_enabled()
 
     def _on_multi_camera_error(self, camera_id: str, message: str) -> None:
         """Handle error from a camera in multi-camera mode."""
+        self._pending_recording_after_preview = False
         self._show_warning(f"Camera {camera_id} error: {message}\nRecording stopped.")
         self._refresh_dlc_camera_list_running()
         if self.dlc_camera_combo.count() <= 1:
@@ -1479,6 +1517,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _on_multi_camera_initialization_failed(self, failures: list) -> None:
         """Handle complete failure to initialize cameras."""
+        self._pending_recording_after_preview = False
         # Build error message with details for each failed camera
         error_lines = ["Failed to initialize camera(s):"]
         for camera_id, error_msg in failures:
@@ -1514,6 +1553,7 @@ class DLCLiveMainWindow(QMainWindow):
         if run_dir is None:
             self._show_error("Failed to start recording.")
             return
+        self.multi_camera_controller.set_recording_frame_do_emit(True)
 
         self._settings_store.set_session_name(session_name)
         self.start_record_button.setEnabled(False)
@@ -1524,6 +1564,9 @@ class DLCLiveMainWindow(QMainWindow):
     def _stop_multi_camera_recording(self) -> None:
         if not self._rec_manager.is_active:
             return
+
+        self.multi_camera_controller.set_recording_frame_do_emit(False)
+
         self._rec_manager.stop_all()
         self.start_record_button.setEnabled(True)
         self.stop_record_button.setEnabled(False)
@@ -1635,6 +1678,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._stop_multi_camera_recording()
 
         self.multi_camera_controller.stop(wait=True)
+        self._pending_recording_after_preview = False
         self._stop_inference(show_message=False)
         self._fps_tracker.clear()
         self._last_display_time = 0.0
@@ -1715,6 +1759,8 @@ class DLCLiveMainWindow(QMainWindow):
         recording_editable = not multi_cam_recording
         self.codec_combo.setEnabled(recording_editable)
         self.crf_spin.setEnabled(recording_editable)
+        if hasattr(self, "fast_encoding_checkbox"):
+            self.fast_encoding_checkbox.setEnabled(recording_editable)
 
         # Config cameras button should be available when not in preview/recording
         self.config_cameras_button.setEnabled(allow_changes)
@@ -1916,15 +1962,42 @@ class DLCLiveMainWindow(QMainWindow):
         """Start recording from all active cameras."""
         # Auto-start preview if not running
         if not self.multi_camera_controller.is_running():
+            self._pending_recording_after_preview = True
             self._start_preview()
             # Wait a moment for cameras to initialize before recording
             # The recording will start after preview is confirmed running
             self.statusBar().showMessage("Starting preview before recording...", 3000)
             # Use a single-shot timer to start recording after preview starts
-            QTimer.singleShot(500, self._start_multi_camera_recording)
+            # QTimer.singleShot(500, self._start_multi_camera_recording)
             return
 
         # Preview already running, start recording immediately
+        self._start_multi_camera_recording()
+
+    def _try_start_pending_recording(self) -> None:
+        if not self._pending_recording_after_preview:
+            return
+
+        if self._rec_manager.is_active:
+            self._pending_recording_after_preview = False
+            return
+
+        if not self.multi_camera_controller.is_running():
+            return
+
+        active_cams = self._config.multi_camera.get_active_cameras()
+        expected_ids = {get_camera_id(cam) for cam in active_cams}
+
+        if not expected_ids:
+            self._pending_recording_after_preview = False
+            return
+
+        available_ids = set(self._multi_camera_frames.keys())
+
+        if not expected_ids.issubset(available_ids):
+            return
+
+        self._pending_recording_after_preview = False
         self._start_multi_camera_recording()
 
     def _stop_recording(self) -> None:

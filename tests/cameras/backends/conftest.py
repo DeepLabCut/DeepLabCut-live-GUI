@@ -390,6 +390,7 @@ class FakePylon:
     """Fake for 'from pypylon import pylon' used by BaslerCameraBackend."""
 
     GrabStrategy_LatestImageOnly = 1
+    GrabStrategy_OneByOne = 2
     TimeoutHandling_ThrowException = 1
     PixelType_BGR8packed = 0x02180014
     OutputBitAlignment_MsbAligned = 1

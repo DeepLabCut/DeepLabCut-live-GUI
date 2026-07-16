@@ -31,6 +31,8 @@ except Exception:  # pragma: no cover - optional dependency
     genicam = None  # type: ignore[assignment]
     pylon = None  # type: ignore[assignment]
 
+DEBUG_TRIGGER_LOGS = False
+
 
 @register_backend("basler")
 class BaslerCameraBackend(CameraBackend):
@@ -638,7 +640,8 @@ class BaslerCameraBackend(CameraBackend):
                 pass
 
             self._camera.StartGrabbing(
-                pylon.GrabStrategy_LatestImageOnly,
+                # pylon.GrabStrategy_LatestImageOnly,
+                pylon.GrabStrategy_OneByOne,
             )
             LOG.info(
                 "[Basler] grabbing=%s max_buffers=%s",
@@ -661,7 +664,7 @@ class BaslerCameraBackend(CameraBackend):
         )
 
         # ----------------------------
-        # Persist stable identity into namespace (migration-safe)
+        # Persist stable identity into namespace
         # ----------------------------
         try:
             serial = device.GetSerialNumber()
@@ -958,6 +961,9 @@ class BaslerCameraBackend(CameraBackend):
             return False
 
     def _debug_trigger_nodes(self, *, context: str = "") -> None:
+        if not LOG.isEnabledFor(logging.DEBUG) or not DEBUG_TRIGGER_LOGS:
+            return
+
         names = (
             "TriggerSelector",
             "TriggerMode",
