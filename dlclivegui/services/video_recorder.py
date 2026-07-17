@@ -9,11 +9,13 @@ import queue
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from dlclivegui.config import REC_DO_LOG_TIMING
+from dlclivegui.utils.stats import RecorderStats, WorkerTimingStats
 
 try:
     from vidgear.gears import WriteGear
@@ -24,20 +26,6 @@ except ImportError:  # pragma: no cover - handled at runtime
 logger = logging.getLogger(__name__)
 
 STOP_JOIN_TIMEOUT = 5.0  # seconds
-
-
-@dataclass
-class RecorderStats:
-    """Snapshot of recorder throughput metrics."""
-
-    frames_enqueued: int = 0
-    frames_written: int = 0
-    dropped_frames: int = 0
-    queue_size: int = 0
-    average_latency: float = 0.0
-    last_latency: float = 0.0
-    write_fps: float = 0.0
-    buffer_seconds: float = 0.0
 
 
 _SENTINEL = object()
@@ -54,6 +42,7 @@ class VideoRecorder:
         codec: str = "libx264",
         crf: int = 23,
         buffer_size: int = 240,
+        convert_grayscale_to_rgb: bool = True,
     ):
         # Config
         self._output = Path(output)
@@ -63,6 +52,7 @@ class VideoRecorder:
         self._codec = codec
         self._crf = int(crf)
         self._buffer_size = max(1, int(buffer_size))
+        self._convert_grayscale_to_rgb = bool(convert_grayscale_to_rgb)
         # Worker state
         self._queue: queue.Queue[Any] | None = None
         self._writer_thread: threading.Thread | None = None
@@ -80,6 +70,14 @@ class VideoRecorder:
         self._encode_error: Exception | None = None
         self._last_log_time = 0.0
         self._frame_timestamps: list[float] = []
+        # Timing
+        self._process_timing = WorkerTimingStats(
+            f"RecorderProcess[{self._output.name}]", logger=logger, log_interval=1.0, enabled=REC_DO_LOG_TIMING
+        )
+        self._writer_timing = WorkerTimingStats(
+            f"RecorderWriter[{self._output.name}]", logger=logger, log_interval=1.0, enabled=REC_DO_LOG_TIMING
+        )
+        self._logged_first_frame = False
 
     @property
     def is_running(self) -> bool:
@@ -111,7 +109,28 @@ class VideoRecorder:
                     self._queue = None
                     self._writer_thread = None
 
-            fps_value = float(self._frame_rate) if self._frame_rate else 30.0
+            if self._frame_rate and float(self._frame_rate) > 0.0:
+                fps_value = float(self._frame_rate)
+            else:
+                fps_value = 30.0
+                logger.warning(
+                    "VideoRecorder frame_rate missing/zero for %s; falling back to %.3f FPS. "
+                    "Video playback duration may not match capture timestamps.",
+                    self._output.name,
+                    fps_value,
+                )
+
+            logger.info(
+                "Starting VideoRecorder output=%s frame_size=%s frame_rate=%.3f "
+                "codec=%s crf=%s buffer_size=%s convert_grayscale_to_rgb=%s",
+                self._output,
+                self._frame_size,
+                fps_value,
+                self._codec,
+                self._crf,
+                self._buffer_size,
+                self._convert_grayscale_to_rgb,
+            )
 
             writer_kwargs: dict[str, Any] = {
                 "compression_mode": True,
@@ -120,7 +139,15 @@ class VideoRecorder:
                 "-vcodec": (self._codec or "libx264").strip() or "libx264",
                 "-crf": int(self._crf),
             }
-            # TODO deal with pixel format
+            # if not self._convert_grayscale_to_rgb:
+            #     writer_kwargs.update(
+            #         {
+            #             "-pix_fmt": "yuv420p",
+            #         }
+            #     )
+            #     if self._frame_size is not None:
+            #         h, w = self._frame_size
+            #         writer_kwargs["-output_dimensions"] = (int(w), int(h))
 
             self._output.parent.mkdir(parents=True, exist_ok=True)
             self._writer = WriteGear(output=str(self._output), **writer_kwargs)
@@ -160,41 +187,57 @@ class VideoRecorder:
         if timestamp is None:
             timestamp = time.time()
 
-        # Convert frame to uint8 if needed
-        if frame.dtype != np.uint8:
-            frame_float = frame.astype(np.float32, copy=False)
-            max_val = float(frame_float.max()) if frame_float.size else 0.0
-            scale = 1.0
-            if max_val > 0:
-                scale = 255.0 / max_val if max_val > 255.0 else (255.0 if max_val <= 1.0 else 1.0)
-            frame = np.clip(frame_float * scale, 0.0, 255.0).astype(np.uint8)
+        with self._process_timing.measure("Recorder.preprocess"):
+            # Convert frame to uint8 if needed
+            if frame.dtype != np.uint8:
+                frame_float = frame.astype(np.float32, copy=False)
+                max_val = float(frame_float.max()) if frame_float.size else 0.0
+                scale = 1.0
+                if max_val > 0:
+                    scale = 255.0 / max_val if max_val > 255.0 else (255.0 if max_val <= 1.0 else 1.0)
+                frame = np.clip(frame_float * scale, 0.0, 255.0).astype(np.uint8)
 
-        # Convert grayscale to RGB if needed
-        if frame.ndim == 2:
-            frame = np.repeat(frame[:, :, None], 3, axis=2)
+            # Convert grayscale to RGB if needed
+            if self._convert_grayscale_to_rgb and frame.ndim == 2:
+                frame = np.repeat(frame[:, :, None], 3, axis=2)
 
-        # Ensure contiguous array
-        frame = np.ascontiguousarray(frame)
+            # Ensure contiguous array
+            frame = np.ascontiguousarray(frame)
 
-        # Check if frame size matches expected size
-        if self._frame_size is not None:
-            expected_h, expected_w = self._frame_size
-            actual_h, actual_w = frame.shape[:2]
-            if (actual_h, actual_w) != (expected_h, expected_w):
-                logger.warning(
-                    f"Frame size mismatch: expected (h={expected_h}, w={expected_w}), "
-                    f"got (h={actual_h}, w={actual_w}). "
-                    "Stopping recorder to prevent encoding errors."
+            if not self._logged_first_frame:
+                self._logged_first_frame = True
+                logger.info(
+                    "Recorder %s first frame: shape=%s dtype=%s "
+                    "contiguous=%s nbytes=%.2f MB convert_grayscale_to_rgb=%s",
+                    self._output.name,
+                    frame.shape,
+                    frame.dtype,
+                    frame.flags.c_contiguous,
+                    frame.nbytes / (1024 * 1024),
+                    self._convert_grayscale_to_rgb,
                 )
-                # Set error to stop recording gracefully
-                with self._stats_lock:
-                    self._encode_error = ValueError(
-                        f"Frame size changed from (h={expected_h}, w={expected_w}) to (h={actual_h}, w={actual_w})"
+
+            # Check if frame size matches expected size
+            if self._frame_size is not None:
+                expected_h, expected_w = self._frame_size
+                actual_h, actual_w = frame.shape[:2]
+                if (actual_h, actual_w) != (expected_h, expected_w):
+                    logger.warning(
+                        f"Frame size mismatch: expected (h={expected_h}, w={expected_w}), "
+                        f"got (h={actual_h}, w={actual_w}). "
+                        "Stopping recorder to prevent encoding errors."
                     )
-                return False
+                    with self._stats_lock:
+                        self._encode_error = ValueError(
+                            f"Frame size changed from (h={expected_h}, w={expected_w}) to (h={actual_h}, w={actual_w})"
+                        )
+                    self._process_timing.note_error()
+                    self._process_timing.maybe_log()
+                    return False
 
         try:
-            q.put((frame, timestamp), block=False)
+            with self._process_timing.measure("Recorder.queue_put"):
+                q.put((frame, timestamp), block=False)
         except queue.Full:
             with self._stats_lock:
                 self._dropped_frames += 1
@@ -204,9 +247,16 @@ class VideoRecorder:
                 queue_size,
                 self._buffer_size,
             )
+            self._process_timing.note_error()
+            self._process_timing.maybe_log()
             return False
+
         with self._stats_lock:
             self._frames_enqueued += 1
+
+        self._process_timing.note_frame()
+        self._process_timing.maybe_log()
+
         return True
 
     def stop(self) -> None:
@@ -328,12 +378,17 @@ class VideoRecorder:
                             writer = self._writer
                             if writer is None:
                                 raise RuntimeError("WriteGear writer is not initialized")
-                            writer.write(frame)
+
+                            with self._writer_timing.measure("Recorder.writer_write"):
+                                writer.write(frame)
+
                         except Exception as exc:
                             with self._stats_lock:
                                 self._encode_error = exc
                             logger.exception("Video encoding failed while writing frame", exc_info=exc)
                             self._stop_event.set()
+                            self._writer_timing.note_error()
+                            self._writer_timing.maybe_log()
                             break
                         else:
                             elapsed = time.perf_counter() - start
@@ -347,6 +402,9 @@ class VideoRecorder:
                                 if now - self._last_log_time >= 1.0:
                                     self._compute_write_fps_locked()
                                     self._last_log_time = now
+
+                            self._writer_timing.note_frame()
+                            self._writer_timing.maybe_log()
 
                 finally:
                     # Ensure queue accounting is correct for every item pulled from q

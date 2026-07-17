@@ -24,9 +24,12 @@ GUI_MAX_DISPLAY_FPS: float = 30.0
 
 ## Debug
 ### Timing logs
-SINGLE_CAMERA_WORKER_DO_LOG_TIMING: bool = True
-MULTI_CAMERA_WORKER_DO_LOG_TIMING: bool = True
+SINGLE_CAMERA_WORKER_DO_LOG_TIMING: bool = False
+MULTI_CAMERA_WORKER_DO_LOG_TIMING: bool = False
+REC_DO_LOG_TIMING: bool = False
 # MAIN_WINDOW_DO_LOG_TIMING: bool = False
+#### Backends
+BASLER_DO_LOG_TIMING: bool = False
 
 
 class CameraSettings(BaseModel):
@@ -42,6 +45,7 @@ class CameraSettings(BaseModel):
 
     exposure: int = 0  # 0=auto else µs
     gain: float = 0.0  # 0.0=auto else value
+    preserve_mono: bool = False  # if True, preserve mono images as mono (not BGR) when reading
 
     crop_x0: int = 0
     crop_y0: int = 0
@@ -65,6 +69,7 @@ class CameraSettings(BaseModel):
             f"  fps={self.fps}, size={self.width or 'auto'}x{self.height or 'auto'}, "
             f"exposure={self.exposure or 'auto'}, gain={self.gain or 'auto'}\n"
             f"  rotation={self.rotation}, crop={crop}\n"
+            f"  preserve_mono={self.preserve_mono}, max_devices={self.max_devices}\n"
             f"]"
         )
 

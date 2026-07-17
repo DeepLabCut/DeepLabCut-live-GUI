@@ -6,7 +6,7 @@ import pytest
 from dlclivegui.config import CameraSettings
 from dlclivegui.gui.recording_manager import RecordingManager
 from dlclivegui.services.multi_camera_controller import get_camera_id, get_display_id
-from dlclivegui.services.video_recorder import RecorderStats
+from dlclivegui.utils.stats import RecorderStats
 
 
 @pytest.fixture
@@ -306,7 +306,7 @@ def test_recording_manager_uses_stable_camera_id_not_display_id(
     display_id = get_display_id(cam)
 
     assert stable_id == "gentl:serial:SER0"
-    assert display_id == "gentl:0"
+    assert display_id == "GenTL cam"
     assert stable_id != display_id
 
     frame = np.zeros((480, 640, 3), dtype=np.uint8)

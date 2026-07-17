@@ -50,6 +50,7 @@ class SingleCameraWorker(QObject):
 
     frame_captured = Signal(str, object, float)  # camera_id, frame, timestamp
     error_occurred = Signal(str, str)  # camera_id, error_message
+    runtime_info = Signal(str, object)  # camera_id, dict of runtime info
     started = Signal(str)  # camera_id
     stopped = Signal(str)  # camera_id
 
@@ -96,6 +97,15 @@ class SingleCameraWorker(QObject):
             )
 
             self._backend.open()
+            self.runtime_info.emit(
+                self._camera_id,
+                {
+                    "actual_fps": getattr(self._backend, "actual_fps", None),
+                    "actual_resolution": getattr(self._backend, "actual_resolution", None),
+                    "actual_pixel_format": getattr(self._backend, "actual_pixel_format", None),
+                    "actual_output_format": getattr(self._backend, "actual_output_format", None),
+                },
+            )
         except Exception as exc:
             LOGGER.exception(f"Failed to initialize camera {self._camera_id}", exc_info=exc)
             self.error_occurred.emit(self._camera_id, f"Failed to initialize camera: {exc}")
@@ -208,6 +218,22 @@ class SingleCameraWorker(QObject):
 
 
 def get_display_id(settings: CameraSettings) -> str:
+    """Return the human-friendly camera label used for GUI display.
+    Intentionally different from get_camera_id(), which should return a stable
+    internal, reliable and unambiguous identity and may contain serials or machine paths.
+    """
+    name = str(getattr(settings, "name", "") or "").strip()
+    if name:
+        return name
+
+    backend = (settings.backend or "").lower()
+    props = settings.properties if isinstance(settings.properties, dict) else {}
+    ns = props.get(backend, {}) if isinstance(props.get(backend), dict) else {}
+
+    device_name = str(ns.get("device_name", "") or "").strip()
+    if device_name:
+        return device_name
+
     return f"{settings.backend}:{settings.index}"
 
 
@@ -272,6 +298,7 @@ class MultiCameraController(QObject):
         self._workers: dict[str, SingleCameraWorker] = {}
         self._threads: dict[str, QThread] = {}
         self._settings: dict[str, CameraSettings] = {}
+        self._runtime_info: dict[str, dict] = {}
         self._frames: dict[str, np.ndarray] = {}
         self._timestamps: dict[str, float] = {}
         self._frame_lock = Lock()
@@ -417,6 +444,7 @@ class MultiCameraController(QObject):
 
         # Connections unchanged
         thread.started.connect(worker.run)
+        worker.runtime_info.connect(self._on_camera_runtime_info)
         worker.frame_captured.connect(self._on_frame_captured)
         worker.started.connect(self._on_camera_started)
         worker.stopped.connect(self._on_camera_stopped)
@@ -617,6 +645,36 @@ class MultiCameraController(QObject):
         timing.note_frame()
         timing.maybe_log()
 
+    def _on_camera_runtime_info(self, camera_id: str, info: object) -> None:
+        if not isinstance(info, dict):
+            return
+
+        self._runtime_info[camera_id] = dict(info)
+
+        actual_fps = info.get("actual_fps")
+        LOGGER.info(
+            "Camera %s runtime info: actual_fps=%s actual_resolution=%s pixel_format=%s output_format=%s",
+            camera_id,
+            actual_fps,
+            info.get("actual_resolution"),
+            info.get("actual_pixel_format"),
+            info.get("actual_output_format"),
+        )
+
+    def actual_fps_by_camera_id(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+
+        for camera_id, info in self._runtime_info.items():
+            try:
+                fps = float(info.get("actual_fps") or 0.0)
+            except Exception:
+                fps = 0.0
+
+            if fps > 0.0:
+                out[camera_id] = fps
+
+        return out
+
     @staticmethod
     def apply_rotation(frame: np.ndarray, degrees: int) -> np.ndarray:
         """Apply rotation to frame."""
@@ -689,98 +747,6 @@ class MultiCameraController(QObject):
         q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
         return QPixmap.fromImage(q_img)
 
-    def _create_tiled_frame(self) -> np.ndarray:
-        """Create a tiled frame from all camera frames.
-
-        The tiled frame is scaled to fit within a maximum canvas size
-        while maintaining aspect ratio of individual camera frames.
-        """
-        if not self._frames:
-            return np.zeros((480, 640, 3), dtype=np.uint8)
-
-        frames_list = [self._frames[idx] for idx in sorted(self._frames.keys())]
-        num_frames = len(frames_list)
-
-        if num_frames == 0:
-            return np.zeros((480, 640, 3), dtype=np.uint8)
-
-        # Determine grid layout
-        if num_frames == 1:
-            rows, cols = 1, 1
-        elif num_frames == 2:
-            rows, cols = 1, 2
-        elif num_frames <= 4:
-            rows, cols = 2, 2
-        else:
-            rows, cols = 2, 2  # Limit to 4
-
-        # Maximum canvas size to fit on screen (leaving room for UI elements)
-        max_canvas_width = 1200
-        max_canvas_height = 800
-
-        # Calculate tile size based on frame aspect ratio and available space
-        first_frame = frames_list[0]
-        frame_h, frame_w = first_frame.shape[:2]
-        frame_aspect = frame_w / frame_h if frame_h > 0 else 1.0
-
-        # Calculate tile dimensions that fit within the canvas
-        tile_w = max_canvas_width // cols
-        tile_h = max_canvas_height // rows
-
-        # Maintain aspect ratio of original frames
-        tile_aspect = tile_w / tile_h if tile_h > 0 else 1.0
-
-        if frame_aspect > tile_aspect:
-            # Frame is wider than tile slot - constrain by width
-            tile_h = int(tile_w / frame_aspect)
-        else:
-            # Frame is taller than tile slot - constrain by height
-            tile_w = int(tile_h * frame_aspect)
-
-        # Ensure minimum size
-        tile_w = max(160, tile_w)
-        tile_h = max(120, tile_h)
-
-        # Create canvas
-        canvas = np.zeros((rows * tile_h, cols * tile_w, 3), dtype=np.uint8)
-
-        # Get sorted camera IDs for consistent ordering
-        cam_ids = sorted(self._frames.keys())
-        frames_list = [self._frames[cam_id] for cam_id in cam_ids]
-
-        # Place each frame in the grid
-        for idx, frame in enumerate(frames_list[: rows * cols]):
-            row = idx // cols
-            col = idx % cols
-
-            # Ensure frame is 3-channel
-            frame = MultiCameraController.ensure_color_bgr(frame)
-
-            # Resize to tile size
-            resized = MultiCameraController.apply_resize(frame, tile_w, tile_h, allow_upscale=True)
-
-            # Add camera ID label
-            if idx < len(cam_ids):
-                label = cam_ids[idx]
-                cv2.putText(
-                    resized,
-                    label,
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2,
-                )
-
-            # Place in canvas
-            y_start = row * tile_h
-            y_end = y_start + tile_h
-            x_start = col * tile_w
-            x_end = x_start + tile_w
-            canvas[y_start:y_end, x_start:x_end] = resized
-
-        return canvas
-
     def _on_camera_started(self, camera_id: str) -> None:
         """Handle camera start event."""
         self._started_cameras.add(camera_id)
@@ -837,20 +803,3 @@ class MultiCameraController(QObject):
         if camera_id not in self._started_cameras:
             self._failed_cameras[camera_id] = message
         self.camera_error.emit(camera_id, message)
-
-    def get_frame(self, camera_id: str) -> np.ndarray | None:
-        """Get the latest frame from a specific camera."""
-        with self._frame_lock:
-            return self._frames.get(camera_id)
-
-    def get_all_frames(self) -> dict[str, np.ndarray]:
-        """Get the latest frames from all cameras."""
-        with self._frame_lock:
-            return dict(self._frames)
-
-    def get_tiled_frame(self) -> np.ndarray | None:
-        """Get a tiled view of all camera frames."""
-        with self._frame_lock:
-            if self._frames:
-                return self._create_tiled_frame()
-        return None

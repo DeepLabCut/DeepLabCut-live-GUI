@@ -359,6 +359,7 @@ class CameraConfigDialog(QDialog):
 
         self.cam_rotation.currentIndexChanged.connect(lambda *_: _mark_dirty())
         self.cam_enabled_checkbox.stateChanged.connect(lambda *_: _mark_dirty())
+        self.cam_preserve_mono_checkbox.stateChanged.connect(lambda *_: _mark_dirty())
 
     # -------------------------------
     # UI state updates
@@ -423,6 +424,8 @@ class CameraConfigDialog(QDialog):
 
         det_res = ns.get("detected_resolution")
         det_fps = ns.get("detected_fps")
+        det_output_format = ns.get("detected_output_format")
+        det_pixel_format = ns.get("detected_pixel_format")
 
         if isinstance(det_res, (list, tuple)) and len(det_res) == 2:
             try:
@@ -437,6 +440,18 @@ class CameraConfigDialog(QDialog):
             self.detected_fps_label.setText(f"{float(det_fps):.2f}")
         else:
             self.detected_fps_label.setText("—")
+
+        self.detected_output_format_label.setText(str(det_output_format) if det_output_format else "—")
+
+        tooltip_parts = []
+        if det_output_format:
+            tooltip_parts.append(f"Backend output: {det_output_format}")
+        if det_pixel_format:
+            tooltip_parts.append(f"Camera PixelFormat: {det_pixel_format}")
+
+        self.detected_output_format_label.setToolTip(
+            "\n".join(tooltip_parts) if tooltip_parts else "Backend-reported output frame format emitted to the app."
+        )
 
     def _refresh_camera_labels(self) -> None:
         cam_list = getattr(self, "active_cameras_list", None)
@@ -466,11 +481,12 @@ class CameraConfigDialog(QDialog):
         status = "✓" if cam.enabled else "○"
         this_id = f"{(cam.backend or '').lower()}:{cam.index}"
         dlc_indicator = " [DLC]" if this_id == self._dlc_camera_id and cam.enabled else ""
+        mono_indicator = " [Mono]" if getattr(cam, "preserve_mono", False) else ""
 
         trigger_role = self._trigger_role_for_label(cam)
         trigger_indicator = "" if trigger_role in {"off", "disabled"} else f" [{trigger_role}]"
 
-        return f"{status} {cam.name} [{cam.backend}:{cam.index}]{trigger_indicator}{dlc_indicator}"
+        return f"{status} {cam.name} [{cam.backend}:{cam.index}]{trigger_indicator}{dlc_indicator}{mono_indicator}"
 
     def _selected_detected_camera(self) -> DetectedCamera | None:
         row = self.available_cameras_list.currentRow()
@@ -528,6 +544,9 @@ class CameraConfigDialog(QDialog):
         # Exposure / Gain
         apply(self.cam_exposure, "set_exposure", "Exposure")
         apply(self.cam_gain, "set_gain", "Gain")
+
+        # Output format / preserve mono
+        apply(self.cam_preserve_mono_checkbox, "preserve_mono", "Preserve mono output")
 
         # Hardware trigger / sync
         apply(self.trigger_settings_btn, "hardware_trigger", "Hardware trigger")
@@ -959,6 +978,7 @@ class CameraConfigDialog(QDialog):
                 "crop_y0": int(self.cam_crop_y0.value()),
                 "crop_x1": int(self.cam_crop_x1.value()),
                 "crop_y1": int(self.cam_crop_y1.value()),
+                "preserve_mono": bool(self.cam_preserve_mono_checkbox.isChecked()),
             }
         )
         #  Validate and coerce; if invalid, Pydantic will raise
@@ -977,6 +997,7 @@ class CameraConfigDialog(QDialog):
             self.cam_crop_y0,
             self.cam_crop_x1,
             self.cam_crop_y1,
+            self.cam_preserve_mono_checkbox,
         ]
         for widget in block:
             if hasattr(widget, "blockSignals"):
@@ -991,6 +1012,7 @@ class CameraConfigDialog(QDialog):
             self.cam_index_label.setText(str(cam.index))
             self.cam_backend_label.setText(cam.backend)
             self._update_controls_for_backend(cam.backend)
+            self.cam_preserve_mono_checkbox.setChecked(bool(getattr(cam, "preserve_mono", False)))
             self.cam_width.setValue(cam.width)
             self.cam_height.setValue(cam.height)
             self.cam_fps.setValue(cam.fps)
@@ -1026,6 +1048,7 @@ class CameraConfigDialog(QDialog):
         cam.crop_y0 = int(self.cam_crop_y0.value())
         cam.crop_x1 = int(self.cam_crop_x1.value())
         cam.crop_y1 = int(self.cam_crop_y1.value())
+        cam.preserve_mono = bool(self.cam_preserve_mono_checkbox.isChecked())
 
     def _commit_pending_edits(self, *, reason: str = "") -> bool:
         """
@@ -1186,6 +1209,8 @@ class CameraConfigDialog(QDialog):
         self.cam_backend_label.setText("")
         self.detected_resolution_label.setText("—")
         self.detected_fps_label.setText("—")
+        self.detected_output_format_label.setText("—")
+        self.detected_output_format_label.setToolTip("Backend-reported output frame format emitted to the app.")
         self.cam_width.setValue(0)
         self.cam_height.setValue(0)
         self.cam_fps.setValue(0.0)
@@ -1196,6 +1221,7 @@ class CameraConfigDialog(QDialog):
         self.cam_crop_y0.setValue(0)
         self.cam_crop_x1.setValue(0)
         self.cam_crop_y1.setValue(0)
+        self.cam_preserve_mono_checkbox.setChecked(False)
         self.apply_settings_btn.setEnabled(False)
         self.reset_settings_btn.setEnabled(False)
 
@@ -1292,6 +1318,8 @@ class CameraConfigDialog(QDialog):
                 else:
                     ns.pop("detected_resolution", None)
                     ns.pop("detected_fps", None)
+                    ns.pop("detected_pixel_format", None)
+                    ns.pop("detected_output_format", None)
                     ns.pop("last_applied_resolution", None)
 
         # Update UI immediately to show "Auto" while probing
@@ -1363,12 +1391,16 @@ class CameraConfigDialog(QDialog):
         ns = props.get(backend, {}) if isinstance(props.get(backend, None), dict) else {}
         if not apply_to_requested:
             det_res = ns.get("detected_resolution")
+            det_output = ns.get("detected_output_format")
+            has_res = False
             if isinstance(det_res, (list, tuple)) and len(det_res) == 2:
                 try:
-                    if int(det_res[0]) > 0 and int(det_res[1]) > 0:
-                        return
+                    has_res = int(det_res[0]) > 0 and int(det_res[1]) > 0
                 except Exception:
-                    pass
+                    has_res = False
+
+            if has_res and det_output:
+                return
 
         # Start probe worker (settings will be opened in GUI thread for safety)
         self._probe_worker = CameraProbeWorker(cam, self)
@@ -1394,6 +1426,9 @@ class CameraConfigDialog(QDialog):
 
             actual_res = getattr(be, "actual_resolution", None)
             actual_fps = getattr(be, "actual_fps", None)
+            actual_pixel_format = getattr(be, "actual_pixel_format", None)
+            actual_output_format = getattr(be, "actual_output_format", None)
+            recommended_preserve_mono = getattr(be, "recommended_preserve_mono", None)
 
             try:
                 be.close()
@@ -1416,12 +1451,33 @@ class CameraConfigDialog(QDialog):
                     # Store regardless of "set_*" support. This is just "what device reports".
                     if actual_res and isinstance(actual_res, (list, tuple)) and len(actual_res) == 2:
                         ns["detected_resolution"] = [int(actual_res[0]), int(actual_res[1])]
-                    elif actual_res and isinstance(actual_res, tuple) and len(actual_res) == 2:
-                        ns["detected_resolution"] = [int(actual_res[0]), int(actual_res[1])]
 
                     if isinstance(actual_fps, (int, float)) and float(actual_fps) > 0:
                         ns["detected_fps"] = float(actual_fps)
-                        self._append_status(f"[Probe] actual_res={actual_res}, actual_fps={actual_fps}")
+
+                    if actual_pixel_format:
+                        ns["detected_pixel_format"] = str(actual_pixel_format)
+                        self._append_status(f"[Probe] PixelFormat={actual_pixel_format}")
+
+                    if actual_output_format:
+                        ns["detected_output_format"] = str(actual_output_format)
+                        self._append_status(f"[Probe] OutputFormat={actual_output_format}")
+
+                    if recommended_preserve_mono is not None:
+                        ns["recommended_preserve_mono"] = bool(recommended_preserve_mono)
+
+                    # ---- Generic capability-driven recommendation ----
+                    caps = CameraFactory.backend_capabilities(backend)
+                    preserve_mono_cap = caps.get("preserve_mono")
+                    preserve_mono_supported = preserve_mono_cap is not None and preserve_mono_cap.value != "unsupported"
+
+                    if preserve_mono_supported and recommended_preserve_mono is True:
+                        if not bool(getattr(c, "preserve_mono", False)):
+                            c.preserve_mono = True
+                            self._append_status("[Probe] Mono pixel format detected; enabled Preserve mono frames.")
+
+                            if actual_pixel_format and str(actual_pixel_format).startswith("Mono"):
+                                ns["detected_output_format"] = "Mono8"
 
                     # ---- Apply detected -> requested (Reset behavior) ----
                     if self._probe_apply_to_requested and self._probe_target_row == i:
@@ -1450,7 +1506,9 @@ class CameraConfigDialog(QDialog):
 
                     # Always refresh detected labels if currently selected
                     if self._current_edit_index == i:
+                        self._load_camera_to_form(c)
                         self._set_detected_labels(c)
+
                     break
 
         except Exception as exc:
@@ -1678,7 +1736,7 @@ class CameraConfigDialog(QDialog):
         Backend-agnostic for now (no OpenCV special casing).
         """
         # Restart on these changes
-        for key in ("width", "height", "fps", "exposure", "gain"):
+        for key in ("width", "height", "fps", "exposure", "gain", "preserve_mono"):
             try:
                 if getattr(old, key, None) != getattr(new, key, None):
                     return True
