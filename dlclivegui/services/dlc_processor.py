@@ -22,6 +22,7 @@ from dlclivegui.processors.processor_utils import (
     ProcessorSpec,
     create_spec_from_scan,
     instantiate_from_scan,
+    log_dlclive_context,
     log_processor_context,
 )
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
@@ -205,6 +206,8 @@ class DLCLiveProcessor(QObject):
     def configure(
         self, settings: DLCProcessorSettings, processor: Any | None = None, processor_spec: ProcessorSpec | None = None
     ) -> None:
+        logger.debug("[DLC CONFIG] %s", settings.model_dump())
+
         with self._lifecycle_lock:
             if self._state != WorkerState.STOPPED:
                 raise RuntimeError("Cannot configure DLCLiveProcessor while it is running. Please stop it first.")
@@ -731,8 +734,38 @@ class DLCLiveProcessor(QObject):
                     "precision": self._settings.precision,
                     "single_animal": self._settings.single_animal,
                 }
+
+                additional_options = dict(self._settings.additional_options or {})
+
+                protected_options = {
+                    "model_path",
+                    "model_type",
+                    "processor",
+                }
+
+                unexpected_overrides = protected_options & additional_options.keys()
+
+                if unexpected_overrides:
+                    logger.warning(
+                        "Protected additional options ignored: %s",
+                        sorted(unexpected_overrides),
+                    )
+
+                options.update(
+                    {key: value for key, value in additional_options.items() if key not in protected_options}
+                )
+
                 if self._settings.device is not None:
                     options["device"] = self._settings.device
+
+                logger.info(
+                    "DLCLive options: device=%r precision=%r dynamic=%r top_down_config=%r single_animal=%r",
+                    options.get("device", "auto"),
+                    options.get("precision"),
+                    options.get("dynamic"),
+                    options.get("top_down_config"),
+                    options.get("single_animal"),
+                )
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -752,8 +785,19 @@ class DLCLiveProcessor(QObject):
                         "DLCLive class is not available. Ensure the dlclive package is installed and can be imported."
                     )
                 with self._timing.measure("DLC.construct"):
+                    logger.info(
+                        "DLCLive options: device=%r precision=%r dynamic=%r top_down_config=%r single_animal=%r",
+                        options.get("device", "auto"),
+                        options.get("precision"),
+                        options.get("dynamic"),
+                        options.get("top_down_config"),
+                        options.get("single_animal"),
+                    )
+
                     self._dlc = DLCLive(**options)
+                    log_dlclive_context(logger)
                     log_processor_context("DLCLive instance constructed", logger)
+
                 self._timing.maybe_log()
             except Exception as exc:
                 self._timing.note_error()
@@ -782,6 +826,25 @@ class DLCLiveProcessor(QObject):
             with self._timing.measure("DLC.init_inference"):
                 self._dlc.init_inference(init_frame)
                 log_processor_context("DLCLive init_inference completed", logger)
+                runner = self._dlc.runner
+                top_down_config = getattr(
+                    runner,
+                    "top_down_config",
+                    None,
+                )
+
+                logger.info(
+                    "Runner options: device=%r precision=%r detector=%s dynamic=%s skip_frames=%r",
+                    getattr(runner, "device", None),
+                    getattr(runner, "precision", None),
+                    type(getattr(runner, "detector", None)).__name__
+                    if getattr(runner, "detector", None) is not None
+                    else None,
+                    type(getattr(runner, "dynamic", None)).__name__
+                    if getattr(runner, "dynamic", None) is not None
+                    else None,
+                    getattr(top_down_config, "skip_frames", None),
+                )
 
             self._debug_log_dlc_runner_device()
             self._timing.note_frame()

@@ -288,3 +288,21 @@ def log_processor_context(label: str, custom_logger: logging.Logger = logger):
         threading.current_thread().name,
         time.time(),
     )
+
+
+def log_dlclive_context(logger: logging.Logger = logger):
+    runner_logger = logging.getLogger("dlclive.pose_estimation_pytorch.runner")
+
+    runner_logger.disabled = False
+    runner_logger.setLevel(logger.getEffectiveLevel())
+    runner_logger.propagate = True
+
+    logger.debug(
+        "[DLC DEBUG] runner logger state: name=%s disabled=%s level=%s effective_level=%s propagate=%s handlers=%s",
+        runner_logger.name,
+        runner_logger.disabled,
+        logging.getLevelName(runner_logger.level),
+        logging.getLevelName(runner_logger.getEffectiveLevel()),
+        runner_logger.propagate,
+        [type(handler).__name__ for handler in runner_logger.handlers],
+    )
