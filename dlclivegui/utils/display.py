@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-class BBoxColors(enum.Enum):
+class PrimaryColors(enum.Enum):
     RED = (0, 0, 255)
     GREEN = (0, 255, 0)
     BLUE = (255, 0, 0)
@@ -20,7 +20,26 @@ class BBoxColors(enum.Enum):
 
     @staticmethod
     def get_all_display_names() -> list[str]:
-        return [color.name.capitalize() for color in BBoxColors]
+        return [c.name.capitalize() for c in PrimaryColors]
+
+
+BBoxColors = PrimaryColors
+
+
+class SkeletonColors(enum.Enum):
+    GRADIENT = "gradient"  # special mode
+    RED = PrimaryColors.RED.value
+    GREEN = PrimaryColors.GREEN.value
+    BLUE = PrimaryColors.BLUE.value
+    YELLOW = PrimaryColors.YELLOW.value
+    CYAN = PrimaryColors.CYAN.value
+    MAGENTA = PrimaryColors.MAGENTA.value
+    WHITE = PrimaryColors.WHITE.value
+    BLACK = PrimaryColors.BLACK.value
+
+    @staticmethod
+    def get_all_display_names() -> list[str]:
+        return ["Gradient"] + [c.name.capitalize() for c in SkeletonColors if c != SkeletonColors.GRADIENT]
 
 
 def color_to_rgb(color_name: str) -> tuple[int, int, int]:
@@ -29,6 +48,21 @@ def color_to_rgb(color_name: str) -> tuple[int, int, int]:
         return BBoxColors[color_name.upper()].value
     except KeyError:
         raise ValueError(f"Unknown color name: {color_name}") from None
+
+
+def keypoint_colors_bgr(colormap: str, num_keypoints: int) -> list[tuple[int, int, int]]:
+    """
+    Return the exact BGR colors used by draw_keypoints() for a given Matplotlib colormap
+    and number of keypoints.
+    """
+    cmap = plt.get_cmap(colormap)
+    colors: list[tuple[int, int, int]] = []
+    for idx in range(num_keypoints):
+        t = idx / max(num_keypoints - 1, 1)
+        rgba = cmap(t)
+        bgr = (int(rgba[2] * 255), int(rgba[1] * 255), int(rgba[0] * 255))
+        colors.append(bgr)
+    return colors
 
 
 def compute_tiling_geometry(
