@@ -277,6 +277,7 @@ class DLCLiveProcessor(QObject):
                 "Shutdown requested but worker thread is still alive; DLCLive instance may not be fully released."
             )
             return
+        self._cleanup_processor()
         self._dlc = None
         self._initialized = False
 
