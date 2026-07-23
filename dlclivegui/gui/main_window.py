@@ -2364,6 +2364,10 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _stop_inference(self, show_message: bool = True) -> None:
         was_active = self._dlc_active
+
+        if self._rec_manager.is_active:
+            self._save_processor_data_if_available()
+
         self._dlc_active = False
         self._dlc_initialized = False
         self._dlc.reset()
