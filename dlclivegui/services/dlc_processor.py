@@ -282,10 +282,10 @@ class DLCLiveProcessor(QObject):
             with self._lifecycle_lock:
                 self._pending_reset = True
                 self._pending_processor_cleanup = True
-                logger.warning(
-                    "Shutdown requested but worker thread is still alive; DLCLive instance may not be fully released."
-                )
-                return
+            logger.warning(
+                "Shutdown requested but worker thread is still alive; DLCLive instance may not be fully released."
+            )
+            return
 
         self._cleanup_processor()
         self._dlc = None
