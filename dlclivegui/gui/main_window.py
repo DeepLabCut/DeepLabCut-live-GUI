@@ -2363,6 +2363,18 @@ class DLCLiveMainWindow(QMainWindow):
         self._update_dlc_controls_enabled()
 
     def _stop_inference(self, show_message: bool = True) -> None:
+        if self._rec_manager.is_active:
+            answer = QMessageBox.question(
+                self,
+                "Stop inference while recording?",
+                "This will stop any currently running DLC-processor. \n"
+                "File saving will not be handled via standard stop-recording hook."
+                "The processor might still save it's own data now, but this will not be paired with the recording.\n\n"
+                "Stop inference anyway?",
+            )
+            if answer != QMessageBox.Yes:
+                return
+
         was_active = self._dlc_active
         self._dlc_active = False
         self._dlc_initialized = False
