@@ -2486,9 +2486,9 @@ class DLCLiveMainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "Stop inference while recording?",
-                "This will stop currently running DLC-live custom processor. \n"
+                "This will stop the currently running DLC-live custom processor, if any.\n"
                 "File saving will not be handled via the standard 'recording stopped' event hooks."
-                "The processor might still save data now, but this will not be paired with the recording.\n\n"
+                "The processor might still save data now, but it will not be paired with the recording.\n\n"
                 "Stop inference anyway?",
             )
             if answer != QMessageBox.Yes:
