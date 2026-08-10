@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.config import (
     DEFAULT_CONFIG,
+    GUI_MAX_DISPLAY_FPS,
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
@@ -190,7 +191,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Display timer - decoupled from frame capture for performance
         self._display_timer = QTimer(self)
-        self._display_timer.setInterval(33)  # ~30 fps display rate
+        self._display_timer.setInterval(1000 / GUI_MAX_DISPLAY_FPS)  # in ms, ~30 fps display rate
         self._display_timer.timeout.connect(self._update_display_from_pending)
         self._display_timer.start()
 
