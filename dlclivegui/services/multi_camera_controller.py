@@ -434,6 +434,7 @@ class MultiCameraController(QObject):
         self._started_cameras.clear()
         self._failed_cameras.clear()
         self._display_ids.clear()
+        self._runtime_info.clear()
         self._expected_cameras = len(active_settings)
 
         for settings in active_settings:
@@ -487,6 +488,7 @@ class MultiCameraController(QObject):
         thread = self._threads.pop(camera_id, None)
         self._settings.pop(camera_id, None)
         self._display_ids.pop(camera_id, None)
+        self._runtime_info.pop(camera_id, None)
         self._started_cameras.discard(camera_id)
 
         if worker is not None:
@@ -499,7 +501,6 @@ class MultiCameraController(QObject):
 
     def _maybe_finalize_stop(self) -> None:
         """Finalize shutdown after every owned camera thread has finished."""
-        # FUTURE FIXME: clear runtime info
         if not self._stopping:
             return
 
@@ -519,7 +520,7 @@ class MultiCameraController(QObject):
 
         self._workers.clear()
         self._settings.clear()
-        # self._runtime_info.clear()
+        self._runtime_info.clear()
         self._started_cameras.clear()
         self._failed_cameras.clear()
         self._display_ids.clear()
