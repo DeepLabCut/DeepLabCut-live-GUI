@@ -12,7 +12,7 @@ from typing import Any, ClassVar
 import cv2
 import numpy as np
 
-from ...config import CameraTriggerSettings
+from ...config import DEBUG_TRIGGER_LOGS, CameraTriggerSettings
 from ..base import CameraBackend, SupportLevel, register_backend
 from ..factory import DetectedCamera
 from .utils import gentl_discovery as cti_finder
@@ -199,6 +199,9 @@ class GenTLCameraBackend(CameraBackend):
         }
 
     def _debug_trigger_nodes(self, node_map, *, context: str = "") -> None:
+        if not LOG.isEnabledFor(logging.DEBUG) or not DEBUG_TRIGGER_LOGS:
+            return
+
         names = (
             "TriggerMode",
             "TriggerSelector",

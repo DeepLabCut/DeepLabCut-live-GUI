@@ -31,6 +31,8 @@ DEFAULT_RECORDING_FPS: float = 30.0
 SINGLE_CAMERA_WORKER_DO_LOG_TIMING: bool = False
 MULTI_CAMERA_WORKER_DO_LOG_TIMING: bool = False
 REC_DO_LOG_TIMING: bool = False
+### Trigger debug logging
+DEBUG_TRIGGER_LOGS = False
 # MAIN_WINDOW_DO_LOG_TIMING: bool = False
 #### Backends
 BASLER_DO_LOG_TIMING: bool = False
