@@ -109,16 +109,20 @@ class VideoRecorder:
                     self._queue = None
                     self._writer_thread = None
 
-            if self._frame_rate and float(self._frame_rate) > 0.0:
-                fps_value = float(self._frame_rate)
-            else:
-                fps_value = 30.0
-                logger.warning(
-                    "VideoRecorder frame_rate missing/zero for %s; falling back to %.3f FPS. "
-                    "Video playback duration may not match capture timestamps.",
-                    self._output.name,
-                    fps_value,
-                )
+            fps_value = 30.0
+            if self._frame_rate is not None:
+                try:
+                    fps_value = float(self._frame_rate)
+                except Exception:
+                    fps_value = 0.0
+                if fps_value <= 0.0:
+                    fps_value = 30.0
+                    logger.warning(
+                        "VideoRecorder frame_rate missing/zero for %s; falling back to %.3f FPS. "
+                        "Video playback duration may not match capture timestamps.",
+                        self._output.name,
+                        fps_value,
+                    )
 
             logger.info(
                 "Starting VideoRecorder output=%s frame_size=%s frame_rate=%.3f "
@@ -139,15 +143,6 @@ class VideoRecorder:
                 "-vcodec": (self._codec or "libx264").strip() or "libx264",
                 "-crf": int(self._crf),
             }
-            # if not self._convert_grayscale_to_rgb:
-            #     writer_kwargs.update(
-            #         {
-            #             "-pix_fmt": "yuv420p",
-            #         }
-            #     )
-            #     if self._frame_size is not None:
-            #         h, w = self._frame_size
-            #         writer_kwargs["-output_dimensions"] = (int(w), int(h))
 
             self._output.parent.mkdir(parents=True, exist_ok=True)
             self._writer = WriteGear(output=str(self._output), **writer_kwargs)
