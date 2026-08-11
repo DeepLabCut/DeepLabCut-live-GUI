@@ -248,7 +248,7 @@ def get_display_id(settings: CameraSettings) -> str:
     if device_name:
         return device_name
 
-    return f"{settings.backend}:{settings.index}"
+    return f"{backend}:{int(settings.index)}"
 
 
 def get_camera_id(settings: CameraSettings) -> str:
@@ -514,7 +514,6 @@ class MultiCameraController(QObject):
             return
 
         self._running = False
-        self._recording_frame_emission_enabled = False
         self._timing_per_cam.clear()
         self._gui_display_last_emit = 0.0
 
