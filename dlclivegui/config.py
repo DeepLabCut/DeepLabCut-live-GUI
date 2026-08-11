@@ -225,23 +225,13 @@ class CameraSettings(BaseModel):
         ns["trigger"] = trigger.to_properties()
 
     def with_save_defaults(self) -> CameraSettings:
-        out = self.model_copy(deep=True)
+        """
+        Return a serializable deep copy.
 
-        backend = (out.backend or "").lower()
-        if backend != "gentl":
-            return out
-
-        if not isinstance(out.properties, dict):
-            out.properties = {}
-
-        ns = out.properties.setdefault("gentl", {})
-        if not isinstance(ns, dict):
-            ns = {}
-            out.properties["gentl"] = ns
-
-        ns.setdefault("trigger", CameraTriggerSettings().to_properties())
-
-        return out
+        Runtime defaults (incl. TriggerSettings) are applied
+        when settings are read and not inserted into the saved config.
+        """
+        return self.model_copy(deep=True)
 
 
 class CameraTriggerSettings(BaseModel):
