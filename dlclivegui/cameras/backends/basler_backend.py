@@ -9,7 +9,7 @@ from typing import ClassVar
 
 import numpy as np
 
-from ...config import BASLER_DO_LOG_TIMING, CameraTriggerSettings
+from ...config import BASLER_DO_LOG_TIMING, DEBUG_TRIGGER_LOGS, CameraTriggerSettings
 from ...utils.stats import WorkerTimingStats
 from ..base import CameraBackend, SupportLevel, register_backend
 
@@ -30,8 +30,6 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover - optional dependency
     genicam = None  # type: ignore[assignment]
     pylon = None  # type: ignore[assignment]
-
-DEBUG_TRIGGER_LOGS = False
 
 
 @register_backend("basler")
