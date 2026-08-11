@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...cameras.factory import CameraFactory, DetectedCamera, apply_detected_identity, camera_identity_key
-from ...config import CameraSettings, CameraTriggerSettings, MultiCameraSettings
+from ...config import CameraSettings, MultiCameraSettings
 from .loaders import CameraLoadWorker, CameraProbeWorker, CameraScanState, DetectCamerasWorker
 from .preview import PreviewSession, PreviewState, apply_crop, apply_rotation, resize_to_fit, to_display_pixmap
 from .trigger_config_dialog import TriggerConfigDialog
@@ -818,21 +818,6 @@ class CameraConfigDialog(QDialog):
             self._load_camera_to_form(cam)
             self._start_probe_for_camera(cam, apply_to_requested=False)
 
-    def _ensure_default_trigger_config(self, cam: CameraSettings) -> None:
-        backend = (cam.backend or "").lower()
-        if backend not in {"gentl", "basler"}:
-            return
-
-        if not isinstance(cam.properties, dict):
-            cam.properties = {}
-
-        ns = cam.properties.setdefault(backend, {})
-        if not isinstance(ns, dict):
-            ns = {}
-            cam.properties[backend] = ns
-
-        ns.setdefault("trigger", CameraTriggerSettings().model_dump(exclude_none=True))
-
     def _add_selected_camera(self) -> None:
         if not self._commit_pending_edits(reason="before adding a new camera"):
             return
@@ -883,7 +868,6 @@ class CameraConfigDialog(QDialog):
             properties={},
         )
         apply_detected_identity(new_cam, detected, backend)
-        self._ensure_default_trigger_config(new_cam)
         self._working_settings.cameras.append(new_cam)
         new_index = len(self._working_settings.cameras) - 1
         new_item = QListWidgetItem(self._format_camera_label(new_cam, new_index))
@@ -1003,7 +987,6 @@ class CameraConfigDialog(QDialog):
             self.cam_crop_y0.setValue(cam.crop_y0)
             self.cam_crop_x1.setValue(cam.crop_x1)
             self.cam_crop_y1.setValue(cam.crop_y1)
-            self._ensure_default_trigger_config(cam)
             self.apply_settings_btn.setEnabled(True)
             self._set_detected_labels(cam)
         finally:
