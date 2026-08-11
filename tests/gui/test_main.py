@@ -1,8 +1,10 @@
+import numpy as np
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage
 
 from dlclivegui.services.dlc_processor import DLCLiveProcessor, Engine
+from dlclivegui.services.multi_camera_controller import MultiFrameData
 
 
 def pixmap_bytes(label) -> bytes:
@@ -16,30 +18,81 @@ def pixmap_bytes(label) -> bytes:
 
 @pytest.mark.gui
 @pytest.mark.functional
-def test_preview_renders_frames(qtbot, window, multi_camera_controller):
-    """
-    Validate that:
-      - Preview starts (`preview_button` clicked)
-      - Camera controller emits all_started
-      - GUI receives and renders frames to video_label.pixmap()
-      - Preview stops cleanly
-    """
-
+def test_preview_renders_frames(
+    qtbot,
+    window,
+    multi_camera_controller,
+    monkeypatch,
+):
+    """Verify preview controls and frame rendering without camera timing."""
     w = window
     ctrl = multi_camera_controller
+    running = False
 
-    with qtbot.waitSignal(ctrl.all_started, timeout=4000):
+    camera_id = "fake:index:0"
+    frame = np.full((120, 160, 3), 127, dtype=np.uint8)
+    frame_data = MultiFrameData(
+        frames={camera_id: frame},
+        timestamps={camera_id: 123.0},
+        source_camera_id=camera_id,
+        display_ids={camera_id: "Test camera"},
+    )
+
+    initial_pixmap = w.video_label.pixmap()
+    initial_cache_key = initial_pixmap.cacheKey() if initial_pixmap is not None else None
+
+    def fake_is_running():
+        return running
+
+    def fake_get_active_count():
+        return 1 if running else 0
+
+    def fake_start(_camera_settings):
+        nonlocal running
+        running = True
+
+        def finish_start():
+            ctrl.all_started.emit()
+            ctrl.frame_ready.emit(frame_data)
+            ctrl.display_ready.emit(frame_data)
+
+        QTimer.singleShot(0, finish_start)
+
+    def fake_stop(*, wait=True):
+        nonlocal running
+        running = False
+        QTimer.singleShot(0, ctrl.all_stopped.emit)
+
+    monkeypatch.setattr(ctrl, "is_running", fake_is_running)
+    monkeypatch.setattr(
+        ctrl,
+        "get_active_count",
+        fake_get_active_count,
+    )
+    monkeypatch.setattr(ctrl, "start", fake_start)
+    monkeypatch.setattr(ctrl, "stop", fake_stop)
+
+    with qtbot.waitSignal(ctrl.all_started, timeout=1000):
         qtbot.mouseClick(w.preview_button, Qt.LeftButton)
 
     qtbot.waitUntil(
-        lambda: w.video_label.pixmap() is not None and not w.video_label.pixmap().isNull(),
-        timeout=6000,
+        lambda: (
+            w._current_frame is not None
+            and w.video_label.pixmap() is not None
+            and not w.video_label.pixmap().isNull()
+            and w.video_label.pixmap().cacheKey() != initial_cache_key
+        ),
+        timeout=1000,
     )
 
-    with qtbot.waitSignal(ctrl.all_stopped, timeout=4000):
+    assert w._current_frame is not None
+    assert w.stop_preview_button.isEnabled()
+
+    with qtbot.waitSignal(ctrl.all_stopped, timeout=1000):
         qtbot.mouseClick(w.stop_preview_button, Qt.LeftButton)
 
     assert not ctrl.is_running()
+    assert w._current_frame is None
 
 
 @pytest.mark.gui
