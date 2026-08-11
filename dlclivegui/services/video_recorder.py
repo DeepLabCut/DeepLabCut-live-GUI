@@ -90,8 +90,9 @@ class VideoRecorder:
         convert_grayscale_to_rgb: Whether 2D grayscale frames should be expanded
             to 3-channel RGB before writing. Set to `False` to preserve mono
             frames when supported by the chosen writer/codec path.
-        writer_options: Optional dictionary of additional keyword arguments passed
-            to `WriteGear`. If provided, this overrides the default options.
+        writer_options_overrides: Optional WriteGear/FFmpeg option overrides.
+            These values are merged over the recorder defaults.
+            Known numeric options are validated and normalized before WriteGear is created.
 
     Attributes:
         is_running: Whether the writer thread is currently alive.
@@ -116,7 +117,11 @@ class VideoRecorder:
         crf: int = 23,
         buffer_size: int = 240,
         convert_grayscale_to_rgb: bool = True,
+<<<<<<< HEAD
         writer_options_overrides: WriteGearOptionOverrides | None = None,
+=======
+        writer_options_overrides: dict[str, Any] | None = None,
+>>>>>>> 45da9a1 (Normalize WriteGear options and rename overrides)
     ):
         # Config
         self._output = Path(output)
@@ -127,7 +132,13 @@ class VideoRecorder:
         self._crf = int(crf)
         self._buffer_size = max(1, int(buffer_size))
         self._convert_grayscale_to_rgb = bool(convert_grayscale_to_rgb)
+<<<<<<< HEAD
         self._writer_options_overrides = dict(writer_options_overrides) if writer_options_overrides else {}
+=======
+        self._writer_options_overrides = (
+            dict(writer_options_overrides) if writer_options_overrides is not None else None
+        )
+>>>>>>> 45da9a1 (Normalize WriteGear options and rename overrides)
         # Worker state
         self._queue: queue.Queue[Any] | None = None
         self._writer_thread: threading.Thread | None = None
@@ -508,6 +519,29 @@ class VideoRecorder:
                 time.sleep(0.2)  # give some time to finalize
             except Exception:
                 logger.exception("Failed to close WriteGear during finalisation")
+
+    @staticmethod
+    def _normalize_writer_options(
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(options)
+
+        try:
+            normalized["-input_framerate"] = float(normalized["-input_framerate"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("WriteGear option '-input_framerate' must be numeric.") from exc
+
+        try:
+            normalized["-crf"] = int(normalized["-crf"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("WriteGear option '-crf' must be an integer.") from exc
+
+        codec = str(normalized.get("-vcodec") or "").strip()
+        if not codec:
+            raise ValueError("WriteGear option '-vcodec' must be a non-empty string.")
+
+        normalized["-vcodec"] = codec
+        return normalized
 
     def _compute_write_fps_locked(self) -> float:
         if len(self._written_times) < 2:
