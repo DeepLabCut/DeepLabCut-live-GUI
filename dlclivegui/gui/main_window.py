@@ -919,13 +919,15 @@ class DLCLiveMainWindow(QMainWindow):
                 "(.pt, .pth for PyTorch or model directory for TensorFlow)."
             ) from e
 
-        # Preserve all unchanged DLC settings and only update values derived from the UI.
-        return existing_dlc.model_copy(
-            update={
+        # Preserve all unchanged DLC settings and only update values derived from the UI
+        updated_dlc = existing_dlc.model_dump()
+        updated_dlc.update(
+            {
                 "model_path": model_path,
                 "model_type": model_bknd,
             }
         )
+        return DLCProcessorSettings.model_validate(updated_dlc)
 
     def _recording_settings_from_ui(self) -> RecordingSettings:
         return RecordingSettings(
@@ -1035,6 +1037,7 @@ class DLCLiveMainWindow(QMainWindow):
                     model_check_path = file_path.parent
                 else:
                     model_check_path = file_path
+                # Raise if the model backend cannot be determined (invalid file or unsupported extension)
                 DLCLiveProcessor.get_model_backend(str(model_check_path))
             except FileNotFoundError as e:
                 QMessageBox.warning(self, "Model selection error", str(e))
