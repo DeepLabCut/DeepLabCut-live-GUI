@@ -19,7 +19,7 @@ LOG = logging.getLogger(__name__)
 # NOTE @C-Achard: This could be added in settings eventually
 # Forces pypylon to create N emulation virtual cameras,
 # mostly for testing. This should not be enabled for release.
-ENABLE_PYLON_EMU = True
+ENABLE_PYLON_EMU = False
 if ENABLE_PYLON_EMU:
     import os
 
