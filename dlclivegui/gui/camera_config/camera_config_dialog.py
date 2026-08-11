@@ -1454,14 +1454,17 @@ class CameraConfigDialog(QDialog):
                     preserve_mono_cap = caps.get("preserve_mono")
                     preserve_mono_supported = preserve_mono_cap is not None and preserve_mono_cap.value != "unsupported"
 
-                    if preserve_mono_supported and recommended_preserve_mono is True:
-                        if not bool(getattr(c, "preserve_mono", False)):
-                            c.preserve_mono = True
-                            self._append_status("[Probe] Mono pixel format detected; enabled Preserve mono frames.")
-
-                            if actual_pixel_format and str(actual_pixel_format).startswith("Mono"):
-                                ns["detected_output_format"] = "Mono8"
-
+                    mono_recommended = (
+                        preserve_mono_supported
+                        and recommended_preserve_mono is True
+                        and not bool(getattr(c, "preserve_mono", False))
+                    )
+                    if mono_recommended:
+                        ns["recommended_preserve_mono"] = True
+                        self._append_status(
+                            "[Probe] Mono pixel format detected. "
+                            "Enable 'Preserve mono frames' to avoid expanding frames to color (for performance)."
+                        )
                     # ---- Apply detected -> requested (Reset behavior) ----
                     if self._probe_apply_to_requested and self._probe_target_row == i:
                         # Only apply resolution if we actually got it
