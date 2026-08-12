@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import dlclivegui.services.video_recorder as vr_mod
+from dlclivegui.config import DEFAULT_RECORDING_FPS
 from dlclivegui.utils.timestamps import FrameTimestampMetadata
 
 # ----------------------------
@@ -528,3 +529,63 @@ class TestVideoRecorderTimestampSidecar:
             "raw_value": 1_000_000,
         }
         assert rec0["hardware_timestamp_default"] == 0.001
+
+
+def test_build_writegear_options_default():
+    opts = vr_mod.build_writegear_options(
+        frame_rate=100.0,
+        codec="libx264",
+        crf=23,
+    )
+
+    assert opts == {
+        "-input_framerate": 100.0,
+        "-vcodec": "libx264",
+        "-crf": 23,
+    }
+
+
+def test_build_writegear_options_invalid_fps_uses_default():
+    opts = vr_mod.build_writegear_options(
+        frame_rate=0.0,
+        codec="libx264",
+        crf=23,
+    )
+
+    assert opts["-input_framerate"] == DEFAULT_RECORDING_FPS
+
+
+@pytest.mark.parametrize(
+    "frame_rate",
+    [None, 0, -1, "invalid"],
+)
+def test_build_writegear_options_unusable_fps_uses_default(
+    frame_rate,
+):
+    opts = vr_mod.build_writegear_options(
+        frame_rate=frame_rate,
+        codec="libx264",
+        crf=23,
+    )
+
+    assert opts["-input_framerate"] == DEFAULT_RECORDING_FPS
+
+
+def test_build_writegear_options_merges_overrides():
+    opts = vr_mod.build_writegear_options(
+        frame_rate=100.0,
+        codec="libx264",
+        crf=23,
+        overrides={
+            "-preset": "ultrafast",
+            "-tune": "zerolatency",
+        },
+    )
+
+    assert opts == {
+        "-input_framerate": 100.0,
+        "-vcodec": "libx264",
+        "-crf": 23,
+        "-preset": "ultrafast",
+        "-tune": "zerolatency",
+    }
