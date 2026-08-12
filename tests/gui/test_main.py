@@ -175,3 +175,25 @@ def test_dlc_settings_from_ui_validates_detected_model_type(
 
     assert settings.model_type == "pytorch"
     assert isinstance(settings.model_type, str)
+
+
+def test_processor_controls_reenabled_after_inference_stops(
+    window,
+):
+    window._dlc_active = True
+    window._update_dlc_controls_enabled()
+
+    assert not window.processor_folder_edit.isEnabled()
+    assert not window.browse_processor_folder_button.isEnabled()
+    assert not window.refresh_processors_button.isEnabled()
+    assert not window.processor_combo.isEnabled()
+    assert not window.use_custom_proc_checkbox.isEnabled()
+
+    window._dlc_active = False
+    window._update_dlc_controls_enabled()
+
+    assert window.processor_folder_edit.isEnabled()
+    assert window.browse_processor_folder_button.isEnabled()
+    assert window.refresh_processors_button.isEnabled()
+    assert window.processor_combo.isEnabled()
+    assert window.use_custom_proc_checkbox.isEnabled()
