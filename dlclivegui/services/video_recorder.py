@@ -117,11 +117,7 @@ class VideoRecorder:
         crf: int = 23,
         buffer_size: int = 240,
         convert_grayscale_to_rgb: bool = True,
-<<<<<<< HEAD
         writer_options_overrides: WriteGearOptionOverrides | None = None,
-=======
-        writer_options_overrides: dict[str, Any] | None = None,
->>>>>>> 45da9a1 (Normalize WriteGear options and rename overrides)
     ):
         # Config
         self._output = Path(output)
@@ -132,13 +128,7 @@ class VideoRecorder:
         self._crf = int(crf)
         self._buffer_size = max(1, int(buffer_size))
         self._convert_grayscale_to_rgb = bool(convert_grayscale_to_rgb)
-<<<<<<< HEAD
         self._writer_options_overrides = dict(writer_options_overrides) if writer_options_overrides else {}
-=======
-        self._writer_options_overrides = (
-            dict(writer_options_overrides) if writer_options_overrides is not None else None
-        )
->>>>>>> 45da9a1 (Normalize WriteGear options and rename overrides)
         # Worker state
         self._queue: queue.Queue[Any] | None = None
         self._writer_thread: threading.Thread | None = None
