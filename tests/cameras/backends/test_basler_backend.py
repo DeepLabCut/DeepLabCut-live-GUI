@@ -554,3 +554,48 @@ class TestBaslerFrameTimestamps:
         assert frame_dict["raw_value"] == 123456789
 
         be.close()
+
+    @pytest.mark.unit
+    def test_make_timestamp_metadata_returns_none_for_zero_ticks(
+        self,
+        patched_basler_sdk,
+        basler_settings_factory,
+    ):
+        bb = patched_basler_sdk
+        backend = bb.BaslerCameraBackend(basler_settings_factory())
+
+        class GrabResult:
+            @staticmethod
+            def GetTimeStamp():
+                return 0
+
+        metadata = backend._make_timestamp_metadata(GrabResult())
+
+        assert metadata is None
+
+    import pytest
+
+    @pytest.mark.parametrize("frequency", [None, 0.0, -1.0])
+    def test_make_timestamp_metadata_uses_raw_ticks_for_invalid_frequency(
+        self,
+        patched_basler_sdk,
+        basler_settings_factory,
+        frequency,
+    ):
+        bb = patched_basler_sdk
+        backend = bb.BaslerCameraBackend(basler_settings_factory())
+        backend._timestamp_tick_frequency_hz = frequency
+        backend._timestamp_tick_frequency_source = None
+
+        class GrabResult:
+            @staticmethod
+            def GetTimeStamp():
+                return 12_345
+
+        metadata = backend._make_timestamp_metadata(GrabResult())
+
+        assert metadata is not None
+        assert metadata.default_reported == "raw_value"
+        assert metadata.seconds is None
+        assert metadata.raw_value == 12_345
+        assert metadata.tick_frequency_hz == frequency
