@@ -124,11 +124,6 @@ class CameraBackend(ABC):
     def recommended_preserve_mono(self) -> bool | None:
         return None
 
-    @property
-    def last_frame_timestamp_metadata(self) -> FrameTimestampMetadata | None:
-        """Return backend-provided timestamp metadata for the last read frame."""
-        return None
-
     @classmethod
     def options_key(cls) -> str:
         """Return the key used to store this backend's options in CameraSettings."""
