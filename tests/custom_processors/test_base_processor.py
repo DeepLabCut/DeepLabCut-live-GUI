@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import importlib
 import pickle
-import sys
-import types
 from pathlib import Path
 
 import numpy as np
@@ -12,48 +10,20 @@ import pandas as pd
 import pytest
 
 
-def _mock_dlclive(monkeypatch):
-    class Processor:
-        def __init__(self, *args, **kwargs):
-            pass
+@pytest.fixture
+def socket_mod():
+    """Import the socket processor using the installed DLCLive package."""
+    pytest.importorskip("dlclive.processor")
 
-        def process(self, pose, **kwargs):
-            return pose
-
-    dlclive_mod = types.ModuleType("dlclive")
-    processor_mod = types.ModuleType("dlclive.processor")
-
-    dlclive_mod.Processor = Processor
-    processor_mod.Processor = Processor
-
-    monkeypatch.setitem(sys.modules, "dlclive", dlclive_mod)
-    monkeypatch.setitem(sys.modules, "dlclive.processor", processor_mod)
+    return importlib.import_module("dlclivegui.processors.dlc_processor_socket")
 
 
 @pytest.fixture
-def socket_mod(monkeypatch):
-    """
-    Import the processor module with dlclive mocked.
-    Adjust module name if your file lives elsewhere.
-    """
-    _mock_dlclive(monkeypatch)
-    mod_name = "dlclivegui.processors.dlc_processor_socket"
-    if mod_name in sys.modules:
-        del sys.modules[mod_name]
-    return importlib.import_module(mod_name)
+def example_processor_mod():
+    """Import the built-in example processors normally."""
+    pytest.importorskip("dlclive.processor")
 
-
-@pytest.fixture
-def example_processor_mod(monkeypatch):
-    """
-    Import the example processor module with dlclive mocked.
-    Adjust module name if your file lives elsewhere.
-    """
-    _mock_dlclive(monkeypatch)
-    mod_name = "dlclivegui.processors.examples"
-    if mod_name in sys.modules:
-        del sys.modules[mod_name]
-    return importlib.import_module(mod_name)
+    return importlib.import_module("dlclivegui.processors.examples")
 
 
 def _module_data_dir(socket_mod) -> Path:
