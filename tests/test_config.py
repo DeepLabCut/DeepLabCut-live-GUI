@@ -78,6 +78,44 @@ def test_trigger_source_defaults_to_auto():
     assert trigger.source == "auto"
 
 
+@pytest.mark.unit
+def test_recording_settings_writegear_overrides_default():
+    settings = RecordingSettings(
+        codec="libx264",
+        crf=23,
+        fast_encoding=False,
+    )
+
+    assert settings.writegear_overrides() == {}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("codec", ["libx264", "libx265"])
+def test_recording_settings_writegear_overrides_fast_encoding(codec):
+    settings = RecordingSettings(
+        codec=codec,
+        crf=23,
+        fast_encoding=True,
+    )
+
+    assert settings.writegear_overrides() == {
+        "-preset": "ultrafast",
+        "-tune": "zerolatency",
+    }
+
+
+@pytest.mark.unit
+def test_recording_settings_writegear_overrides_nvenc():
+    settings = RecordingSettings(
+        codec="h264_nvenc",
+        crf=23,
+        fast_encoding=True,
+    )
+
+    assert settings.writegear_overrides() == {}
+
+
+@pytest.mark.unit
 def test_build_writegear_options_default():
     settings = RecordingSettings(
         codec="libx264",
@@ -97,10 +135,9 @@ def test_build_writegear_options_default():
         "-vcodec": "libx264",
         "-crf": 23,
     }
-    assert "-preset" not in opts
-    assert "-tune" not in opts
 
 
+@pytest.mark.unit
 def test_build_writegear_options_fast_encoding_x264():
     settings = RecordingSettings(
         codec="libx264",
@@ -124,6 +161,7 @@ def test_build_writegear_options_fast_encoding_x264():
     }
 
 
+@pytest.mark.unit
 def test_build_writegear_options_fast_encoding_nvenc():
     settings = RecordingSettings(
         codec="h264_nvenc",
@@ -138,13 +176,14 @@ def test_build_writegear_options_fast_encoding_nvenc():
         overrides=settings.writegear_overrides(),
     )
 
-    assert opts["-input_framerate"] == 100.0
-    assert opts["-vcodec"] == "h264_nvenc"
-    assert opts["-crf"] == 23
-    assert "-preset" not in opts
-    assert "-tune" not in opts
+    assert opts == {
+        "-input_framerate": 100.0,
+        "-vcodec": "h264_nvenc",
+        "-crf": 23,
+    }
 
 
+@pytest.mark.unit
 def test_build_writegear_options_invalid_fps_uses_default():
     settings = RecordingSettings(
         codec="libx264",

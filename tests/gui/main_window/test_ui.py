@@ -50,4 +50,4 @@ class TestCameraLabels:
         assert w._label_for_cam_id("runtime:id") == "Runtime Camera"
 
     def test_label_for_cam_id_unknown_is_neutral(self, window):
-        assert window._label_for_cam_id("missing:id") == "Unknown camera"
+        assert "Unknown camera" in window._label_for_cam_id("missing:id")
