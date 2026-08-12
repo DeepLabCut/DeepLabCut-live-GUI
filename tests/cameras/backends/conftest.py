@@ -669,15 +669,15 @@ def fake_pylon_module():
 
 
 @pytest.fixture()
-def patch_basler_sdk(monkeypatch, fake_pylon_module):
+def patched_basler_sdk(monkeypatch, fake_pylon_module):
     """Patch Basler backend to use FakePylon."""
     import dlclivegui.cameras.backends.basler_backend as bb
 
     fake_genicam = SimpleNamespace(TimeoutException=FakePylonTimeoutException)
 
     monkeypatch.setattr(bb, "pylon", fake_pylon_module, raising=False)
-    monkeypatch.setattr(bb, "genicam", fake_genicam)
-    return fake_pylon_module
+    monkeypatch.setattr(bb, "genicam", fake_genicam, raising=False)
+    return bb
 
 
 @pytest.fixture()
@@ -1304,7 +1304,7 @@ def gentl_settings_factory(tmp_path):
 # Generic patcher mapping fixture for test_generic_contracts.py
 # -----------------------------------------------------------------------------
 @pytest.fixture()
-def backend_sdk_patchers(patch_aravis_sdk, patch_basler_sdk, patch_gentl_sdk):
+def backend_sdk_patchers(patch_aravis_sdk, patched_basler_sdk, patch_gentl_sdk):
     """
     Mapping from backend name -> patcher callable (best-effort SDK stubs).
 
@@ -1315,7 +1315,7 @@ def backend_sdk_patchers(patch_aravis_sdk, patch_basler_sdk, patch_gentl_sdk):
     return {
         # Calling it is harmless; patching already applied by fixture injection.
         "aravis": (lambda: patch_aravis_sdk),
-        "basler": (lambda: patch_basler_sdk),
+        "basler": (lambda: patched_basler_sdk),
         "gentl": (lambda: patch_gentl_sdk),
         # No patch needed: OpenCV is assumed present
         # "opencv": None,
