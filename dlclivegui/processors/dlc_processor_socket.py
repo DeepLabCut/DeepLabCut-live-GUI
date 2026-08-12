@@ -40,6 +40,7 @@ class BaseProcessorSocket(Processor):
     PROCESSOR_NAME = "Base Socket Processor"
     PROCESSOR_DESCRIPTION = "Base class for socket-based processors with multi-client support"
     PROCESSOR_PARAMS = {}
+    PROCESSOR_DISCOVERABLE = False  # base class, not intended to be an example processor
 
     def __init__(
         self,
