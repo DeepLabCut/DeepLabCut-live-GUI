@@ -58,7 +58,7 @@ Each processor class should define metadata attributes to help GUI discovery:
 ```python
 class MyProcessorSocket(BaseProcessorSocket):
     PROCESSOR_NAME = "Use Pose Processor"  # Human-readable
-    PROCESSOR_DESCRIPTION = "BBroadcasts processed pose values"
+    PROCESSOR_DESCRIPTION = "Broadcasts processed pose values"
     PROCESSOR_PARAMS = {
         "bind": {
             "type": "tuple",
@@ -160,7 +160,7 @@ New processor modules should rely on subclass discovery instead of defining a re
 
 ### Recommended behavior
 
-To keep processor behavior explicit and opt-in, the GUI provides an **Allow processor-based control** toggle with these effects:
+To keep processor behavior explicit and opt-in, the GUI provides an **Use custom processor** toggle with these effects:
 
 - **Disabled by default:**
   - The GUI does **not instantiate** any processor plugin
