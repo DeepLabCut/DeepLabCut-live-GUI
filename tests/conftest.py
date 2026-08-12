@@ -358,7 +358,7 @@ class FakeVideoRecorder:
         crf=23,
         buffer_size=240,
         convert_grayscale_to_rgb=True,
-        writer_options=None,
+        writer_options_overrides=None,
         **kwargs,
     ):
         self.output = Path(output)
@@ -368,7 +368,7 @@ class FakeVideoRecorder:
         self.crf = crf
         self.buffer_size = buffer_size
         self.convert_grayscale_to_rgb = convert_grayscale_to_rgb
-        self.writer_options = dict(writer_options) if writer_options is not None else None
+        self.writer_options_overrides = dict(writer_options_overrides) if writer_options_overrides is not None else None
         self.extra_kwargs = dict(kwargs)
 
         self.started = False

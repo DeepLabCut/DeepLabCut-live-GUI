@@ -417,8 +417,9 @@ def test_start_all_passes_writegear_options(
         cam_id = get_camera_id(cam)
         rec = mgr.recorders[cam_id]
 
-        assert rec.writer_options is not None
-        assert rec.writer_options["-vcodec"] == "libx264"
-        assert rec.writer_options["-crf"] == "23"
-        assert rec.writer_options["-preset"] == "ultrafast"
-        assert rec.writer_options["-tune"] == "zerolatency"
+        opts_ovrr = rec.writer_options_overrides
+        assert opts_ovrr is not None
+        assert opts_ovrr["-vcodec"] == "libx264"
+        assert opts_ovrr["-crf"] == "23"
+        assert opts_ovrr["-preset"] == "ultrafast"
+        assert opts_ovrr["-tune"] == "zerolatency"
