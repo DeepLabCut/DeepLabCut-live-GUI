@@ -13,11 +13,7 @@ from threading import Event, Thread
 
 import numpy as np
 import pandas as pd
-
-try:
-    from dlclive.processor import Processor  # type: ignore
-except ImportError:
-    Processor = object  # Fallback for type checking if dlclive is not installed
+from dlclive.processor import Processor  # type: ignore
 
 logger = logging.getLogger("dlc_processor_socket")
 
