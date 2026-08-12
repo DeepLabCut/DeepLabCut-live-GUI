@@ -512,6 +512,8 @@ def test_basler_hardware_trigger_maps_pylon_timeout_to_timeout_error(
 
     finally:
         backend.close()
+
+
 class TestBaslerFrameTimestamps:
     @pytest.mark.unit
     def test_read_returns_captured_frame_with_hardware_timestamp_metadata(

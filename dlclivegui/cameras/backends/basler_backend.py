@@ -7,8 +7,6 @@ import logging
 import time
 from typing import ClassVar
 
-import numpy as np
-
 from ...config import BASLER_DO_LOG_TIMING, DEBUG_TRIGGER_LOGS, CameraTriggerSettings
 from ...utils.stats import WorkerTimingStats
 from ...utils.timestamps import FrameTimestampMetadata
