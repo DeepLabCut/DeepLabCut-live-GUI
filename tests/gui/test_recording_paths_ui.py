@@ -135,26 +135,35 @@ def test_start_recording_passes_session_and_timestamp(window, start_all_spy, qtb
     assert recording.filename == window.filename_edit.text()
 
 
-def test_processor_overrides_session_name_and_persists(window, start_all_spy, monkeypatch, fake_processor):
-    # Arrange window state so processor status logic runs
+def test_processor_overrides_session_name_and_persists(
+    window,
+    start_all_spy,
+    monkeypatch,
+    fake_processor,
+):
     window._dlc_active = True
     window._dlc_initialized = True
+
+    window.processor_combo.addItem(
+        "Fake Processor",
+        "fake_processor",
+    )
+    window.processor_combo.setCurrentIndex(window.processor_combo.count() - 1)
     window.use_custom_proc_checkbox.setChecked(True)
 
     # Patch start_recording to avoid preview start/timers
-    monkeypatch.setattr(window, "_start_recording", lambda: window._start_multi_camera_recording())
+    monkeypatch.setattr(
+        window,
+        "_start_recording",
+        lambda: window._start_multi_camera_recording(),
+    )
 
-    # Install fake processor
     window._dlc._processor = fake_processor
-    window._last_processor_vid_recording = False  # ensure it sees a "change"
+    window._last_processor_vid_recording = False
 
-    # Act
     window._update_processor_status()
 
-    # Assert UI updated
     assert window.session_name_edit.text() == "auto_ABC"
     assert window.filename_edit.text() == "auto_ABC"
-
-    # Assert recording call used overridden session name
     kwargs = start_all_spy["kwargs"]
     assert kwargs["session_name"] == "auto_ABC"
