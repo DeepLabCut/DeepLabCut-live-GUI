@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from dlclivegui.processors.processor_utils import (
+    _is_processor_subclass,
     default_processors_dir,
+    discover_processor_classes,
     display_processor_info,
     instantiate_from_scan,
     load_processors_from_file,
@@ -85,6 +87,35 @@ def test_default_processors_dir_exists():
 # ---------------------------------------------------------------------------
 # Tests: scan_processor_package (built-in package)
 # ---------------------------------------------------------------------------
+
+
+def test_builtin_examples_module_has_discoverable_processors():
+    from dlclivegui.processors import examples
+
+    processors = discover_processor_classes(examples)
+
+    assert processors, "No discoverable Processor subclasses found in dlclivegui.processors.examples"
+
+
+def test_builtin_example_processor_is_selectable():
+    from dlclive.processor import Processor
+
+    from dlclivegui.processors.examples import (
+        ExampleProcessorSocketCalculateMousePose,
+    )
+
+    cls = ExampleProcessorSocketCalculateMousePose
+
+    assert issubclass(cls, Processor)
+    assert cls.__module__ == "dlclivegui.processors.examples"
+    assert (
+        cls.__dict__.get(
+            "PROCESSOR_DISCOVERABLE",
+            True,
+        )
+        is not False
+    )
+    assert _is_processor_subclass(cls)
 
 
 @pytest.mark.skipif(
