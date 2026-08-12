@@ -60,6 +60,27 @@ def _is_processor_subclass(
         return False
 
 
+def _add_processor_results(
+    target: dict[str, dict],
+    processors: dict[str, dict],
+    *,
+    file_name: str,
+    file_path: str,
+) -> None:
+    """Normalize discovered processors and add them to a scan result."""
+    for class_name, processor_info in processors.items():
+        key = f"{file_name}::{class_name}"
+        info = dict(processor_info)
+        info.update(
+            {
+                "file": file_name,
+                "class_name": class_name,
+                "file_path": file_path,
+            }
+        )
+        target[key] = info
+
+
 def _processor_info_from_class(cls, fallback_name: str) -> dict:
     return {
         "class": cls,
@@ -93,7 +114,7 @@ def discover_processor_classes(module, *, only_defined_in_module: bool = True) -
     return processors
 
 
-def scan_processor_folder(folder_path):
+def scan_processor_folder(folder_path: str | Path) -> dict[str, dict]:
     all_processors = {}
     folder = Path(folder_path)
 
@@ -103,12 +124,12 @@ def scan_processor_folder(folder_path):
 
         try:
             processors = load_processors_from_file(py_file)
-            for class_or_id, processor_info in processors.items():
-                key = f"{py_file.name}::{class_or_id}"
-                processor_info["file"] = py_file.name
-                processor_info["class_name"] = class_or_id
-                processor_info["file_path"] = str(py_file)
-                all_processors[key] = processor_info
+            _add_processor_results(
+                all_processors,
+                processors,
+                file_name=py_file.name,
+                file_path=str(py_file),
+            )
         except Exception:
             logger.exception(f"Error loading {py_file}")
 
@@ -133,26 +154,13 @@ def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[
             continue
         try:
             mod = import_module(mod_name)
-            # Skip dlc_processor_socket.py as it's the base class and registry
-            if mod.__name__.endswith("dlc_processor_socket"):
-                continue
-
-            # Prefer module-level registry function if present
-            if hasattr(mod, "get_available_processors"):
-                processors = mod.get_available_processors()
-            else:
-                # Fallback: scan for dlclive.Processor subclasses
-                processors = discover_processor_classes(mod)
-
-            # Normalize into your “file::class” shape
-            module_file = mod.__name__.split(".")[-1] + ".py"
-            for class_name, info in processors.items():
-                key = f"{module_file}::{class_name}"
-                info = dict(info)  # copy
-                info["file"] = module_file
-                info["class_name"] = class_name
-                info["file_path"] = mod.__file__ or ""
-                all_processors[key] = info
+            processors = discover_processor_classes(mod)
+            _add_processor_results(
+                all_processors,
+                processors,
+                file_name=mod_name.split(".")[-1] + ".py",
+                file_path=getattr(mod, "__file__", ""),
+            )
 
         except Exception:
             logger.exception(f"Error importing processor module '{mod_name}'")
@@ -160,7 +168,7 @@ def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[
     return all_processors
 
 
-def load_processors_from_file(file_path: str | Path):
+def load_processors_from_file(file_path: str | Path) -> dict[str, dict]:
     """
     Load all processor classes from a Python file.
 
@@ -185,13 +193,6 @@ def load_processors_from_file(file_path: str | Path):
         sys.modules[module_name] = module  # Make visible during import for intra-module imports
         spec.loader.exec_module(module)
 
-        # Preferred path: the module exposes get_available_processors()
-        if hasattr(module, "get_available_processors"):
-            processors = module.get_available_processors()
-            if not isinstance(processors, dict):
-                raise TypeError(f"{file_path}: get_available_processors() must return a dict, got {type(processors)}")
-            return processors
-
         # Fallback path: discover subclasses of dlclive.Processor
         return discover_processor_classes(module)
 
@@ -201,7 +202,7 @@ def load_processors_from_file(file_path: str | Path):
         return {}
 
 
-def instantiate_from_scan(processors_dict, processor_key, **kwargs):
+def instantiate_from_scan(processors_dict: dict[str, dict], processor_key: str, **kwargs):
     """
     Instantiate a processor from scan_processor_folder results.
 
