@@ -23,8 +23,12 @@ def _processor_base_class():
     return Processor
 
 
-def _is_processor_subclass(obj, *, include_base: bool = False) -> bool:
-    """Return True for dlclive.Processor subclasses, including indirect subclasses."""
+def _is_processor_subclass(
+    obj,
+    *,
+    include_base: bool = False,
+) -> bool:
+    """Return whether obj is a selectable Processor subclass."""
     if not inspect.isclass(obj):
         return False
 
@@ -37,9 +41,22 @@ def _is_processor_subclass(obj, *, include_base: bool = False) -> bool:
     try:
         if obj is processor_base:
             return bool(include_base)
-        return issubclass(obj, processor_base)
+
+        if not issubclass(obj, processor_base):
+            return False
+
+        # Check only the class itself, not inherited values. This lets concrete
+        # subclasses of a non-discoverable base remain discoverable by default.
+        # getattr would return the inherited value.
+        if obj.__dict__.get("PROCESSOR_DISCOVERABLE", True) is False:
+            return False
+
+        return True
     except Exception:
-        logger.exception(f"Error checking if {obj} is a subclass of dlclive.Processor")
+        logger.exception(
+            "Error checking whether %r is a Processor subclass",
+            obj,
+        )
         return False
 
 
