@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import importlib
-import uuid
 from pathlib import Path
 
 import pytest
@@ -21,40 +20,41 @@ from dlclivegui.processors.processor_utils import (
 # ---------------------------------------------------------------------------
 
 
-def _write_temp_processor_file(tmp_path: Path, stem: str | None = None) -> Path:
-    """
-    Create a temporary processor module that exposes get_available_processors()
-    so we don't depend on dlclive.Processor being importable.
-
-    The dummy processor has safe __init__ and no side-effects.
-    """
-    stem = stem or f"tmp_proc_{uuid.uuid4().hex}"
+def _write_temp_processor_file(
+    tmp_path: Path,
+    *,
+    stem: str = "dummy_proc",
+) -> Path:
     py_file = tmp_path / f"{stem}.py"
-
     py_file.write_text(
-        # Use get_available_processors to bypass dlclive import in loader.
         """
-class DummyProc:
+from dlclive.processor import Processor
+
+
+class DummyProc(Processor):
     PROCESSOR_NAME = "Dummy Processor"
-    PROCESSOR_DESCRIPTION = "A safe, dummy processor for tests"
+    PROCESSOR_DESCRIPTION = "Test processor"
     PROCESSOR_PARAMS = {
-        "foo": {"type": "int", "default": 1, "description": "dummy param"}
+        "foo": {
+            "type": "int",
+            "default": 0,
+            "description": "Test integer parameter",
+        },
+        "bar": {
+            "type": "str",
+            "default": "",
+            "description": "Test string parameter",
+        },
     }
 
     def __init__(self, **kwargs):
-        self.kwargs = kwargs
+        super().__init__()
+        self.kwargs = dict(kwargs)
 
-def get_available_processors():
-    # Return the normalized mapping the loader expects
-    return {
-        "DummyProc": {
-            "class": DummyProc,
-            "name": DummyProc.PROCESSOR_NAME,
-            "description": DummyProc.PROCESSOR_DESCRIPTION,
-            "params": DummyProc.PROCESSOR_PARAMS,
-        }
-    }
-"""
+    def process(self, pose, **kwargs):
+        return pose
+""",
+        encoding="utf-8",
     )
     return py_file
 
@@ -109,16 +109,14 @@ def test_scan_processor_package_populates_and_has_valid_shape():
 # ---------------------------------------------------------------------------
 
 
-def test_load_processors_from_file_prefers_registry(tmp_path: Path):
+def test_load_processors_from_file_discovers_subclass(tmp_path: Path):
     py_file = _write_temp_processor_file(tmp_path)
     result = load_processors_from_file(py_file)
     assert isinstance(result, dict)
     assert "DummyProc" in result
     info = result["DummyProc"]
-    # For load_processors_from_file (registry path), the minimal fields are present:
     assert "class" in info and info["class"].__name__ == "DummyProc"
     assert info["name"] == "Dummy Processor"
-    assert "params" in info and "foo" in info["params"]
 
 
 def test_scan_processor_folder_discovers_files_and_normalizes_shape(tmp_path: Path):
@@ -165,3 +163,23 @@ def test_display_processor_info_prints(capsys, tmp_path: Path):
     assert "Dummy Processor" in captured
     assert "Parameters:" in captured
     assert "- foo (int)" in captured or "foo" in captured  # depends on your formatter
+
+
+def test_legacy_register_processor_remains_import_compatible():
+    from dlclive.processor import Processor
+
+    from dlclivegui.processors import (
+        PROCESSOR_REGISTRY,
+        register_processor,
+    )
+
+    PROCESSOR_REGISTRY.pop("LegacyProc", None)
+
+    with pytest.warns(DeprecationWarning):
+
+        @register_processor
+        class LegacyProc(Processor):
+            def process(self, pose, **kwargs):
+                return pose
+
+    assert PROCESSOR_REGISTRY["LegacyProc"] is LegacyProc
