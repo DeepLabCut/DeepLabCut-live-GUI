@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+if TYPE_CHECKING:
+    from dlclivegui.utils.writegear_options import WriteGearOptions
 
 Rotation = Literal[0, 90, 180, 270]
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
@@ -20,7 +23,8 @@ TriggerStrobeOperation = Literal["Exposure", "FixedDuration"]
 # Global settings
 ## GUI
 GUI_MAX_DISPLAY_FPS: float = 30.0
-
+## Recording
+DEFAULT_RECORDING_FPS: float = 30.0
 
 ## Debug
 ### Timing logs
@@ -505,6 +509,7 @@ class RecordingSettings(BaseModel):
     container: Literal["mp4", "avi", "mov"] = "mp4"
     codec: str = "libx264"
     crf: int = Field(default=23, ge=0, le=51)
+    fast_encoding: bool = False
 
     def output_path(self) -> Path:
         """Return the absolute output path for recordings."""
@@ -518,17 +523,20 @@ class RecordingSettings(BaseModel):
             filename = name.with_suffix(f".{self.container}")
         return directory / filename
 
-    def writegear_options(self, fps: float) -> dict[str, Any]:
+    @field_validator("codec", mode="before")
+    @classmethod
+    def _normalize_codec(cls, v) -> str:
+        return str(v or "").strip() or "libx264"
+
+    def writegear_overrides(self) -> WriteGearOptions:
         """Return compression parameters for WriteGear."""
 
-        fps_value = float(fps) if fps else 30.0
-        codec_value = (self.codec or "libx264").strip() or "libx264"
-        crf_value = int(self.crf) if self.crf is not None else 23
-        return {
-            "-input_framerate": f"{fps_value:.6f}",
-            "-vcodec": codec_value,
-            "-crf": str(crf_value),
-        }
+        if self.fast_encoding and self.codec in ("libx264", "libx265"):
+            return {
+                "-preset": "ultrafast",
+                "-tune": "zerolatency",
+            }
+        return {}
 
 
 class ApplicationSettings(BaseModel):
