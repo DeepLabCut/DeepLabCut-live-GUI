@@ -14,8 +14,9 @@ from typing import Any
 
 import numpy as np
 
-from dlclivegui.config import REC_DO_LOG_TIMING
+from dlclivegui.config import DEFAULT_RECORDING_FPS, REC_DO_LOG_TIMING
 from dlclivegui.utils.stats import RecorderStats, WorkerTimingStats
+from dlclivegui.utils.writegear_options import WriteGearOptionOverrides, WriteGearOptions, normalize_writegear_options
 
 try:
     from vidgear.gears import WriteGear
@@ -31,6 +32,46 @@ STOP_JOIN_TIMEOUT = 5.0  # seconds
 _SENTINEL = object()
 
 
+def build_writegear_options(
+    *,
+    frame_rate: float | None,
+    codec: str,
+    crf: int,
+    overrides: WriteGearOptionOverrides | None = None,
+) -> WriteGearOptions:
+    """Build and validate the final WriteGear/FFmpeg options."""
+    try:
+        fps = float(frame_rate or 0.0)
+    except (TypeError, ValueError):
+        fps = 0.0
+
+    if fps <= 0:
+        fps = DEFAULT_RECORDING_FPS
+
+    codec_value = str(codec or "").strip()
+    if not codec_value:
+        codec_value = "libx264"
+
+    try:
+        crf_value = int(crf)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Recording CRF must be an integer.") from exc
+
+    if not 0 <= crf_value <= 51:
+        raise ValueError("Recording CRF must be between 0 and 51.")
+
+    options: WriteGearOptions = {
+        "-input_framerate": fps,
+        "-vcodec": codec_value,
+        "-crf": crf_value,
+    }
+
+    if overrides:
+        options.update(overrides)
+
+    return normalize_writegear_options(options)
+
+
 class VideoRecorder:
     """Thin wrapper around :class:`vidgear.gears.WriteGear`."""
 
@@ -43,6 +84,7 @@ class VideoRecorder:
         crf: int = 23,
         buffer_size: int = 240,
         convert_grayscale_to_rgb: bool = True,
+        writer_options_overrides: WriteGearOptionOverrides | None = None,
     ):
         # Config
         self._output = Path(output)
@@ -53,6 +95,7 @@ class VideoRecorder:
         self._crf = int(crf)
         self._buffer_size = max(1, int(buffer_size))
         self._convert_grayscale_to_rgb = bool(convert_grayscale_to_rgb)
+        self._writer_options_overrides = dict(writer_options_overrides) if writer_options_overrides else {}
         # Worker state
         self._queue: queue.Queue[Any] | None = None
         self._writer_thread: threading.Thread | None = None
@@ -109,20 +152,30 @@ class VideoRecorder:
                     self._queue = None
                     self._writer_thread = None
 
-            fps_value = 30.0
-            if self._frame_rate is not None:
-                try:
-                    fps_value = float(self._frame_rate)
-                except Exception:
-                    fps_value = 0.0
-                if fps_value <= 0.0:
-                    fps_value = 30.0
-                    logger.warning(
-                        "VideoRecorder frame_rate missing/zero for %s; falling back to %.3f FPS. "
-                        "Video playback duration may not match capture timestamps.",
-                        self._output.name,
-                        fps_value,
-                    )
+            requested_fps = self._frame_rate
+
+            writer_kwargs = build_writegear_options(
+                frame_rate=requested_fps,
+                codec=self._codec,
+                crf=self._crf,
+                overrides=self._writer_options_overrides,
+            )
+
+            fps_value = float(writer_kwargs["-input_framerate"])
+
+            try:
+                requested_fps_value = float(requested_fps or 0.0)
+            except (TypeError, ValueError):
+                requested_fps_value = 0.0
+
+            if requested_fps_value <= 0:
+                logger.warning(
+                    "VideoRecorder frame_rate missing/zero for %s; "
+                    "falling back to %.3f FPS. Video playback duration "
+                    "may not match capture timestamps.",
+                    self._output.name,
+                    fps_value,
+                )
 
             logger.info(
                 "Starting VideoRecorder output=%s frame_size=%s frame_rate=%.3f "
@@ -136,16 +189,8 @@ class VideoRecorder:
                 self._convert_grayscale_to_rgb,
             )
 
-            writer_kwargs: dict[str, Any] = {
-                "compression_mode": True,
-                "logging": False,
-                "-input_framerate": fps_value,
-                "-vcodec": (self._codec or "libx264").strip() or "libx264",
-                "-crf": int(self._crf),
-            }
-
             self._output.parent.mkdir(parents=True, exist_ok=True)
-            self._writer = WriteGear(output=str(self._output), **writer_kwargs)
+            self._writer = WriteGear(output=str(self._output), compression_mode=True, logging=False, **writer_kwargs)
             self._queue = queue.Queue(maxsize=self._buffer_size)
             self._frames_enqueued = 0
             self._frames_written = 0

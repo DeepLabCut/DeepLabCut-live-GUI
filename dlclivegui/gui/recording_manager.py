@@ -166,6 +166,7 @@ class RecordingManager:
                 codec=recording.codec,
                 crf=recording.crf,
                 convert_grayscale_to_rgb=not bool(getattr(cam, "preserve_mono", False)),
+                writer_options_overrides=recording.writegear_overrides() or None,
             )
             try:
                 recorder.start()
