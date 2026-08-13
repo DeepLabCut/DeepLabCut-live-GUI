@@ -1388,7 +1388,7 @@ class CameraConfigDialog(QDialog):
         # Start probe worker (settings will be opened in GUI thread for safety)
         self._probe_worker = CameraProbeWorker(cam, self)
         self._probe_worker.progress.connect(self._append_status)
-        self._probe_worker.success.connect(self._on_probe_success)
+        self._probe_worker.probe_requested.connect(self._on_probe_success)
         self._probe_worker.error.connect(self._on_probe_error)
         self._probe_worker.finished.connect(self._on_probe_finished)
         self._probe_worker.start()
