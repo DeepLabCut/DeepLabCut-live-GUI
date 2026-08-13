@@ -590,19 +590,19 @@ class DLCLiveProcessor(QObject):
             with self._timing.measure("DLC.runner.get_pose"):
                 self._dlc.pose = self._dlc.runner.get_pose(processed_frame)
 
-            with self._timing.measure("DLC.post_process_pose"):
-                raw_pose: Any = self._dlc._post_process_pose(processed_frame, frame_time=timestamp)
+            # with self._timing.measure("DLC.post_process_pose"):
+            # raw_pose: Any = self._dlc._post_process_pose(processed_frame, frame_time=timestamp)
 
             inference_time = time.perf_counter() - inference_start
         with self._timing.measure("DLC.validate_pose"):
-            pose_arr: np.ndarray = validate_pose_array(raw_pose, source_backend=PoseBackends.DLC_LIVE)
+            pose_arr: np.ndarray = validate_pose_array(self._dlc.pose, source_backend=PoseBackends.DLC_LIVE)
         pose_packet = PosePacket(
             schema_version=0,
             keypoints=pose_arr,
             keypoint_names=None,
             individual_ids=None,
             source=PoseSource(backend=PoseBackends.DLC_LIVE, model_type=self._settings.model_type),
-            raw=raw_pose,
+            raw=pose_arr,
         )
 
         processor_overhead = 0.0
