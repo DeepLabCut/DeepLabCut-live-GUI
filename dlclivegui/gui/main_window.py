@@ -51,9 +51,9 @@ from dlclivegui.cameras import CameraFactory
 from dlclivegui.config import (
     ALLOWED_VIDEO_CONTAINERS,
     DEFAULT_CONFIG,
-    GUI_MAX_DISPLAY_FPS,
     DEFAULT_RECORDING_CONTAINER,
     DLC_DO_LOG_TIMING,
+    GUI_MAX_DISPLAY_FPS,
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
