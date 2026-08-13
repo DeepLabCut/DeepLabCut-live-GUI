@@ -6,16 +6,12 @@ from __future__ import annotations
 import copy
 import logging
 from enum import Enum, auto
-from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QWidget
 
-from ...cameras.factory import CameraBackend, CameraFactory
+from ...cameras.factory import CameraFactory
 from ...config import CameraSettings
-
-if TYPE_CHECKING:
-    pass  # only for typing
 
 LOGGER = logging.getLogger(__name__)
 
@@ -74,10 +70,16 @@ class DetectCamerasWorker(QThread):
 
 
 class CameraProbeWorker(QThread):
-    """Request a quick device probe (open/close) without starting preview."""
+    """Prepare and dispatch a camera probe request.
+
+    This worker prepares a copy of the camera settings and emits ``success``.
+    The connected GUI thread handler performs the actual backend creation,
+    device open, probing, and close. Keeping those operations in one thread
+    prevents overlapping opens of the same device.
+    """
 
     progress = Signal(str)
-    success = Signal(object)  # emits CameraSettings
+    probe_requested = Signal(object)  # emits CameraSettings
     error = Signal(str)
 
     def __init__(self, cam: CameraSettings, parent: QWidget | None = None):
@@ -99,17 +101,23 @@ class CameraProbeWorker(QThread):
             self.progress.emit("Probing device defaults…")
             if self._cancel:
                 return
-            self.success.emit(self._cam)
+            self.probe_requested.emit(self._cam)
         except Exception as exc:
             self.error.emit(f"{type(exc).__name__}: {exc}")
         # QThread.finished will fire automatically.
 
 
 # -------------------------------
-# Singleton camera preview loader worker
+# Worker preparing cam preview loading
 # -------------------------------
 class CameraLoadWorker(QThread):
-    """Open/configure a camera backend off the UI thread with progress and cancel support."""
+    """Prepare and dispatch a camera-open request.
+
+    This worker validates cancellation state, prepares a copy of the camera
+    settings, and emits ``success``. The connected GUI thread handler performs
+    the actual backend creation, device open, and configuration to avoid
+    opening the same device concurrently from multiple threads.
+    """
 
     progress = Signal(str)
     success = Signal(object)  # emits CameraSettings for GUI-thread open
@@ -120,7 +128,6 @@ class CameraLoadWorker(QThread):
         super().__init__(parent)
         self._cam = copy.deepcopy(cam)
         self._cancel = False
-        self._backend: CameraBackend | None = None
 
         # Ensure preview open never uses fast_start probe mode
         if isinstance(self._cam.properties, dict):
@@ -139,22 +146,17 @@ class CameraLoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            self.progress.emit("Creating backend…")
+            self.progress.emit("Preparing cam settings…")
             if self._check_cancel():
                 self.canceled.emit()
                 return
 
             LOGGER.debug("Preparing camera open for %s:%d", self._cam.backend, self._cam.index)
-            self.progress.emit("Opening device…")
+            self.progress.emit("Requesting camera open…")
 
             # Open only in GUI thread to avoid simultaneous opens
             self.success.emit(self._cam)
 
         except Exception as exc:
             msg = f"{type(exc).__name__}: {exc}"
-            try:
-                if self._backend:
-                    self._backend.close()
-            except Exception:
-                pass
             self.error.emit(msg)
