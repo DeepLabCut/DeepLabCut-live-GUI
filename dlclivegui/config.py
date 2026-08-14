@@ -35,7 +35,7 @@ RECORD_STOP_RETRY_INTERVAL: float = 0.25
 SINGLE_CAMERA_WORKER_DO_LOG_TIMING: bool = False
 MULTI_CAMERA_WORKER_DO_LOG_TIMING: bool = False
 REC_DO_LOG_TIMING: bool = False
-DLC_DO_LOG_TIMING: bool = True
+DLC_DO_LOG_TIMING: bool = False
 ### Trigger debug logging
 DEBUG_TRIGGER_LOGS = False
 # MAIN_WINDOW_DO_LOG_TIMING: bool = False
