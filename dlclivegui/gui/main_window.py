@@ -866,6 +866,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Recording settings
         ## Session name persistence + preview updates
         self.session_name_edit.editingFinished.connect(self._on_session_name_editing_finished)
+        self.filename_edit.editingFinished.connect(self._on_filename_editing_finished)
         self.use_timestamp_checkbox.stateChanged.connect(self._on_use_timestamp_changed)
         self.output_directory_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
         self.filename_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
@@ -889,6 +890,9 @@ class DLCLiveMainWindow(QMainWindow):
         recording = config.recording
         self.output_directory_edit.setText(recording.directory)
         self.filename_edit.setText(recording.filename)
+        persisted_filename = self._settings_store.get_rec_filename()
+        if persisted_filename:
+            self.filename_edit.setText(persisted_filename)
         self.container_combo.setCurrentText(recording.container)
         codec_index = self.codec_combo.findText(recording.codec)
         if codec_index >= 0:
@@ -1394,6 +1398,11 @@ class DLCLiveMainWindow(QMainWindow):
     def _on_session_name_editing_finished(self) -> None:
         name = self.session_name_edit.text().strip()
         self._settings_store.set_session_name(name)
+        self._update_recording_path_preview()
+
+    def _on_filename_editing_finished(self) -> None:
+        filename = self.filename_edit.text().strip()
+        self._settings_store.set_rec_filename(filename)
         self._update_recording_path_preview()
 
     def _update_recording_path_preview(self) -> None:
@@ -2540,6 +2549,9 @@ class DLCLiveMainWindow(QMainWindow):
         # Remember processor-control checkbox state on exit
         if hasattr(self, "use_custom_proc_checkbox"):
             self._settings_store.set_processor_control_enabled(self.use_custom_proc_checkbox.isChecked())
+
+        if hasattr(self, "filename_edit"):
+            self._settings_store.set_rec_filename(self.filename_edit.text().strip())
 
         # Flush QSettings best-effort
         try:
