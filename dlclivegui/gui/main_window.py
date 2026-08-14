@@ -860,12 +860,8 @@ class DLCLiveMainWindow(QMainWindow):
         self._dlc.initialized.connect(self._on_dlc_initialised)
         self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
         self.dlc_camera_combo.currentTextChanged.connect(self.dlc_camera_combo.update_shrink_width)
-        self.processor_combo.currentIndexChanged.connect(
-            self._on_processor_selection_changed
-        )
-        self.use_custom_proc_checkbox.stateChanged.connect(
-            self._on_custom_processor_enabled_changed
-        )
+        self.processor_combo.currentIndexChanged.connect(self._on_processor_selection_changed)
+        self.use_custom_proc_checkbox.stateChanged.connect(self._on_custom_processor_enabled_changed)
 
         # Recording settings
         ## Session name persistence + preview updates
@@ -937,9 +933,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Processor
         ## Allow processor control checkbox state
         if hasattr(self, "use_custom_proc_checkbox"):
-            self.use_custom_proc_checkbox.setChecked(
-                self._settings_store.get_processor_control_enabled(default=False)
-            )
+            self.use_custom_proc_checkbox.setChecked(self._settings_store.get_processor_control_enabled(default=False))
 
         # Update DLC camera list
         self._refresh_dlc_camera_list()
@@ -1263,9 +1257,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.use_custom_proc_checkbox.setChecked(has_selection)
         self.use_custom_proc_checkbox.blockSignals(False)
 
-        self._settings_store.set_processor_control_enabled(
-            has_selection
-        )
+        self._settings_store.set_processor_control_enabled(has_selection)
 
         if hasattr(
             self.processor_combo,
@@ -1275,7 +1267,6 @@ class DLCLiveMainWindow(QMainWindow):
 
         self._update_processor_status()
 
-
     def _on_custom_processor_enabled_changed(
         self,
         _state: int,
@@ -1283,24 +1274,17 @@ class DLCLiveMainWindow(QMainWindow):
         """Persist whether the selected custom processor should be used."""
         enabled = self._custom_processor_enabled()
 
-        self._settings_store.set_processor_control_enabled(
-            enabled
-        )
+        self._settings_store.set_processor_control_enabled(enabled)
         self._update_processor_status()
 
     def _refresh_processors(self) -> None:
         """Scan processors and restore the previous selection best-effort."""
         previous_key = self.processor_combo.currentData()
-        preferred_key = (
-            previous_key
-            or self._settings_store.get_processor_key()
-        )
+        preferred_key = previous_key or self._settings_store.get_processor_key()
         preferred_enabled = (
             self.use_custom_proc_checkbox.isChecked()
             if previous_key is not None
-            else self._settings_store.get_processor_control_enabled(
-                default=False
-            )
+            else self._settings_store.get_processor_control_enabled(default=False)
         )
 
         self.processor_combo.blockSignals(True)
@@ -1311,50 +1295,23 @@ class DLCLiveMainWindow(QMainWindow):
                 None,
             )
 
-            selected_folder = (
-                self.processor_folder_edit.text().strip()
-            )
-            selected_path = (
-                Path(selected_folder).expanduser()
-                if selected_folder
-                else None
-            )
+            selected_folder = self.processor_folder_edit.text().strip()
+            selected_path = Path(selected_folder).expanduser() if selected_folder else None
 
-            if (
-                selected_path is not None
-                and selected_path.is_dir()
-            ):
-                resolved_folder = str(
-                    selected_path.resolve()
-                )
-                self._settings_store.set_processor_folder(
-                    resolved_folder
-                )
-                self._scanned_processors = (
-                    scan_processor_folder(
-                        resolved_folder
-                    )
-                )
+            if selected_path is not None and selected_path.is_dir():
+                resolved_folder = str(selected_path.resolve())
+                self._settings_store.set_processor_folder(resolved_folder)
+                self._scanned_processors = scan_processor_folder(resolved_folder)
                 source_text = resolved_folder
             else:
-                self._scanned_processors = (
-                    scan_processor_package(
-                        "dlclivegui.processors"
-                    )
-                )
-                source_text = (
-                    "package dlclivegui.processors"
-                )
+                self._scanned_processors = scan_processor_package("dlclivegui.processors")
+                source_text = "package dlclivegui.processors"
 
-            self._processor_keys = list(
-                self._scanned_processors
-            )
+            self._processor_keys = list(self._scanned_processors)
 
             for key in self._processor_keys:
                 info = self._scanned_processors[key]
-                display_name = (
-                    f"{info['name']} ({info['file']})"
-                )
+                display_name = f"{info['name']} ({info['file']})"
                 self.processor_combo.addItem(
                     display_name,
                     key,
@@ -1362,56 +1319,35 @@ class DLCLiveMainWindow(QMainWindow):
 
             selected_index = 0
             if preferred_key is not None:
-                found_index = (
-                    self.processor_combo.findData(
-                        preferred_key
-                    )
-                )
+                found_index = self.processor_combo.findData(preferred_key)
                 if found_index >= 0:
                     selected_index = found_index
 
-            self.processor_combo.setCurrentIndex(
-                selected_index
-            )
+            self.processor_combo.setCurrentIndex(selected_index)
         finally:
             self.processor_combo.blockSignals(False)
 
-        has_selection = (
-            self.processor_combo.currentData()
-            is not None
-        )
+        has_selection = self.processor_combo.currentData() is not None
 
-        self.processor_toggle_row.setVisible(
-            has_selection
-        )
+        self.processor_toggle_row.setVisible(has_selection)
 
-        self.use_custom_proc_checkbox.blockSignals(
-            True
-        )
-        self.use_custom_proc_checkbox.setChecked(
-            has_selection and preferred_enabled
-        )
-        self.use_custom_proc_checkbox.blockSignals(
-            False
-        )
+        self.use_custom_proc_checkbox.blockSignals(True)
+        self.use_custom_proc_checkbox.setChecked(has_selection and preferred_enabled)
+        self.use_custom_proc_checkbox.blockSignals(False)
 
         # Clear a saved key that is no longer available.
         selected_key = self.processor_combo.currentData()
-        self._settings_store.set_processor_key(
-            selected_key
-        )
-        self._settings_store.set_processor_control_enabled(
-            self._custom_processor_enabled()
-        )
+        self._settings_store.set_processor_key(selected_key)
+        self._settings_store.set_processor_control_enabled(self._custom_processor_enabled())
 
         self.processor_combo.update_shrink_width()
         self._update_processor_status()
 
         self.statusBar().showMessage(
-            f"Found {len(self._processor_keys)} "
-            f"processor(s) in {source_text}",
+            f"Found {len(self._processor_keys)} processor(s) in {source_text}",
             3000,
         )
+
     # ------------------------------------------------------------------
     # Recording path preview and session name persistence
     def _known_recording_extensions(self) -> set[str]:
@@ -2086,9 +2022,7 @@ class DLCLiveMainWindow(QMainWindow):
         processor = None
         selected_key = self.processor_combo.currentData()
 
-        self._settings_store.set_processor_key(
-            selected_key
-        )
+        self._settings_store.set_processor_key(selected_key)
 
         if self._custom_processor_enabled():
             try:
@@ -2096,31 +2030,23 @@ class DLCLiveMainWindow(QMainWindow):
                     self._scanned_processors,
                     selected_key,
                 )
-                processor_name = (
-                    self._scanned_processors[
-                        selected_key
-                    ]["name"]
-                )
+                processor_name = self._scanned_processors[selected_key]["name"]
                 self.statusBar().showMessage(
                     f"Loaded processor: {processor_name}",
                     3000,
                 )
             except Exception as exc:
-                error_msg = (
-                    "Failed to instantiate processor: "
-                    f"{exc}"
-                )
+                error_msg = f"Failed to instantiate processor: {exc}"
                 self._show_error(error_msg)
                 logger.error(error_msg)
                 return False
 
         elif selected_key is not None:
             self.statusBar().showMessage(
-                f"Custom processor disabled: "
-                f"{selected_key}",
+                f"Custom processor disabled: {selected_key}",
                 3000,
             )
-    
+
         self._dlc.configure(settings, processor=processor)
         self._model_path_store.save_if_valid(settings.model_path)
         return True
