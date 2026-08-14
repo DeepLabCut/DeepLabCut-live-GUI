@@ -37,6 +37,7 @@ class DLCLiveGUISettingsStore:
     KEY_SESSION_NAME = "recording/session_name"
     KEY_USE_TIMESTAMP = "recording/use_timestamp"
     KEY_FAST_ENCODING = "recording/fast_encoding"
+    KEY_REC_FILENAME = "recording/rec_filename"
 
     def __init__(self, qsettings: QSettings | None = None):
         self._s = qsettings or QSettings("DeepLabCut", "DLCLiveGUI")
@@ -108,6 +109,12 @@ class DLCLiveGUISettingsStore:
 
     def set_fast_encoding(self, enabled: bool) -> None:
         self._s.setValue(self.KEY_FAST_ENCODING, bool(enabled))
+
+    def get_rec_filename(self) -> str:
+        return self._get_optional_str(self.KEY_REC_FILENAME) or ""
+
+    def set_rec_filename(self, filename: str) -> None:
+        self._set_optional_str(self.KEY_REC_FILENAME, filename)
 
     # ------------------------------------------------------------------
     # DLC camera / processor prefs
