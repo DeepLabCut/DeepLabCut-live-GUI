@@ -54,6 +54,7 @@ from dlclivegui.config import (
     DEFAULT_RECORDING_CONTAINER,
     DLC_DO_LOG_TIMING,
     GUI_MAX_DISPLAY_FPS,
+    RECORD_STOP_RETRY_INTERVAL,
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
@@ -1652,9 +1653,14 @@ class DLCLiveMainWindow(QMainWindow):
 
         def worker():
             try:
-                self._rec_manager.stop_all()
-            finally:
-                self._recording_stopped_async.emit()
+                while not self._rec_manager.stop_all():
+                    logger.info("Retrying recorder stop...")
+                    time.sleep(RECORD_STOP_RETRY_INTERVAL)
+            except Exception as e:
+                logger.exception("Error while stopping recording: %s", e)
+                return
+
+            self._recording_stopped_async.emit()
 
         threading.Thread(
             target=worker,
@@ -2261,7 +2267,13 @@ class DLCLiveMainWindow(QMainWindow):
         if hasattr(self, "_camera_validation_timer") and self._camera_validation_timer.isActive():
             self._camera_validation_timer.stop()
         # Stop all multi-camera recorders
-        self._rec_manager.stop_all()
+        try:
+            self.multi_camera_controller.set_recording_frame_do_emit(False)
+        except Exception:
+            logger.exception("Failed to disable recording frame emission during shutdown")
+        while not self._rec_manager.stop_all():
+            logger.info("Retrying recorder stop during shutdown...")
+            time.sleep(RECORD_STOP_RETRY_INTERVAL)
 
         # Close the camera dialog if open (ensures its worker thread is canceled)
         if getattr(self, "_cam_dialog", None) is not None and self._cam_dialog.isVisible():

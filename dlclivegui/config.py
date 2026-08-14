@@ -27,6 +27,7 @@ GUI_MAX_DISPLAY_FPS: float = 30.0
 DEFAULT_RECORDING_FPS: float = 30.0
 ALLOWED_VIDEO_CONTAINERS: set[str] = {"mp4", "avi", "mov"}
 DEFAULT_RECORDING_CONTAINER: str = "mp4"
+RECORD_STOP_RETRY_INTERVAL: float = 0.25
 
 
 ## Debug
