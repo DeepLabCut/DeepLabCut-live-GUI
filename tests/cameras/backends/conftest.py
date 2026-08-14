@@ -1262,6 +1262,7 @@ def gentl_settings_factory(tmp_path):
         fps=0.0,
         exposure=0,
         gain=0.0,
+        preserve_mono=False,
         enabled=True,
         properties=None,
     ):
@@ -1293,6 +1294,7 @@ def gentl_settings_factory(tmp_path):
             fps=fps,
             exposure=exposure,
             gain=gain,
+            preserve_mono=preserve_mono,
             enabled=enabled,
             properties=props,
         )
