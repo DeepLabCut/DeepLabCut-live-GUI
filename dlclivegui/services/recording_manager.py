@@ -17,6 +17,9 @@ from dlclivegui.utils.utils import build_run_dir, sanitize_name
 
 log = logging.getLogger(__name__)
 
+DISPATCH_STOP_TIMEOUT = 2.0
+DISPATCH_QUEUE_MAXSIZE = 4096
+
 _FRAME_SENTINEL = object()
 
 
@@ -31,7 +34,8 @@ class RecordingManager:
         self._lock = threading.RLock()
         self._frame_queue: queue.Queue | None = None
         self._dispatch_thread: threading.Thread | None = None
-        self._dispatch_stop = threading.Event()
+        self._dispatch_accepting: bool = False
+        self._dispatch_sentinel_enqueued: bool = False
 
     @property
     def is_active(self) -> bool:
@@ -96,39 +100,79 @@ class RecordingManager:
             return self._recorders.pop(cam_id, default)
 
     def _start_dispatcher(self) -> None:
-        if self._dispatch_thread is not None and self._dispatch_thread.is_alive():
-            return
+        with self._lock:
+            if self._dispatch_thread is not None and self._dispatch_thread.is_alive():
+                return
 
-        self._dispatch_stop.clear()
-        self._frame_queue = queue.Queue(maxsize=4096)
-        self._dispatch_thread = threading.Thread(
-            target=self._dispatch_loop,
-            name="RecordingManagerDispatcher",
-            daemon=True,
-        )
-        self._dispatch_thread.start()
+            self._frame_queue = queue.Queue(maxsize=DISPATCH_QUEUE_MAXSIZE)
+            self._dispatch_accepting = True
+            self._dispatch_sentinel_enqueued = False
+            self._dispatch_thread = threading.Thread(
+                target=self._dispatch_loop,
+                name="RecordingManagerDispatcher",
+                daemon=True,
+            )
+            self._dispatch_thread.start()
 
-    def _stop_dispatcher(self, timeout: float = 2.0) -> None:
+    def _stop_dispatcher(
+        self,
+        timeout: float = DISPATCH_STOP_TIMEOUT,
+    ) -> bool:
         with self._lock:
             q = self._frame_queue
             t = self._dispatch_thread
 
-        if q is not None:
-            try:
-                q.put(_FRAME_SENTINEL, block=True, timeout=timeout)
-            except queue.Full:
-                log.warning("Recording frame queue full while stopping dispatcher; dispatcher may not stop promptly.")
+            if t is None:
+                self._frame_queue = None
+                self._dispatch_accepting = False
+                self._dispatch_sentinel_enqueued = False
+                return True
 
-        if t is not None:
-            t.join(timeout=timeout)
-            if t.is_alive():
-                log.warning("Recording frame dispatcher did not stop within %.1fs", timeout)
+            # Establish the stop boundary while holding the same lock used
+            # by write_frame(). No new frame can be accepted after this.
+            self._dispatch_accepting = False
+
+            should_enqueue_sentinel = not self._dispatch_sentinel_enqueued
+            self._dispatch_sentinel_enqueued = True
+
+        if should_enqueue_sentinel and q is not None:
+            try:
+                q.put(
+                    _FRAME_SENTINEL,
+                    block=True,
+                    timeout=timeout,
+                )
+            except queue.Full:
+                # No sentinel was inserted, so allow a later stop attempt
+                # to retry once the dispatcher has freed queue capacity.
+                with self._lock:
+                    if self._dispatch_thread is t:
+                        self._dispatch_sentinel_enqueued = False
+
+                log.warning(
+                    "Could not enqueue recording dispatcher sentinel within %.1fs; preserving live dispatcher state",
+                    timeout,
+                )
+                return False
+
+        t.join(timeout=timeout)
+
+        if t.is_alive():
+            log.warning(
+                "Recording frame dispatcher did not stop within %.1fs; preserving its queue and thread state",
+                timeout,
+            )
+            return False
 
         with self._lock:
+            # Do not clear a newer dispatcher if one was somehow started.
             if self._dispatch_thread is t:
                 self._dispatch_thread = None
                 self._frame_queue = None
-            self._dispatch_stop.clear()
+                self._dispatch_accepting = False
+                self._dispatch_sentinel_enqueued = False
+
+        return True
 
     def _dispatch_loop(self) -> None:
         with self._lock:
@@ -142,16 +186,30 @@ class RecordingManager:
 
             try:
                 if item is _FRAME_SENTINEL:
-                    break
+                    return
 
-                cam_id, frame, timestamp, timestamp_metadata = item
-                self._write_frame_now(cam_id, frame, timestamp, timestamp_metadata)
+                (
+                    cam_id,
+                    frame,
+                    timestamp,
+                    timestamp_metadata,
+                ) = item
+
+                self._write_frame_now(
+                    cam_id,
+                    frame,
+                    timestamp,
+                    timestamp_metadata,
+                )
+
+            except Exception:
+                log.exception("Unhandled error dispatching a recording frame")
 
             finally:
                 try:
                     q.task_done()
                 except ValueError:
-                    pass
+                    log.warning("Recording dispatcher called task_done() too many times")
 
     def start_all(
         self,
@@ -257,8 +315,10 @@ class RecordingManager:
 
         return run_dir
 
-    def stop_all(self) -> None:
-        self._stop_dispatcher()
+    def stop_all(self) -> bool:
+        if not self._stop_dispatcher():
+            log.warning("Recording stop is incomplete, frame dispatcher is still draining.")
+            return False
 
         with self._lock:
             recorders = list(self._recorders.items())
@@ -274,6 +334,8 @@ class RecordingManager:
         with self._lock:
             self._session_dir = None
             self._run_dir = None
+
+        return True
 
     def _write_frame_now(
         self, cam_id: str, frame: np.ndarray, timestamp: float | None = None, timestamp_metadata: object | None = None
@@ -316,9 +378,15 @@ class RecordingManager:
         timestamp: float | None = None,
         timestamp_metadata: object | None = None,
     ) -> None:
+        payload = (
+            cam_id,
+            frame,
+            timestamp if timestamp is not None else time.time(),
+            timestamp_metadata,
+        )
+
         with self._lock:
-            active = cam_id in self._recorders
-            if not active:
+            if cam_id not in self._recorders:
                 return
 
             if self._frame_queue is None or self._dispatch_thread is None or not self._dispatch_thread.is_alive():
@@ -326,18 +394,21 @@ class RecordingManager:
 
             q = self._frame_queue
 
-        if q is None:
-            return
+            if q is None or not self._dispatch_accepting:
+                return
 
-        try:
-            q.put_nowait((cam_id, frame, timestamp if timestamp is not None else time.time(), timestamp_metadata))
-        except queue.Full:
-            log.warning(
-                "Recording manager frame queue full; dropping frame for %s. frame_shape=%s dtype=%s",
-                cam_id,
-                getattr(frame, "shape", None),
-                getattr(frame, "dtype", None),
-            )
+            try:
+                q.put_nowait(payload)
+                return
+            except queue.Full:
+                pass
+
+        log.warning(
+            "Recording manager frame queue full; dropping frame for %s. frame_shape=%s dtype=%s",
+            cam_id,
+            getattr(frame, "shape", None),
+            getattr(frame, "dtype", None),
+        )
 
     def flush(self, timeout: float = 2.0) -> bool:
         """Wait until all currently queued recording frames have been dispatched.
