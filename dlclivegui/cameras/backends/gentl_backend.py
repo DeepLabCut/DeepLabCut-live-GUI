@@ -1217,19 +1217,6 @@ class GenTLCameraBackend(CameraBackend):
         except Exception:
             return []
 
-    @staticmethod
-    def _node_value(node_map, name: str, default=None):
-        """Best-effort read of a GenICam node value."""
-        try:
-            node = getattr(node_map, name)
-        except Exception:
-            return default
-
-        try:
-            return node.value
-        except Exception:
-            return default
-
     @classmethod
     def _node_float(cls, node_map, *names: str, allow_zero: bool = False) -> float | None:
         """Return the first positive float value from a list of GenICam node names."""
