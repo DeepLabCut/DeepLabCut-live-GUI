@@ -212,13 +212,27 @@ def main_window_cls():
     return mod.DLCLiveMainWindow
 
 
-def make_window_shell(main_window_cls, processor=None, run_dir=None):
+class DummyRecordingManager:
+    def __init__(self, run_dir=None, file_context=None):
+        self.run_dir = run_dir
+        self.file_context = dict(file_context or {})
+
+    def get_recording_file_context(self):
+        context = dict(self.file_context)
+        if self.run_dir is not None:
+            context.setdefault("run_dir", self.run_dir)
+        return context
+
+
+def make_window_shell(main_window_cls, processor=None, run_dir=None, file_context=None):
     """Create a DLCLiveMainWindow shell without running QMainWindow.__init__."""
     win = main_window_cls.__new__(main_window_cls)
     win._dlc = SimpleNamespace(_processor=processor, _dlc=None)
-    win._rec_manager = SimpleNamespace(run_dir=run_dir)
+    win._rec_manager = DummyRecordingManager(run_dir=run_dir, file_context=file_context)
     win.session_name_edit = DummyLineEdit("MouseA")
     win.filename_edit = DummyLineEdit("MouseA_2026-07-10_1.avi")
+    win._processor_recording_context = None
+    win._processor_recording_started_notified = False
     return win
 
 
@@ -253,7 +267,8 @@ def test_main_window_notify_processor_recording_started_calls_hook(main_window_c
     processor = HookProcessor()
     win = make_window_shell(main_window_cls, processor=processor, run_dir=tmp_path)
 
-    win._notify_processor_recording_started(tmp_path)
+    context = win._build_processor_recording_context(tmp_path)
+    win._notify_processor_recording_started(context)
 
     assert len(processor.started_contexts) == 1
     context = processor.started_contexts[0]
@@ -287,6 +302,101 @@ def test_main_window_processor_hooks_are_optional(main_window_cls, tmp_path):
     win = make_window_shell(main_window_cls, processor=NoHooks(), run_dir=tmp_path)
 
     # Optional hooks/save absence should not crash.
-    win._notify_processor_recording_started(tmp_path)
+    ctx = win._build_processor_recording_context(tmp_path)
+    win._notify_processor_recording_started(ctx)
     win._notify_processor_recording_stopped()
     win._save_processor_data_if_available()
+
+
+def test_main_window_build_context_includes_recording_files(
+    main_window_cls,
+    tmp_path,
+):
+    video_file = tmp_path / "camera_0.mp4"
+    timestamp_file = tmp_path / "camera_0.json"
+
+    win = make_window_shell(
+        main_window_cls,
+        run_dir=tmp_path,
+        file_context={
+            "video_files": {
+                "camera-0": video_file,
+            },
+            "timestamp_json_files": {
+                "camera-0": timestamp_file,
+            },
+        },
+    )
+
+    context = win._build_processor_recording_context(tmp_path)
+
+    assert context["video_files"] == {
+        "camera-0": video_file,
+    }
+    assert context["timestamp_json_files"] == {
+        "camera-0": timestamp_file,
+    }
+
+
+def test_processor_stop_context_uses_finalized_file_context(
+    main_window_cls,
+    tmp_path,
+):
+    processor = HookProcessor()
+    initial_video = tmp_path / "initial.mp4"
+    final_video = tmp_path / "final.mp4"
+
+    win = make_window_shell(
+        main_window_cls,
+        processor=processor,
+        run_dir=tmp_path,
+        file_context={
+            "video_files": {
+                "camera-0": initial_video,
+            },
+        },
+    )
+    win._processor_recording_context = win._build_processor_recording_context(tmp_path)
+
+    # Simulate RecordingManager updating its context during stop_all().
+    win._rec_manager.file_context = {
+        "video_files": {
+            "camera-0": final_video,
+        },
+    }
+
+    win._notify_processor_recording_stopped()
+
+    assert len(processor.stopped_contexts) == 1
+    assert processor.stopped_contexts[0]["video_files"] == {
+        "camera-0": final_video,
+    }
+
+
+def test_base_processor_explicit_relative_file_uses_legacy_data_dir(
+    socket_mod,
+    tmp_path,
+    monkeypatch,
+):
+    BaseProcessorSocket = socket_mod.BaseProcessorSocket
+    proc = BaseProcessorSocket(
+        bind=("127.0.0.1", 0),
+        save_original=False,
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    try:
+        ret = proc.save("session_dlc_processor_data.pkl")
+
+        expected = tmp_path / "data" / "session_dlc_processor_data.pkl"
+
+        assert ret == 1
+        assert expected.exists()
+
+        with expected.open("rb") as handle:
+            payload = pickle.load(handle)
+
+        assert "start_time" in payload
+    finally:
+        proc.stop()
