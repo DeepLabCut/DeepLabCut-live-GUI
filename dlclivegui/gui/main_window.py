@@ -2032,7 +2032,7 @@ class DLCLiveMainWindow(QMainWindow):
             self._notify_processor_recording_stopped()
             self._save_processor_data_if_available()
         finally:
-            self._processor_recording_finalized = None
+            self._processor_recording_context = None
 
     def _on_recording_stopped_async(self) -> None:
         if self._processor_recording_context is not None:
