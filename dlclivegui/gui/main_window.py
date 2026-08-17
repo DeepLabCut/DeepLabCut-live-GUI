@@ -154,6 +154,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._raw_frame: np.ndarray | None = None
         self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
+        self._processor_recording_context: dict | None = None
         self._pending_recording_after_preview = False
         self._active_camera_settings: CameraSettings | None = None
         self._last_drop_warning = 0.0
@@ -1863,7 +1864,9 @@ class DLCLiveMainWindow(QMainWindow):
         if run_dir is None:
             self._show_error("Failed to start recording.")
             return
-        self._notify_processor_recording_started(run_dir)
+
+        self._processor_recording_context = self._build_processor_recording_context(run_dir)
+        self._notify_processor_recording_started(self._processor_recording_context)
         self.multi_camera_controller.set_recording_sink(self._rec_manager.write_frame)
         self.multi_camera_controller.set_recording_frame_is_enabled(True)
 
@@ -1957,7 +1960,7 @@ class DLCLiveMainWindow(QMainWindow):
         except Exception:
             logger.exception("Processor save() failed.")
 
-    def _notify_processor_recording_started(self, run_dir) -> None:
+    def _notify_processor_recording_started(self, context: dict) -> None:
         processor = self._get_dlc_processor_instance()
         if processor is None:
             return
@@ -1967,13 +1970,10 @@ class DLCLiveMainWindow(QMainWindow):
             return
 
         try:
-            context = self._build_processor_recording_context(run_dir)
             hook(context)
             logger.info("Notified processor recording started: %s", context)
         except Exception:
             logger.exception("Processor on_recording_started hook failed")
-
-    from pathlib import Path
 
     def _build_processor_recording_context(self, run_dir) -> dict:
         run_dir = Path(run_dir) if run_dir is not None else None
@@ -2013,26 +2013,30 @@ class DLCLiveMainWindow(QMainWindow):
     def _notify_processor_recording_stopped(self) -> None:
         processor = self._get_dlc_processor_instance()
         if processor is None:
-            return False
+            return
 
         hook = getattr(processor, "on_recording_stopped", None)
         if not callable(hook):
-            return False
+            return
 
         try:
-            run_dir = getattr(self._rec_manager, "run_dir", None)
-            context = self._build_processor_recording_context(run_dir)
+            context = self._processor_recording_context or self._build_processor_recording_context(None)
             hook(context)
             logger.info("Notified processor recording stopped")
-            return True
         except Exception:
             logger.exception("Processor on_recording_stopped hook failed")
-            return False
+
+    def _finalize_processor_recording(self) -> None:
+        """Notify the processor and save its recording data."""
+        try:
+            self._notify_processor_recording_stopped()
+            self._save_processor_data_if_available()
+        finally:
+            self._processor_recording_finalized = None
 
     def _on_recording_stopped_async(self) -> None:
-        handled_by_stop_hook = self._notify_processor_recording_stopped()
-        if not handled_by_stop_hook:
-            self._save_processor_data_if_available()
+        if self._processor_recording_context is not None:
+            self._finalize_processor_recording()
 
         self._recording_stopping = False
         self.start_record_button.setEnabled(True)
@@ -2667,9 +2671,12 @@ class DLCLiveMainWindow(QMainWindow):
             self.multi_camera_controller.set_recording_frame_is_enabled(False)
         except Exception:
             logger.exception("Failed to disable recording frame emission during shutdown")
+
         while not self._rec_manager.stop_all():
             logger.info("Retrying recorder stop during shutdown...")
             time.sleep(RECORD_STOP_RETRY_INTERVAL)
+        if self._processor_recording_context is not None:
+            self._finalize_processor_recording()
 
         # Close the camera dialog if open (ensures its worker thread is canceled)
         if getattr(self, "_cam_dialog", None) is not None and self._cam_dialog.isVisible():
