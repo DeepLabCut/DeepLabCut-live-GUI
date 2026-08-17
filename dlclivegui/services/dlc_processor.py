@@ -17,12 +17,12 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from dlclivegui.config import DLC_DO_LOG_TIMING, DLCProcessorSettings, ModelType
-from dlclivegui.processors.dlc_processor_socket import BaseProcessorSocket
 from dlclivegui.processors.processor_utils import (
     ProcessorSpec,
     create_spec_from_scan,
     instantiate_from_scan,
     log_processor_context,
+    processor_builds_in_worker,
 )
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
 from dlclivegui.utils.stats import WorkerTimingStats
@@ -948,7 +948,7 @@ class DLCService:
                 processor_info = scanned_processors[selected_key]
                 processor_class = processor_info["class"]
 
-                if BaseProcessorSocket.do_build_in_worker(processor_class):
+                if processor_builds_in_worker(processor_class):
                     processor_spec = create_spec_from_scan(scanned_processors, selected_key)
 
                     log_processor_context(

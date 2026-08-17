@@ -421,7 +421,7 @@ class BaseProcessorSocket(Processor):
             filename_stem
             processor_base_path
             video_files
-            timestamp_files
+            timestamp_json_files
         """
         self.recording_context = dict(context or {})
 
