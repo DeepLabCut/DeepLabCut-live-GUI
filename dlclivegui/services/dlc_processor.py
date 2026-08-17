@@ -276,13 +276,13 @@ class DLCLiveProcessor(QObject):
         stopped = self._stop_worker()
         if not stopped:
             with self._lifecycle_lock:
-                if self._processor is not None:
-                    self._cleanup_processor()
                 self._pending_reset = True
-            logger.warning(
-                "Shutdown requested but worker thread is still alive; DLCLive instance may not be fully released."
-            )
-            return
+                logger.warning(
+                    "Shutdown requested but worker thread is still alive; DLCLive instance may not be fully released."
+                )
+                return
+
+        self._cleanup_processor()
         self._dlc = None
         self._initialized = False
 
@@ -546,6 +546,7 @@ class DLCLiveProcessor(QObject):
 
         # ensure only one reaper
         def reap():
+            should_cleanup = False
             try:
                 t.join()  # wait without timeout in background
                 with self._lifecycle_lock:
@@ -557,11 +558,15 @@ class DLCLiveProcessor(QObject):
                         self._stop_event.clear()
 
                         if self._pending_reset:
+                            should_cleanup = True
                             self._dlc = None
                             self._initialized = False
                             self._pending_reset = False
 
                         logger.warning("DLC worker thread stopped after the timeout and was cleaned up late.")
+
+                if should_cleanup:  # worker joined, cleanup is safe
+                    self._cleanup_processor()
 
             finally:
                 with self._lifecycle_lock:
