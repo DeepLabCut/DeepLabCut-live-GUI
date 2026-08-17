@@ -98,8 +98,8 @@ class DLCLiveMainWindow(QMainWindow):
         self.setWindowTitle("DeepLabCut Live GUI")
 
         self.settings = QSettings("DeepLabCut", "DLCLiveGUI")
-        self._model_path_store = ModelPathStore(self.settings)
-        self._settings_store = DLCLiveGUISettingsStore(self.settings)
+        self._model_path_store: ModelPathStore = ModelPathStore(self.settings)
+        self._settings_store: DLCLiveGUISettingsStore = DLCLiveGUISettingsStore(self.settings)
 
         last_cfg_path = self._settings_store.get_last_config_path()
         last_cfg_file = self._valid_config_file_path(last_cfg_path)
@@ -199,7 +199,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._preview_pixmap = QPixmap(LOGO_ALPHA)
         self._setup_ui()
         self._connect_signals()
-        self._apply_config(self._config)
+        self._apply_config(self._config, restore_local_prefs=True)
         self._refresh_processors()  # Scan and populate processor dropdown
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
@@ -875,7 +875,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # Config
-    def _apply_config(self, config: ApplicationSettings) -> None:
+    def _apply_config(self, config: ApplicationSettings, *, restore_local_prefs: bool = False) -> None:
         # Update active cameras label
         self._update_active_cameras_label()
 
@@ -890,9 +890,10 @@ class DLCLiveMainWindow(QMainWindow):
         recording = config.recording
         self.output_directory_edit.setText(recording.directory)
         self.filename_edit.setText(recording.filename)
-        persisted_filename = self._settings_store.get_rec_filename()
-        if persisted_filename:
-            self.filename_edit.setText(persisted_filename)
+        if restore_local_prefs:
+            persisted_filename = self._settings_store.get_rec_filename()
+            if persisted_filename:
+                self.filename_edit.setText(persisted_filename)
         self.container_combo.setCurrentText(recording.container)
         codec_index = self.codec_combo.findText(recording.codec)
         if codec_index >= 0:
