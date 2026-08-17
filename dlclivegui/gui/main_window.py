@@ -155,6 +155,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
         self._processor_recording_context: dict | None = None
+        self._processor_recording_started_notified = False
         self._pending_recording_after_preview = False
         self._active_camera_settings: CameraSettings | None = None
         self._last_drop_warning = 0.0
@@ -1866,6 +1867,7 @@ class DLCLiveMainWindow(QMainWindow):
             return
 
         self._processor_recording_context = self._build_processor_recording_context(run_dir)
+        self._processor_recording_started_notified = False
         self._notify_processor_recording_started(self._processor_recording_context)
         self.multi_camera_controller.set_recording_sink(self._rec_manager.write_frame)
         self.multi_camera_controller.set_recording_frame_is_enabled(True)
@@ -1960,20 +1962,22 @@ class DLCLiveMainWindow(QMainWindow):
         except Exception:
             logger.exception("Processor save() failed.")
 
-    def _notify_processor_recording_started(self, context: dict) -> None:
+    def _notify_processor_recording_started(self, context: dict) -> bool:
         processor = self._get_dlc_processor_instance()
         if processor is None:
-            return
+            return False
 
         hook = getattr(processor, "on_recording_started", None)
         if not callable(hook):
-            return
+            return False
 
         try:
             hook(context)
             logger.info("Notified processor recording started: %s", context)
+            return True
         except Exception:
             logger.exception("Processor on_recording_started hook failed")
+            return False
 
     def _build_processor_recording_context(self, run_dir) -> dict:
         run_dir = Path(run_dir) if run_dir is not None else None
@@ -2010,6 +2014,18 @@ class DLCLiveMainWindow(QMainWindow):
         ctx.update(file_context)
         return ctx
 
+    def _final_processor_recording_context(self) -> dict:
+        context = dict(self._processor_recording_context or {})
+
+        try:
+            final_file_context = self._rec_manager.get_recording_file_context()
+        except Exception:
+            logger.exception("Failed to get finalized recording file context")
+            final_file_context = {}
+
+        context.update(final_file_context)
+        return context
+
     def _notify_processor_recording_stopped(self) -> None:
         processor = self._get_dlc_processor_instance()
         if processor is None:
@@ -2020,7 +2036,7 @@ class DLCLiveMainWindow(QMainWindow):
             return
 
         try:
-            context = self._processor_recording_context or self._build_processor_recording_context(None)
+            context = self._final_processor_recording_context()
             hook(context)
             logger.info("Notified processor recording stopped")
         except Exception:
@@ -2033,6 +2049,7 @@ class DLCLiveMainWindow(QMainWindow):
             self._save_processor_data_if_available()
         finally:
             self._processor_recording_context = None
+            self._processor_recording_started_notified = False
 
     def _on_recording_stopped_async(self) -> None:
         if self._processor_recording_context is not None:
@@ -2457,7 +2474,7 @@ class DLCLiveMainWindow(QMainWindow):
         was_active = self._dlc_active
         self._dlc_active = False
         self._dlc_initialized = False
-        self._dlc.reset()
+        self._dlc.reset(reset_processor_plugin=True)
         self._last_pose = None
         self._last_processor_vid_recording = False
         self._auto_record_session_name = None
@@ -2605,6 +2622,9 @@ class DLCLiveMainWindow(QMainWindow):
     def _on_dlc_initialised(self, success: bool) -> None:
         if success:
             self._dlc_initialized = True
+            if self._processor_recording_context is not None and not self._processor_recording_started_notified:
+                self._notify_processor_recording_started(self._processor_recording_context)
+
             # Update button to show running state
             self.start_inference_button.setText("DLCLive running!")
             self.start_inference_button.setStyleSheet("background-color: #4CAF50; color: white;")
