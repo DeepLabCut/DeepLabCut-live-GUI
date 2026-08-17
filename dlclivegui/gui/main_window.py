@@ -2161,16 +2161,11 @@ class DLCLiveMainWindow(QMainWindow):
             RuntimeError,
             json.JSONDecodeError,
         ) as exc:
-            self._show_error(
-                f"Invalid DLCLive settings: {exc}"
-            )
+            self._show_error(f"Invalid DLCLive settings: {exc}")
             return False
 
         if not settings.model_path:
-            self._show_error(
-                "Please select a DLCLive model before "
-                "starting inference."
-            )
+            self._show_error("Please select a DLCLive model before starting inference.")
             return False
 
         processor = None
@@ -2181,26 +2176,21 @@ class DLCLiveMainWindow(QMainWindow):
 
         if self._custom_processor_enabled():
             try:
-                processor_info = self._scanned_processors[
-                    selected_key
-                ]
+                processor_info = self._scanned_processors[selected_key]
                 processor_class = processor_info["class"]
                 processor_name = processor_info.get(
                     "name",
                     processor_class.__name__,
                 )
 
-                if processor_builds_in_worker(
-                    processor_class
-                ):
+                if processor_builds_in_worker(processor_class):
                     processor_spec = create_spec_from_scan(
                         self._scanned_processors,
                         selected_key,
                     )
 
                     log_processor_context(
-                        "MainWindow._configure_dlc - "
-                        f"SPEC: {processor_class.__name__}",
+                        f"MainWindow._configure_dlc - SPEC: {processor_class.__name__}",
                         logger,
                     )
                 else:
@@ -2210,8 +2200,7 @@ class DLCLiveMainWindow(QMainWindow):
                     )
 
                     log_processor_context(
-                        "MainWindow._configure_dlc - "
-                        f"INSTANCE: {type(processor).__name__}",
+                        f"MainWindow._configure_dlc - INSTANCE: {type(processor).__name__}",
                         logger,
                     )
 
@@ -2221,10 +2210,7 @@ class DLCLiveMainWindow(QMainWindow):
                 )
 
             except Exception as exc:
-                error_msg = (
-                    "Failed to configure processor: "
-                    f"{exc}"
-                )
+                error_msg = f"Failed to configure processor: {exc}"
                 self._show_error(error_msg)
                 logger.exception(error_msg)
                 return False
@@ -2240,9 +2226,7 @@ class DLCLiveMainWindow(QMainWindow):
             processor=processor,
             processor_spec=processor_spec,
         )
-        self._model_path_store.save_if_valid(
-            settings.model_path
-        )
+        self._model_path_store.save_if_valid(settings.model_path)
         return True
 
     def _update_inference_buttons(self) -> None:
