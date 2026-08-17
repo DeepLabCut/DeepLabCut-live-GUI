@@ -163,7 +163,7 @@ class DLCLiveProcessor(QObject):
         self._dlc: Any | None = None
         self._processor: Any | None = None
         self._processor_spec: ProcessorSpec | None = None
-        self.processor_built_from_spec = False
+        self._processor_built_from_spec = False
         # Worker thread and queue
         self._queue: queue.Queue[Any] | None = None
         self._worker_thread: threading.Thread | None = None
@@ -174,6 +174,7 @@ class DLCLiveProcessor(QObject):
         ## Worker cleanup
         self._reaping = False
         self._pending_reset = False
+        self._pending_processor_cleanup = False
 
         # Statistics tracking
         self._frames_enqueued = 0
@@ -221,7 +222,7 @@ class DLCLiveProcessor(QObject):
             self._settings = settings
             self._processor = processor
             self._processor_spec = processor_spec
-            self.processor_built_from_spec = False
+            self._processor_built_from_spec = False
 
     def reset(self, reset_processor_plugin: bool = False) -> None:
         """Stop the worker thread and drop the current DLCLive instance."""
@@ -233,6 +234,9 @@ class DLCLiveProcessor(QObject):
         if not stopped:
             with self._lifecycle_lock:
                 self._pending_reset = True
+                self._pending_processor_cleanup = (
+                    self._pending_processor_cleanup or reset_processor_plugin or had_runtime
+                )
             logger.warning(
                 "Reset requested but worker thread is still alive; skipping DLCLive reset to avoid potential issues."
             )
@@ -277,6 +281,7 @@ class DLCLiveProcessor(QObject):
         if not stopped:
             with self._lifecycle_lock:
                 self._pending_reset = True
+                self._pending_processor_cleanup = True
                 logger.warning(
                     "Shutdown requested but worker thread is still alive; DLCLive instance may not be fully released."
                 )
@@ -558,10 +563,11 @@ class DLCLiveProcessor(QObject):
                         self._stop_event.clear()
 
                         if self._pending_reset:
-                            should_cleanup = True
+                            should_cleanup = self._pending_processor_cleanup
                             self._dlc = None
                             self._initialized = False
                             self._pending_reset = False
+                            self._pending_processor_cleanup = False
 
                         logger.warning("DLC worker thread stopped after the timeout and was cleaned up late.")
 
@@ -981,7 +987,7 @@ class DLCService:
 
     def stop(self):
         self.active = False
-        self._proc.reset()
+        self._proc.reset(reset_processor_plugin=True)
         self._last_pose = None
 
     def stats(self) -> ProcessorStats:
