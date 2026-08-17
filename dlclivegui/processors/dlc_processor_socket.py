@@ -376,6 +376,7 @@ class BaseProcessorSocket(Processor):
 
     def save(self, file=None):
         target = file
+        explicit_file = file is not None
 
         if target is None:
             target = getattr(self, "save_path", None)
@@ -387,6 +388,9 @@ class BaseProcessorSocket(Processor):
         try:
             save_dict = self.get_data()
             save_path = Path(target)
+            if explicit_file and not save_path.is_absolute():
+                save_path = Path("data") / save_path
+
             save_path.parent.mkdir(parents=True, exist_ok=True)
 
             if self.save_original:

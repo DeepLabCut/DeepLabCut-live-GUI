@@ -2015,7 +2015,17 @@ class DLCLiveMainWindow(QMainWindow):
         return ctx
 
     def _final_processor_recording_context(self) -> dict:
-        context = dict(self._processor_recording_context or {})
+        cached = self._processor_recording_context
+
+        run_dir = None
+        if cached is not None:
+            run_dir = cached.get("run_dir")
+        if run_dir is None:
+            run_dir = getattr(self._rec_manager, "run_dir", None)
+
+        context = self._build_processor_recording_context(run_dir)
+        if cached is not None:
+            context.update(cached)
 
         try:
             final_file_context = self._rec_manager.get_recording_file_context()
