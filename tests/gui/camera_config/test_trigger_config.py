@@ -80,11 +80,11 @@ class TestTriggerConfigDialogPresentation:
         roles = [dlg.role_combo.itemData(i) for i in range(dlg.role_combo.count())]
 
         assert roles == ["off"]
-        assert not dlg.selector_edit.isVisible()
-        assert not dlg.source_combo.isVisible()
-        assert not dlg.activation_combo.isVisible()
-        assert not dlg.output_line_edit.isVisible()
-        assert not dlg.strobe_polarity_combo.isVisible()
+        assert dlg.selector_edit.isHidden()
+        assert dlg.source_combo.isHidden()
+        assert dlg.activation_combo.isHidden()
+        assert dlg.output_line_edit.isHidden()
+        assert dlg.strobe_polarity_combo.isHidden()
 
     @pytest.mark.gui
     def test_gentl_profile_shows_input_master_line_and_strobe_fields(self, qtbot):
