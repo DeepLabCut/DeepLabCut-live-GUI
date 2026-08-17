@@ -1547,7 +1547,7 @@ class DLCLiveMainWindow(QMainWindow):
         if display_id:
             return display_id
 
-        return "Unknown camera"
+        return f"Unknown camera [{cam_id}]"
 
     def _refresh_dlc_camera_list_running(self) -> None:
         """Populate inference camera dropdown from currently running cameras.
