@@ -1973,6 +1973,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         try:
             hook(context)
+            self._processor_recording_started_notified = True
             logger.info("Notified processor recording started: %s", context)
             return True
         except Exception:
