@@ -659,7 +659,8 @@ class GenTLCameraBackend(CameraBackend):
                 self._read_telemetry(self._acquirer.remote_device.node_map)
             except Exception:
                 pass
-        self._actual_output_format = self._output_format_for_frame(frame)
+        if self._actual_output_format is None:
+            self._actual_output_format = self._output_format_for_frame(frame)
 
         return frame, timestamp
 
