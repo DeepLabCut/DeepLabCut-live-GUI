@@ -528,7 +528,7 @@ class RecordingSettings(BaseModel):
     def _normalize_codec(cls, v) -> str:
         return str(v or "").strip() or "libx264"
 
-    def writegear_overrides(self) -> WriteGearOptions:
+    def writegear_overrides(self) -> WriteGearOptions | None:
         """Return compression parameters for WriteGear."""
 
         if self.fast_encoding and self.codec in ("libx264", "libx265"):
