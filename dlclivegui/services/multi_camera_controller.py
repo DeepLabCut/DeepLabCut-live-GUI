@@ -177,16 +177,14 @@ class MultiCameraController(QObject):
             self._timing_per_cam[camera_id] = timing
         return timing
 
-    def set_recording_frame_do_emit(self, enabled: bool) -> None:
+    def set_recording_frame_is_enabled(self, enabled: bool) -> None:
         self._recording_frame_emission_enabled = bool(enabled)
         for worker in list(self._workers.values()):
             worker.set_recording_enabled(enabled)
 
     def _should_emit_display_ready(self) -> bool:
-        """Return True when the UI/display path should be updated.
-
-        This only throttles display_ready. It must not throttle frame_ready,
-        because frame_ready is used for full-rate consumers such as recording.
+        """
+        Return True if enough time has passed since the last display_ready emission, based on GUI_MAX_DISPLAY_FPS.
         """
         if self._gui_display_max_fps <= 0:
             return True
