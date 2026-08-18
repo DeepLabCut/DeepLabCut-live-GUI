@@ -39,7 +39,7 @@ def build_writegear_options(
     crf: int,
     overrides: WriteGearOptionOverrides | None = None,
 ) -> WriteGearOptions:
-    """Build and validate the final WriteGear/FFmpeg options."""
+    """Build the final WriteGear/FFmpeg options."""
     try:
         fps = float(frame_rate or 0.0)
     except (TypeError, ValueError):
@@ -48,26 +48,14 @@ def build_writegear_options(
     if fps <= 0:
         fps = DEFAULT_RECORDING_FPS
 
-    codec_value = str(codec or "").strip()
-    if not codec_value:
-        codec_value = "libx264"
-
-    try:
-        crf_value = int(crf)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Recording CRF must be an integer.") from exc
-
-    if not 0 <= crf_value <= 51:
-        raise ValueError("Recording CRF must be between 0 and 51.")
-
     options: WriteGearOptions = {
         "-input_framerate": fps,
-        "-vcodec": codec_value,
-        "-crf": crf_value,
+        "-vcodec": str(codec or "").strip() or "libx264",
+        "-crf": crf,
     }
 
     if overrides:
-        options.update(overrides)
+        options.update(key_value for key_value in overrides.items() if key_value[1] is not None)
 
     return normalize_writegear_options(options)
 
