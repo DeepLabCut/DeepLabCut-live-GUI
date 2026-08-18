@@ -1624,7 +1624,7 @@ class DLCLiveMainWindow(QMainWindow):
             self._show_error("Failed to start recording.")
             return
         self.multi_camera_controller.set_recording_sink(self._rec_manager.write_frame)
-        self.multi_camera_controller.set_recording_frame_do_emit(True)
+        self.multi_camera_controller.set_recording_frame_is_enabled(True)
 
         self._settings_store.set_session_name(session_name)
         self.start_record_button.setEnabled(False)
@@ -1647,7 +1647,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Stop frame emission immediately so no new frames enter recording pipeline.
         try:
-            self.multi_camera_controller.set_recording_frame_do_emit(False)
+            self.multi_camera_controller.set_recording_frame_is_enabled(False)
             self.multi_camera_controller.set_recording_sink(None)
         except Exception:
             logger.exception("Failed to disable recording frame emission")
@@ -2274,7 +2274,7 @@ class DLCLiveMainWindow(QMainWindow):
             self._camera_validation_timer.stop()
         # Stop all multi-camera recorders
         try:
-            self.multi_camera_controller.set_recording_frame_do_emit(False)
+            self.multi_camera_controller.set_recording_frame_is_enabled(False)
         except Exception:
             logger.exception("Failed to disable recording frame emission during shutdown")
         while not self._rec_manager.stop_all():

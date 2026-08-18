@@ -530,7 +530,7 @@ def test_recording_sink_receives_frames_when_enabled(qtbot, patch_factory):
         assert seen == []
 
         mc.set_recording_sink(sink)
-        mc.set_recording_frame_do_emit(True)
+        mc.set_recording_frame_is_enabled(True)
 
         qtbot.waitUntil(lambda: bool(seen), timeout=2000)
 
@@ -539,7 +539,7 @@ def test_recording_sink_receives_frames_when_enabled(qtbot, patch_factory):
         assert isinstance(timestamp, float)
         assert len(shape) in (2, 3)
 
-        mc.set_recording_frame_do_emit(False)
+        mc.set_recording_frame_is_enabled(False)
         count_after_disable = len(seen)
 
         qtbot.wait(300)
@@ -610,7 +610,7 @@ def test_recording_sink_forwards_timestamp_metadata(qtbot, monkeypatch):
 
         # Recording is disabled by start(); enable the new sink path after cameras are running.
         mc.set_recording_sink(sink)
-        mc.set_recording_frame_do_emit(True)
+        mc.set_recording_frame_is_enabled(True)
 
         qtbot.waitUntil(lambda: bool(seen), timeout=2000)
 
