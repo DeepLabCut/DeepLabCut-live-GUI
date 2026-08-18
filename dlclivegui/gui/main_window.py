@@ -55,6 +55,7 @@ from dlclivegui.config import (
     DLC_DO_LOG_TIMING,
     GUI_MAX_DISPLAY_FPS,
     RECORD_STOP_RETRY_INTERVAL,
+    RECORD_STOP_RETRY_TIMEOUT,
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
@@ -1652,10 +1653,15 @@ class DLCLiveMainWindow(QMainWindow):
             logger.exception("Failed to disable recording frame emission")
 
         def worker():
+            total_wait_time = 0.0
             try:
                 while not self._rec_manager.stop_all():
                     logger.info("Retrying recorder stop...")
                     time.sleep(RECORD_STOP_RETRY_INTERVAL)
+                    total_wait_time += RECORD_STOP_RETRY_INTERVAL
+                    if total_wait_time >= RECORD_STOP_RETRY_TIMEOUT:
+                        logger.error("Timeout while stopping recording after %.1f seconds", total_wait_time)
+                        raise RuntimeError("Could not stop recording within timeout period.")
             except Exception as e:
                 logger.exception("Error while stopping recording: %s", e)
                 return
