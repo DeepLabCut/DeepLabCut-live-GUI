@@ -116,20 +116,14 @@ class DLCLiveMainWindow(QMainWindow):
 
             else:
                 # 2) last config file path
-                last_cfg_path = self._settings_store.get_last_config_path()
-                if last_cfg_path:
+                if last_cfg_file is not None:
                     try:
-                        p = Path(last_cfg_path)
-                        if p.exists() and p.is_file():
-                            config = ApplicationSettings.load(str(p))
-                            self._config_path = p
-                            logger.info(f"Loaded configuration from last config path: {p}")
-                        else:
-                            config = DEFAULT_CONFIG
-                            self._config_path = None
+                        config = ApplicationSettings.load(str(last_cfg_file))
+                        self._config_path = last_cfg_file
+                        logger.info(f"Loaded configuration from last config file: {last_cfg_file}")
                     except Exception as exc:
                         logger.warning(
-                            f"Failed to load last config path ({last_cfg_path}): {exc}. Using default config."
+                            f"Failed to load last config file ({last_cfg_file}): {exc}. Using default config."
                         )
                         config = DEFAULT_CONFIG
                         self._config_path = None
