@@ -411,15 +411,20 @@ def test_start_all_passes_writegear_options(
     recording_settings.fast_encoding = True
 
     mgr = RecordingManager()
-    mgr.start_all(recording_settings, _active_cams_two, current_frames, session_name="Sess")
+    mgr.start_all(
+        recording_settings,
+        _active_cams_two,
+        current_frames,
+        session_name="Sess",
+    )
 
     for cam in _active_cams_two:
         cam_id = get_camera_id(cam)
         rec = mgr.recorders[cam_id]
 
-        opts_ovrr = rec.writer_options_overrides
-        assert opts_ovrr is not None
-        assert opts_ovrr["-vcodec"] == "libx264"
-        assert opts_ovrr["-crf"] == "23"
-        assert opts_ovrr["-preset"] == "ultrafast"
-        assert opts_ovrr["-tune"] == "zerolatency"
+        assert rec.codec == "libx264"
+        assert rec.crf == 23
+        assert rec.writer_options_overrides == {
+            "-preset": "ultrafast",
+            "-tune": "zerolatency",
+        }
