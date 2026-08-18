@@ -1966,6 +1966,11 @@ class DLCLiveMainWindow(QMainWindow):
         """Start recording from all active cameras."""
         # Auto-start preview if not running
         if not self.multi_camera_controller.is_running():
+            active_cams = self._config.multi_camera.get_active_cameras()
+            if not active_cams:
+                self._show_error("No cameras configured. Use 'Configure Cameras...' to add cameras.")
+                return
+
             self._pending_recording_after_preview = True
             self._start_preview()
             # Wait a moment for cameras to initialize before recording
