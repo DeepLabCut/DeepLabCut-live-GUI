@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 
@@ -46,6 +47,15 @@ class RecordingManager:
         ns = props.get(backend, {})
         return ns if isinstance(ns, dict) else {}
 
+    @staticmethod
+    def _valid_fps(value) -> float | None:
+        try:
+            fps = float(value)
+        except (TypeError, ValueError):
+            return None
+
+        return fps if math.isfinite(fps) and fps > 0.0 else None
+
     @classmethod
     def _resolve_recording_fps(
         cls,
@@ -58,35 +68,15 @@ class RecordingManager:
         Prefer runtime measured FPS, then backend-probed detected_fps,
         then explicit requested cam.fps. Auto/unknown returns None.
         """
-        measured_fps = 0.0
-        if frame_rates:
-            try:
-                measured_fps = float(frame_rates.get(cam_id, 0.0) or 0.0)
-            except Exception:
-                measured_fps = 0.0
-
-        if measured_fps > 0.0:
+        measured_fps = cls._valid_fps(frame_rates.get(cam_id) if frame_rates is not None else None)
+        if measured_fps is not None:
             return measured_fps
 
-        ns = cls._backend_ns(cam)
-
-        try:
-            detected_fps = float(ns.get("detected_fps", 0.0) or 0.0)
-        except Exception:
-            detected_fps = 0.0
-
-        if detected_fps > 0.0:
+        detected_fps = cls._valid_fps(cls._backend_ns(cam).get("detected_fps"))
+        if detected_fps is not None:
             return detected_fps
 
-        try:
-            requested_fps = float(getattr(cam, "fps", 0.0) or 0.0)
-        except Exception:
-            requested_fps = 0.0
-
-        if requested_fps > 0.0:
-            return requested_fps
-
-        return None
+        return cls._valid_fps(cam.fps)
 
     def pop(self, cam_id: str, default=None) -> VideoRecorder | None:
         return self._recorders.pop(cam_id, default)
