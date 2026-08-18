@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 
@@ -34,6 +36,16 @@ def current_frames(_active_cams_two):
         else:
             frames[cam_id] = np.zeros((720, 1280, 3), dtype=np.uint8)
     return frames
+
+
+def _wait_until(predicate, timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+
+    raise AssertionError("Condition was not reached before timeout")
 
 
 @pytest.mark.unit
@@ -204,6 +216,7 @@ def test_write_frame_uses_given_timestamp(
     mgr.write_frame(cam0_id, frame, timestamp=123.0)
 
     rec = mgr.recorders[cam0_id]
+    _wait_until(lambda: len(rec.write_calls) > 0)
     assert rec.write_calls[-1][1] == 123.0
 
 
@@ -223,6 +236,7 @@ def test_write_frame_uses_time_when_timestamp_missing(
     mgr.write_frame(cam0_id, frame, timestamp=None)
 
     rec = mgr.recorders[cam0_id]
+    _wait_until(lambda: len(rec.write_calls) > 0)
     assert rec.write_calls[-1][1] == 999.0
 
 
@@ -238,6 +252,7 @@ def test_write_frame_removes_recorder_on_exception(
     rec.raise_on_write = True
 
     mgr.write_frame(cam0_id, current_frames[cam0_id], timestamp=1.0)
+    _wait_until(lambda: cam0_id not in mgr.recorders)
     assert cam0_id not in mgr.recorders
 
 
@@ -346,11 +361,14 @@ def test_recording_manager_uses_stable_camera_id_not_display_id(
     assert rec.frame_size == (480, 640)
 
     mgr.write_frame(stable_id, frame, timestamp=123.0)
+    _wait_until(lambda: len(rec.write_calls) > 0)
     assert len(rec.write_calls) == 1
     assert rec.write_calls[-1][1] == 123.0
 
     # Display ID is GUI-only and must not route frames internally.
     mgr.write_frame(display_id, frame, timestamp=456.0)
+    # No async work for unknown ID
+    time.sleep(0.05)
     assert len(rec.write_calls) == 1
 
 
@@ -461,7 +479,7 @@ class TestRecordingManagerTimestampMetadata:
         mgr.write_frame(cam0_id, frame, timestamp=123.0, timestamp_metadata=meta)
 
         rec = mgr.recorders[cam0_id]
-        assert len(rec.write_calls) == 1
+        _wait_until(lambda: len(rec.write_calls) > 0)
 
         written_frame, written_timestamp, written_metadata = rec.write_calls[0]
         assert written_frame is frame
