@@ -16,7 +16,7 @@ def normalize_writegear_options(
     options: WriteGearOptionOverrides,
 ) -> WriteGearOptions:
     """Normalize known options while retaining supported extensions."""
-    normalized = dict(options)
+    normalized = {key: value for key, value in options.items() if value is not None}
 
     try:
         normalized["-input_framerate"] = float(normalized["-input_framerate"])
