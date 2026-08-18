@@ -1,12 +1,14 @@
 import pytest
 
 from dlclivegui.config import (
+    DEFAULT_RECORDING_FPS,
     ApplicationSettings,
     CameraSettings,
     CameraTriggerSettings,
     MultiCameraSettings,
     RecordingSettings,
 )
+from dlclivegui.services.video_recorder import build_writegear_options
 
 
 @pytest.mark.unit
@@ -76,43 +78,82 @@ def test_trigger_source_defaults_to_auto():
     assert trigger.source == "auto"
 
 
-def test_recording_settings_writegear_options_default():
-    settings = RecordingSettings(codec="libx264", crf=23, fast_encoding=False)
+def test_build_writegear_options_default():
+    settings = RecordingSettings(
+        codec="libx264",
+        crf=23,
+        fast_encoding=False,
+    )
 
-    opts = settings.writegear_options(100.0)
+    opts = build_writegear_options(
+        frame_rate=100.0,
+        codec=settings.codec,
+        crf=settings.crf,
+        overrides=settings.writegear_overrides(),
+    )
 
-    assert opts["-input_framerate"] == "100.000000"
-    assert opts["-vcodec"] == "libx264"
-    assert opts["-crf"] == "23"
-    assert "-preset" not in opts
-    assert "-tune" not in opts
-
-
-def test_recording_settings_writegear_options_fast_encoding_x264():
-    settings = RecordingSettings(codec="libx264", crf=23, fast_encoding=True)
-
-    opts = settings.writegear_options(100.0)
-
-    assert opts["-input_framerate"] == "100.000000"
-    assert opts["-vcodec"] == "libx264"
-    assert opts["-crf"] == "23"
-    assert opts["-preset"] == "ultrafast"
-    assert opts["-tune"] == "zerolatency"
+    assert opts == {
+        "-input_framerate": 100.0,
+        "-vcodec": "libx264",
+        "-crf": 23,
+    }
 
 
-def test_recording_settings_writegear_options_fast_encoding_nvenc_no_x264_options():
-    settings = RecordingSettings(codec="h264_nvenc", crf=23, fast_encoding=True)
+def test_build_writegear_options_fast_encoding_x264():
+    settings = RecordingSettings(
+        codec="libx264",
+        crf=23,
+        fast_encoding=True,
+    )
 
-    opts = settings.writegear_options(100.0)
+    opts = build_writegear_options(
+        frame_rate=100.0,
+        codec=settings.codec,
+        crf=settings.crf,
+        overrides=settings.writegear_overrides(),
+    )
 
+    assert opts == {
+        "-input_framerate": 100.0,
+        "-vcodec": "libx264",
+        "-crf": 23,
+        "-preset": "ultrafast",
+        "-tune": "zerolatency",
+    }
+
+
+def test_build_writegear_options_fast_encoding_nvenc():
+    settings = RecordingSettings(
+        codec="h264_nvenc",
+        crf=23,
+        fast_encoding=True,
+    )
+
+    opts = build_writegear_options(
+        frame_rate=100.0,
+        codec=settings.codec,
+        crf=settings.crf,
+        overrides=settings.writegear_overrides(),
+    )
+
+    assert opts["-input_framerate"] == 100.0
     assert opts["-vcodec"] == "h264_nvenc"
+    assert opts["-crf"] == 23
     assert "-preset" not in opts
     assert "-tune" not in opts
 
 
-def test_recording_settings_writegear_options_invalid_fps_falls_back_to_30():
-    settings = RecordingSettings(codec="libx264", crf=23)
+def test_build_writegear_options_invalid_fps_uses_default():
+    settings = RecordingSettings(
+        codec="libx264",
+        crf=23,
+    )
 
-    opts = settings.writegear_options(None)
+    opts = build_writegear_options(
+        frame_rate=None,
+        codec=settings.codec,
+        crf=settings.crf,
+        overrides=settings.writegear_overrides(),
+    )
 
-    assert opts["-input_framerate"] == "30.000000"
+    assert opts["-input_framerate"] == DEFAULT_RECORDING_FPS
