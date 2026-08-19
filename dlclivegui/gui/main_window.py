@@ -453,6 +453,13 @@ class DLCLiveMainWindow(QMainWindow):
         self._apply_theme(self._current_style)
         self._init_theme_actions()
 
+        # Help menu
+        help_menu = self.menuBar().addMenu("&Help")
+
+        view_docs_action = QAction("View documentation", self)
+        view_docs_action.triggered.connect(self._action_view_documentation)
+        help_menu.addAction(view_docs_action)
+
     def _build_camera_group(self) -> QGroupBox:
         group = QGroupBox("Camera")
         form = QFormLayout(group)
@@ -1233,6 +1240,12 @@ class DLCLiveMainWindow(QMainWindow):
         except Exception as exc:
             logger.error(f"Failed to open folder: {exc}")
             self.statusBar().showMessage("Could not open recording folder.", 5000)
+
+    def _action_view_documentation(self) -> None:
+        """Open the DeepLabCut-live-GUI documentation."""
+        url = QUrl("https://deeplabcut.github.io/DeepLabCut/docs/dlc-live/dlc-live-gui/index.html")
+        if not QDesktopServices.openUrl(url):
+            self._show_warning("Could not open the documentation in your web browser.")
 
     def _custom_processor_enabled(self) -> bool:
         return bool(
