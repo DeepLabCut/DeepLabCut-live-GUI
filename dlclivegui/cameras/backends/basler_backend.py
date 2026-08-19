@@ -51,6 +51,7 @@ class BaslerCameraBackend(CameraBackend):
         )
         self._camera_pixel_format: str | None = None
         self._logged_first_frame: bool = False
+        self._debug_last_acquis_stats_log: float = 0.0
 
         # Optional fast-start hint for probe workers
         # (may skip StartGrabbing and converter setup for faster capability probing; not suitable for normal capture)
@@ -723,6 +724,8 @@ class BaslerCameraBackend(CameraBackend):
                 grab_result.Release()
                 grab_result = None
 
+            self._debug_log_acquisition_stats(context="after frame read")
+
             if self._actual_width is None or self._actual_height is None:
                 h, w = frame.shape[:2]
                 self._actual_width = int(w)
@@ -747,6 +750,8 @@ class BaslerCameraBackend(CameraBackend):
 
             self._timing.note_error()
             self._timing.maybe_log()
+            self._debug_log_acquisition_stats(context=f"after frame read error: {type(exc).__name__}")
+
             raise RuntimeError("Failed to retrieve image from Basler camera.") from exc
 
     def close(self) -> None:
@@ -957,6 +962,53 @@ class BaslerCameraBackend(CameraBackend):
                 raise RuntimeError(f"Failed to set Basler feature '{name}' to '{value}': {exc}") from exc
             LOG.warning("Failed to set Basler feature '%s' to '%s': %s", name, value, exc)
             return False
+
+    def _debug_log_acquisition_stats(
+        self,
+        *,
+        context: str,
+        force: bool = False,
+    ) -> None:
+        if not BASLER_DO_LOG_TIMING or not LOG.isEnabledFor(logging.DEBUG):
+            return
+
+        now = time.monotonic()
+        if not force and now - self._debug_last_acquisition_stats_log < 1.0:
+            return
+
+        self._debug_last_acquisition_stats_log = now
+        stats = self._debug_read_acquisition_stats()
+        if stats:
+            LOG.debug(
+                "[Basler] acquisition stats context=%s values=%s",
+                context,
+                stats,
+            )
+
+    def _debug_read_acquisition_stats(self) -> dict[str, int]:
+        cam = self._camera
+        if cam is None or not cam.IsGrabbing():
+            return {}
+
+        stats: dict[str, int] = {}
+        for name in ("NumReadyBuffers", "NumQueuedBuffers", "MaxNumBuffer"):
+            try:
+                stats[name] = int(getattr(cam, name).GetValue())
+            except Exception:
+                pass
+
+        try:
+            sg = cam.StreamGrabber
+            for name in (
+                "Statistic_Buffer_Underrun_Count",
+                "Statistic_Missed_Frame_Count",
+                "Statistic_Failed_Buffer_Count",
+            ):
+                stats[name] = int(getattr(sg, name).GetValue())
+        except Exception:
+            pass
+
+        return stats
 
     def _debug_trigger_nodes(self, *, context: str = "") -> None:
         if not LOG.isEnabledFor(logging.DEBUG) or not DEBUG_TRIGGER_LOGS:
