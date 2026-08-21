@@ -95,6 +95,7 @@ class DLCLiveMainWindow(QMainWindow):
     """Main application window."""
 
     _recording_stopped_async = Signal()
+    _rec_stop_failed_async = Signal(str)
 
     def __init__(self, config: ApplicationSettings | None = None):
         super().__init__()
@@ -193,6 +194,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Recording state
         self._recording_stopping = False
         self._recording_stopped_async.connect(self._on_recording_stopped_async)
+        self._rec_stop_failed_async.connect(self._on_recording_stop_failed_async)
 
         self._load_icons()
         self._preview_pixmap = QPixmap(LOGO_ALPHA)
@@ -1910,6 +1912,7 @@ class DLCLiveMainWindow(QMainWindow):
                         raise RuntimeError("Could not stop recording within timeout period.")
             except Exception as e:
                 logger.exception("Error while stopping recording: %s", e)
+                self._rec_stop_failed_async.emit(str(e))
                 return
 
             self._recording_stopped_async.emit()
@@ -2070,6 +2073,19 @@ class DLCLiveMainWindow(QMainWindow):
         self.start_record_button.setEnabled(True)
         self.stop_record_button.setEnabled(False)
         self.statusBar().showMessage("Multi-camera recording stopped", 3000)
+        self._update_camera_controls_enabled()
+
+    def _on_recording_stop_failed_async(self, message: str) -> None:
+        self._recording_stopping = False
+
+        still_active = self._rec_manager.is_active
+        self.start_record_button.setEnabled(not still_active)
+        self.stop_record_button.setEnabled(still_active)
+
+        self.statusBar().showMessage(
+            f"Failed to stop recording: {message}",
+            10000,
+        )
         self._update_camera_controls_enabled()
 
     # ------------------------------------------------------------------
