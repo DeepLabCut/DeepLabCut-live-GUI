@@ -63,7 +63,9 @@ class SingleCameraWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        self._stop_event.clear()
+        if self._stop_event.is_set():
+            self.stopped.emit(self._camera_id)
+            return
 
         try:
             logger.debug(
@@ -85,18 +87,18 @@ class SingleCameraWorker(QObject):
             )
 
             self._backend.open()
-            
+
             if self._stop_event.is_set():
                 try:
                     self._backend.close()
                 except Exception:
-                    logger.exception(f"[Worker %s] failed to close backend during early stop", self._camera_id)
+                    logger.exception("[Worker %s] failed to close backend during early stop", self._camera_id)
                 finally:
                     self._backend = None
-                
+
                 self.stopped.emit(self._camera_id)
                 return
-            
+
             self.runtime_info.emit(
                 self._camera_id,
                 {
@@ -107,7 +109,16 @@ class SingleCameraWorker(QObject):
                 },
             )
         except Exception as exc:
-            logger.exception(f"Failed to initialize camera {self._camera_id}", exc_info=exc)
+            logger.exception("[Worker %s] Failed to initialize camera: %s", self._camera_id, exc)
+
+            if self._backend is not None:
+                try:
+                    self._backend.close()
+                except Exception:
+                    logger.exception("[Worker %s] failed to close backend after initialization error", self._camera_id)
+                finally:
+                    self._backend = None
+
             self.error_occurred.emit(self._camera_id, f"Failed to initialize camera: {exc}")
             self.stopped.emit(self._camera_id)
             return
@@ -144,7 +155,7 @@ class SingleCameraWorker(QObject):
                 if recording_enabled and recording_sink is not None:
                     try:
                         with self._timing.measure("Single.recording_sink"):
-                            recording_sink(self._camera_id, frame, timestamp, timestamp_metadata)
+                            recording_sink(self._camera_id, frame, timestamp, timestamp_metadata=timestamp_metadata)
                     except Exception as exc:
                         logger.exception(f"Failed to write frame for camera {self._camera_id}: {exc}")
 

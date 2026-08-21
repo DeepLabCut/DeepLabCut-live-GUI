@@ -159,7 +159,8 @@ class MultiCameraController(QObject):
 
     def is_starting(self) -> bool:
         """Check whether cam initialization is still in progress"""
-        return bool(self._running and not self._stopping and not self._started_cameras and self._workers)
+        total_reported = len(self._started_cameras) + len(self._failed_cameras)
+        return bool(self._running and not self._stopping and total_reported < self._expected_cameras)
 
     def get_active_count(self) -> int:
         """Get the number of active cameras."""
