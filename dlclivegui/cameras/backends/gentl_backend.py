@@ -1604,6 +1604,7 @@ class GenTLCameraBackend(CameraBackend):
 
             elif role == "master":
                 # Stop driving output if the camera exposes these nodes.
+                self._set_enum_node(node_map, "StrobeEnable", "Off", strict=False)
                 self._set_enum_node(node_map, "LineSource", "Off", strict=False)
                 self._set_enum_node(node_map, "LineMode", "Input", strict=False)
 
