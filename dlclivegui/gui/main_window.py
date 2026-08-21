@@ -2503,8 +2503,9 @@ class DLCLiveMainWindow(QMainWindow):
                 self,
                 "Stop inference while recording?",
                 "This will stop the currently running DLC-live custom processor, if any.\n"
-                "File saving will not be handled via the standard 'recording stopped' event hooks."
-                "The processor might still save data now, but it will not be paired with the recording.\n\n"
+                "File saving will not be handled via the standard 'recording stopped' event hooks"
+                ", so data will only be saved if the processor handles saving on stop.\n\n"
+                "Unsaved processor data may be lost or not be paired with the recording.\n\n"
                 "Stop inference anyway?",
             )
             if answer != QMessageBox.Yes:
@@ -2513,6 +2514,7 @@ class DLCLiveMainWindow(QMainWindow):
         was_active = self._dlc_active
         self._dlc_active = False
         self._dlc_initialized = False
+        # Does NOT invoke the normal rec-stop/save hooks. Persistence is processor-dependent.
         self._dlc.reset(reset_processor_plugin=True)
         self._last_pose = None
         self._last_processor_vid_recording = False
