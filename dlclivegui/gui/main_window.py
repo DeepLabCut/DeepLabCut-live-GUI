@@ -1619,7 +1619,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _stop_preview(self) -> None:
         """Stop camera preview."""
-        if not self.multi_camera_controller.is_running():
+        if not self.multi_camera_controller.is_active():
             return
 
         self.preview_button.setEnabled(False)

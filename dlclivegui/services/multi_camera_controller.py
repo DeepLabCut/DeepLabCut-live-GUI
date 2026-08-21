@@ -96,6 +96,20 @@ class SingleCameraWorker(QObject):
             )
 
             self._backend.open()
+
+            if self._stop_event.is_set():
+                try:
+                    self._backend.close()
+                except Exception:
+                    LOGGER.debug(
+                        "[Worker %s] failed to close backend during early stop", self._camera_id, exc_info=True
+                    )
+                finally:
+                    self._backend = None
+
+                self.stopped.emit(self._camera_id)
+                return
+
         except Exception as exc:
             LOGGER.exception(f"Failed to initialize camera {self._camera_id}", exc_info=exc)
             self.error_occurred.emit(self._camera_id, f"Failed to initialize camera: {exc}")
@@ -291,8 +305,16 @@ class MultiCameraController(QObject):
         self._timing_per_cam: dict[str, WorkerTimingStats] = {}
 
     def is_running(self) -> bool:
-        """Check if any camera is currently running."""
+        """Check if at least one camera has started correctly."""
         return self._running and len(self._started_cameras) > 0
+
+    def is_active(self) -> bool:
+        """Check if startup, capture or shutdown owns workers."""
+        return bool(self._running or self._stopping or self._workers or self._threads)
+
+    def is_starting(self) -> bool:
+        """Check whether cam initialization is still in progress"""
+        return bool(self._running and not self._stopping and not self._started_cameras and self._workers)
 
     def get_active_count(self) -> int:
         """Get the number of active cameras."""
