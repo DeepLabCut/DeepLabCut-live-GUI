@@ -856,7 +856,6 @@ class DLCLiveMainWindow(QMainWindow):
         # Multi-camera controller signals (used for both single and multi-camera modes)
         self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_processing_ready)
         self.multi_camera_controller.display_ready.connect(self._on_multi_frame_display_ready)
-        # self.multi_camera_controller.recording_frame_ready.connect(self._on_recording_frame_ready)
         self.multi_camera_controller.all_started.connect(self._on_multi_camera_started)
         self.multi_camera_controller.all_stopped.connect(self._on_multi_camera_stopped)
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
@@ -1694,26 +1693,6 @@ class DLCLiveMainWindow(QMainWindow):
                 scale=scale,
             )
         return output
-
-    def _on_recording_frame_ready(
-        self, camera_id: str, frame: np.ndarray, timestamp: float, timestamp_metadata: object | None = None
-    ) -> None:
-        """Handle full-rate per-camera frames for recording only.
-
-        Intentionally lean:
-        - no MultiFrameData processing
-        - no DLC routing
-        - no display state updates
-        - no FPS tracker
-        - optional overlays only if user requested recording overlays
-        """
-        if not self._rec_manager.is_active:
-            return
-
-        # if self.record_with_overlays_checkbox.isChecked():
-        #     frame = self._render_overlays_for_recording(camera_id, frame)
-
-        self._rec_manager.write_frame(camera_id, frame, timestamp, timestamp_metadata=timestamp_metadata)
 
     def _on_multi_frame_processing_ready(self, frame_data: MultiFrameData) -> None:
         """Handle frames from multiple cameras.
