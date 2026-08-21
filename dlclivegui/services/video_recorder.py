@@ -326,7 +326,9 @@ class VideoRecorder:
 
         try:
             with self._process_timing.measure("Recorder.queue_put"):
-                q.put((frame, timestamp, timestamp_metadata), block=False)
+                # writer consumes frames async, so we copy before returning control to the capture pipeline
+                queued_frame = frame.copy()
+                q.put((queued_frame, timestamp, timestamp_metadata), block=False)
         except queue.Full:
             with self._stats_lock:
                 self._dropped_frames += 1
