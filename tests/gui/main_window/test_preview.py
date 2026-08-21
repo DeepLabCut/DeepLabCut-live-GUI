@@ -56,6 +56,7 @@ class TestPreviewLifecycle:
         calls: list[str] = []
 
         monkeypatch.setattr(w.multi_camera_controller, "is_running", lambda: True)
+        monkeypatch.setattr(w.multi_camera_controller, "is_active", lambda: True)
         monkeypatch.setattr(w, "_stop_multi_camera_recording", lambda: calls.append("recording"))
         monkeypatch.setattr(w, "_stop_inference", lambda show_message=False: calls.append("inference"))
         monkeypatch.setattr(

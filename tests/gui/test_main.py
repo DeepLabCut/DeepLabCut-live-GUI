@@ -45,6 +45,9 @@ def test_preview_renders_frames(
     def fake_is_running():
         return running
 
+    def fake_is_active():
+        return running
+
     def fake_get_active_count():
         return 1 if running else 0
 
@@ -65,6 +68,7 @@ def test_preview_renders_frames(
         QTimer.singleShot(0, ctrl.all_stopped.emit)
 
     monkeypatch.setattr(ctrl, "is_running", fake_is_running)
+    monkeypatch.setattr(ctrl, "is_active", fake_is_active)
     monkeypatch.setattr(
         ctrl,
         "get_active_count",
@@ -94,6 +98,47 @@ def test_preview_renders_frames(
 
     assert not ctrl.is_running()
     assert w._current_frame is None
+
+
+def test_stop_preview_while_camera_is_starting(
+    monkeypatch,
+    window,
+):
+    calls = []
+
+    monkeypatch.setattr(
+        window.multi_camera_controller,
+        "is_running",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        window.multi_camera_controller,
+        "is_active",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        window.multi_camera_controller,
+        "stop",
+        lambda *args, **kwargs: calls.append("controller"),
+    )
+    monkeypatch.setattr(
+        window,
+        "_stop_multi_camera_recording",
+        lambda: calls.append("recording"),
+    )
+    monkeypatch.setattr(
+        window,
+        "_stop_inference",
+        lambda show_message=False: calls.append("inference"),
+    )
+
+    window._stop_preview()
+
+    assert calls == [
+        "recording",
+        "inference",
+        "controller",
+    ]
 
 
 @pytest.mark.gui
