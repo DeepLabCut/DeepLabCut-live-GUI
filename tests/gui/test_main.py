@@ -2,6 +2,8 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 
+from dlclivegui.services.dlc_processor import DLCLiveProcessor, Engine
+
 
 def pixmap_bytes(label) -> bytes:
     pm = label.pixmap()
@@ -99,3 +101,24 @@ def test_start_inference_emits_pose(qtbot, window, multi_camera_controller, dlc_
         qtbot.mouseClick(w.stop_preview_button, Qt.LeftButton)
 
     assert not ctrl.is_running()
+
+
+def test_dlc_settings_from_ui_validates_detected_model_type(
+    monkeypatch,
+    window,
+    tmp_path,
+):
+    model_path = tmp_path / "model.pt"
+    model_path.touch()
+    window.model_path_edit.setText(str(model_path))
+
+    monkeypatch.setattr(
+        DLCLiveProcessor,
+        "get_model_backend",
+        lambda _path: Engine.PYTORCH,
+    )
+
+    settings = window._dlc_settings_from_ui()
+
+    assert settings.model_type == "pytorch"
+    assert isinstance(settings.model_type, str)

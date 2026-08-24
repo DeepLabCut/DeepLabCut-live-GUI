@@ -26,6 +26,12 @@ class Engine(Enum):
 
     @classmethod
     def from_model_type(cls, model_type: str) -> "Engine":
+        if not isinstance(model_type, str):
+            try:
+                model_type = str(getattr(model_type, "value", model_type))
+            except Exception as e:
+                raise ValueError(f"Could not convert model_type to string: {model_type}") from e
+
         if model_type.lower() == "pytorch":
             return cls.PYTORCH
         elif model_type.lower() in ("tensorflow", "base", "tensorrt", "lite"):

@@ -38,10 +38,10 @@ def compute_tiling_geometry(
     """Compute consistent tiling geometry for both tiling and overlay transforms.
 
     Returns:
-        (sorted_cam_ids, rows, cols, tile_w, tile_h)
+        (cam_ids, rows, cols, tile_w, tile_h)
 
     Notes:
-    - We intentionally base tile aspect on the first frame in sorted_cam_ids,
+    - We intentionally base tile aspect on the first frame in cam_ids,
       because create_tiled_frame uses the same ordering. This guarantees that
       compute_tile_info() and create_tiled_frame() agree on tile_w/tile_h.
     - If frames have different aspect ratios, they will be resized (possibly distorted)
@@ -50,7 +50,7 @@ def compute_tiling_geometry(
     if not frames:
         return ([], 1, 1, 640, 480)
 
-    cam_ids = sorted(frames.keys())
+    cam_ids = list(frames.keys())
     frames_list = [frames[cid] for cid in cam_ids]
     num_frames = len(frames_list)
 
@@ -63,7 +63,7 @@ def compute_tiling_geometry(
 
     max_w, max_h = max_canvas
 
-    # Reference aspect is based on the first frame in sorted order (matches tiler).
+    # Reference aspect is based on the first frame in display order (matches tiler).
     h0, w0 = frames_list[0].shape[:2]
     frame_aspect = (w0 / h0) if h0 > 0 else 1.0
 
@@ -138,7 +138,7 @@ def compute_tile_info(
 
     Critical robustness fix:
     - Tile dimensions are computed from the same reference used by create_tiled_frame()
-      (first frame in sorted order), so offsets/scales match the actual tiling.
+      (first frame in display order), so offsets/scales match the actual tiling.
     """
     if not frames:
         return (0, 0), (1.0, 1.0)

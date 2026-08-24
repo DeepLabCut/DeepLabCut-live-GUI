@@ -9,10 +9,6 @@ import os
 import time
 from pathlib import Path
 
-# NOTE @C-Achard: his could be added in settings eventually
-# Forces pypylon to create 2 emulation virtual cameras,
-# mostly for testing. This shold not be enabled for release.
-# os.environ["PYLON_CAMEMU"] = "2"
 import cv2
 import numpy as np
 from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl
@@ -53,6 +49,7 @@ from PySide6.QtWidgets import (
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.config import (
     DEFAULT_CONFIG,
+    GUI_MAX_DISPLAY_FPS,
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
@@ -190,7 +187,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Display timer - decoupled from frame capture for performance
         self._display_timer = QTimer(self)
-        self._display_timer.setInterval(33)  # ~30 fps display rate
+        self._display_timer.setInterval(1000 / GUI_MAX_DISPLAY_FPS)  # in ms, ~30 fps display rate
         self._display_timer.timeout.connect(self._update_display_from_pending)
         self._display_timer.start()
 
@@ -772,7 +769,8 @@ class DLCLiveMainWindow(QMainWindow):
         self.bbox_color_combo.currentIndexChanged.connect(self._on_bbox_color_changed)
 
         # Multi-camera controller signals (used for both single and multi-camera modes)
-        self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_ready)
+        self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_processing_ready)
+        self.multi_camera_controller.display_ready.connect(self._on_multi_frame_display_ready)
         self.multi_camera_controller.all_started.connect(self._on_multi_camera_started)
         self.multi_camera_controller.all_stopped.connect(self._on_multi_camera_stopped)
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
@@ -857,15 +855,23 @@ class DLCLiveMainWindow(QMainWindow):
         # Update recording path preview
         self._update_recording_path_preview()
 
-    def _current_config(self) -> ApplicationSettings:
-        # Get the first camera from multi-camera config for backward compatibility
-        active_cameras = self._config.multi_camera.get_active_cameras()
-        camera = active_cameras[0] if active_cameras else CameraSettings()
+    def _current_config(self, *, allow_empty_model_path=False) -> ApplicationSettings:
+        multi_camera = self._config.multi_camera
+        active_cameras = multi_camera.get_active_cameras()
+        camera = (
+            active_cameras[0].model_copy(deep=True)
+            if active_cameras
+            else (
+                multi_camera.cameras[0].model_copy(deep=True)
+                if multi_camera.cameras
+                else self._config.camera.model_copy(deep=True)
+            )
+        )
 
         return ApplicationSettings(
             camera=camera,
-            multi_camera=self._config.multi_camera,
-            dlc=self._dlc_settings_from_ui(),
+            multi_camera=multi_camera,
+            dlc=self._dlc_settings_from_ui(allow_empty_model_path=allow_empty_model_path),
             recording=self._recording_settings_from_ui(),
             bbox=self._bbox_settings_from_ui(),
             visualization=self._visualization_settings_from_ui(),
@@ -877,14 +883,29 @@ class DLCLiveMainWindow(QMainWindow):
             return {}
         return json.loads(text)
 
-    def _dlc_settings_from_ui(self) -> DLCProcessorSettings:
+    def _dlc_settings_from_ui(self, *, allow_empty_model_path=False) -> DLCProcessorSettings:
         model_path = self.model_path_edit.text().strip()
         if Path(model_path).exists() and Path(model_path).suffix == ".pb":
             # IMPORTANT NOTE: DLClive expects a directory for TensorFlow models,
             # so if user selects a .pb file, we should pass the parent directory to DLCLive
             model_path = str(Path(model_path).parent)
-        if model_path == "":
+
+        existing_dlc = (  # explicitly init from default if unset
+            self._config.dlc.model_copy(deep=True)
+            if getattr(self._config, "dlc", None) is not None
+            else DEFAULT_CONFIG.dlc.model_copy(deep=True)
+        )
+        if not model_path:
+            if allow_empty_model_path:
+                # Preserve all existing DLC settings and only clear the model path.
+                return existing_dlc.model_copy(
+                    update={
+                        "model_path": "",
+                    }
+                )
+
             raise ValueError("Model path cannot be empty. Please enter a valid path to a DLCLive model file.")
+
         try:
             model_bknd = DLCLiveProcessor.get_model_backend(model_path)
         except Exception as e:
@@ -893,16 +914,16 @@ class DLCLiveMainWindow(QMainWindow):
                 "Please ensure the model file is valid and has an appropriate extension "
                 "(.pt, .pth for PyTorch or model directory for TensorFlow)."
             ) from e
-        return DLCProcessorSettings(
-            model_path=model_path,
-            model_directory=self._config.dlc.model_directory,  # Preserve from config
-            device=self._config.dlc.device,  # Preserve from config
-            dynamic=self._config.dlc.dynamic,  # Preserve from config
-            resize=self._config.dlc.resize,  # Preserve from config
-            precision=self._config.dlc.precision,  # Preserve from config
-            model_type=model_bknd,
-            # additional_options=self._parse_json(self.additional_options_edit.toPlainText()),
+
+        # Preserve all unchanged DLC settings and only update values derived from the UI
+        updated_dlc = existing_dlc.model_dump()
+        updated_dlc.update(
+            {
+                "model_path": model_path,
+                "model_type": model_bknd,
+            }
         )
+        return DLCProcessorSettings.model_validate(updated_dlc)
 
     def _recording_settings_from_ui(self) -> RecordingSettings:
         return RecordingSettings(
@@ -968,7 +989,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _save_config_to_path(self, path: Path) -> None:
         try:
-            config = self._current_config()
+            config = self._current_config(allow_empty_model_path=True)
             config.save(path)
             self._settings_store.set_last_config_path(str(path))
             self._settings_store.save_full_config_snapshot(config)
@@ -1012,6 +1033,7 @@ class DLCLiveMainWindow(QMainWindow):
                     model_check_path = file_path.parent
                 else:
                     model_check_path = file_path
+                # Raise if the model backend cannot be determined (invalid file or unsupported extension)
                 DLCLiveProcessor.get_model_backend(str(model_check_path))
             except FileNotFoundError as e:
                 QMessageBox.warning(self, "Model selection error", str(e))
@@ -1268,8 +1290,10 @@ class DLCLiveMainWindow(QMainWindow):
         """Populate the inference camera dropdown from currently running cameras."""
         self.dlc_camera_combo.blockSignals(True)
         self.dlc_camera_combo.clear()
-        for cam_id in sorted(self._running_cams_ids):
-            self.dlc_camera_combo.addItem(self._label_for_cam_id(cam_id), cam_id)
+        for cam in self._config.multi_camera.get_active_cameras():
+            cam_id = get_camera_id(cam)
+            if cam_id in self._running_cams_ids:
+                self.dlc_camera_combo.addItem(self._label_for_cam_id(cam_id), cam_id)
 
         # Keep current selection if still present, else select first running
         if self._inference_camera_id in self._running_cams_ids:
@@ -1351,13 +1375,12 @@ class DLCLiveMainWindow(QMainWindow):
             )
         return output
 
-    def _on_multi_frame_ready(self, frame_data: MultiFrameData) -> None:
+    def _on_multi_frame_processing_ready(self, frame_data: MultiFrameData) -> None:
         """Handle frames from multiple cameras.
 
-        Priority order for performance:
+        Priority:
         1. DLC processing (highest priority - enqueue immediately, only for DLC camera)
         2. Recording (queued writes, non-blocking)
-        3. Display (lowest priority - tiled and updated on separate timer)
         """
         self._multi_camera_frames = frame_data.frames
         src_id = frame_data.source_camera_id
@@ -1371,7 +1394,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Determine DLC camera (first active camera)
         selected_id = self._inference_camera_id
-        available_ids = sorted(frame_data.frames.keys())
+        available_ids = list(frame_data.frames.keys())
         if selected_id in frame_data.frames:
             dlc_cam_id = selected_id
         else:
@@ -1414,7 +1437,12 @@ class DLCLiveMainWindow(QMainWindow):
             ts = frame_data.timestamps.get(src_id, time.time())
             self._rec_manager.write_frame(src_id, frame, ts)
 
-        # PRIORITY 3: Mark display dirty (tiling done in display timer)
+    def _on_multi_frame_display_ready(self, frame_data: MultiFrameData) -> None:
+        """Throttled UI/display path.
+
+        Called at GUI_MAX_DISPLAY_FPS, not at camera capture FPS for performance reasons.
+        """
+        self._multi_camera_frames = frame_data.frames
         self._display_dirty = True
 
     def _on_multi_camera_started(self) -> None:
@@ -1591,7 +1619,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _stop_preview(self) -> None:
         """Stop camera preview."""
-        if not self.multi_camera_controller.is_running():
+        if not self.multi_camera_controller.is_active():
             return
 
         self.preview_button.setEnabled(False)
@@ -1603,7 +1631,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Stop any active recording first
         self._stop_multi_camera_recording()
 
-        self.multi_camera_controller.stop()
+        self.multi_camera_controller.stop(wait=True)
         self._stop_inference(show_message=False)
         self._fps_tracker.clear()
         self._last_display_time = 0.0
@@ -1614,7 +1642,7 @@ class DLCLiveMainWindow(QMainWindow):
     def _configure_dlc(self) -> bool:
         try:
             settings = self._dlc_settings_from_ui()
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
             self._show_error(f"Invalid DLCLive settings: {exc}")
             return False
         if not settings.model_path:

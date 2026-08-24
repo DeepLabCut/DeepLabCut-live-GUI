@@ -354,6 +354,13 @@ def build_settings_group(dlg: CameraConfigDialog) -> QGroupBox:
 
     dlg.settings_form.addRow("Crop:", crop_widget)
 
+    # --- Trigger settings button ---
+    dlg.trigger_settings_btn = QPushButton("Trigger Settings…")
+    dlg.trigger_settings_btn.setIcon(dlg.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+    dlg.trigger_settings_btn.setEnabled(False)
+    dlg.trigger_settings_btn.setToolTip("Configure hardware trigger / GPIO sync settings for this camera.")
+    dlg.settings_form.addRow("Sync:", dlg.trigger_settings_btn)
+
     # Apply/Reset buttons row
     dlg.apply_settings_btn = QPushButton("Apply Settings")
     dlg.apply_settings_btn.setIcon(dlg.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))

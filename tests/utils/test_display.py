@@ -41,7 +41,9 @@ def test_compute_tiling_geometry_single_frame_respects_max_canvas_and_min_tile()
 def test_compute_tiling_geometry_two_frames_is_1x2():
     frames = {"camB": _frame(480, 640, 3), "camA": _frame(480, 640, 3)}
     cam_ids, rows, cols, tile_w, tile_h = compute_tiling_geometry(frames, max_canvas=(1200, 800))
-    assert cam_ids == ["camA", "camB"]  # sorted
+
+    # Preserve insertion/display order, do not sort by camera ID.
+    assert cam_ids == ["camB", "camA"]
     assert (rows, cols) == (1, 2)
     assert tile_w >= 160 and tile_h >= 120
 
@@ -49,25 +51,106 @@ def test_compute_tiling_geometry_two_frames_is_1x2():
 def test_compute_tiling_geometry_three_frames_is_2x2():
     frames = {"c3": _frame(480, 640, 3), "c1": _frame(480, 640, 3), "c2": _frame(480, 640, 3)}
     cam_ids, rows, cols, tile_w, tile_h = compute_tiling_geometry(frames, max_canvas=(1200, 800))
-    assert cam_ids == ["c1", "c2", "c3"]
+
+    # Preserve insertion/display order.
+    assert cam_ids == ["c3", "c1", "c2"]
     assert (rows, cols) == (2, 2)
     assert tile_w >= 160 and tile_h >= 120
 
 
-def test_compute_tiling_geometry_reference_aspect_is_first_sorted_cam():
-    # camA has aspect 2.0 (w/h), camB has aspect 0.5
+def test_compute_tiling_geometry_reference_aspect_is_first_display_order_cam():
+    # camB is first in insertion/display order and has aspect 0.5.
+    # camA has aspect 2.0.
     frames = {
-        "camB": _frame(400, 200, 3),
-        "camA": _frame(200, 400, 3),
+        "camB": _frame(400, 200, 3),  # aspect = 200 / 400 = 0.5
+        "camA": _frame(200, 400, 3),  # aspect = 400 / 200 = 2.0
     }
+
     cam_ids, rows, cols, tile_w, tile_h = compute_tiling_geometry(frames, max_canvas=(1200, 800))
-    assert cam_ids == ["camA", "camB"]
+
+    assert cam_ids == ["camB", "camA"]
 
     # For 2 cams, rows=1 cols=2 => initial tile_w=600 tile_h=800 => tile_aspect=0.75
-    # frame_aspect for camA = 400/200 = 2.0 > 0.75 => tile_h adjusted to tile_w/frame_aspect = 600/2 = 300
+    # frame_aspect for camB = 0.5 <= 0.75 => tile_w adjusted to tile_h * frame_aspect = 800 * 0.5 = 400
     assert (rows, cols) == (1, 2)
-    assert tile_w == 600
-    assert tile_h == 300
+    assert tile_w == 400
+    assert tile_h == 800
+
+
+def test_compute_tiling_geometry_preserves_frame_insertion_order():
+    frames = {
+        "gentl:serial:30220469": np.zeros((10, 20, 3), dtype=np.uint8),
+        "gentl:serial:10620051": np.zeros((10, 20, 3), dtype=np.uint8),
+    }
+
+    cam_ids, rows, cols, tile_w, tile_h = compute_tiling_geometry(frames)
+
+    assert cam_ids == ["gentl:serial:30220469", "gentl:serial:10620051"]
+    assert rows == 1
+    assert cols == 2
+    assert tile_w > 0
+    assert tile_h > 0
+
+
+def test_compute_tiling_geometry_preserves_reversed_insertion_order():
+    frames = {
+        "gentl:serial:10620051": np.zeros((10, 20, 3), dtype=np.uint8),
+        "gentl:serial:30220469": np.zeros((10, 20, 3), dtype=np.uint8),
+    }
+
+    cam_ids, *_ = compute_tiling_geometry(frames)
+
+    assert cam_ids == ["gentl:serial:10620051", "gentl:serial:30220469"]
+
+
+def test_compute_tile_info_uses_display_order_for_offsets():
+    cam0 = "gentl:serial:30220469"
+    cam1 = "gentl:serial:10620051"
+
+    frames = {
+        cam0: np.zeros((100, 200, 3), dtype=np.uint8),
+        cam1: np.zeros((100, 200, 3), dtype=np.uint8),
+    }
+
+    cam_ids, rows, cols, tile_w, tile_h = compute_tiling_geometry(frames)
+
+    offset0, scale0 = compute_tile_info(cam0, frames[cam0], frames)
+    offset1, scale1 = compute_tile_info(cam1, frames[cam1], frames)
+
+    assert cam_ids == [cam0, cam1]
+    assert offset0 == (0, 0)
+    assert offset1 == (tile_w, 0)
+    assert scale0[0] > 0
+    assert scale0[1] > 0
+    assert scale1[0] > 0
+    assert scale1[1] > 0
+
+
+def test_create_tiled_frame_preserves_display_order_by_tile_content():
+    # First frame is blue-ish, second is red-ish.
+    first = np.zeros((100, 100, 3), dtype=np.uint8)
+    first[:, :] = (255, 0, 0)  # BGR blue
+
+    second = np.zeros((100, 100, 3), dtype=np.uint8)
+    second[:, :] = (0, 0, 255)  # BGR red
+
+    frames = {
+        "gentl:serial:30220469": first,
+        "gentl:serial:10620051": second,
+    }
+
+    cam_ids, rows, cols, tile_w, tile_h = compute_tiling_geometry(frames, max_canvas=(400, 200))
+    out = create_tiled_frame(frames, max_canvas=(400, 200))
+
+    assert cam_ids == ["gentl:serial:30220469", "gentl:serial:10620051"]
+    assert (rows, cols) == (1, 2)
+
+    # Sample away from text label area.
+    left_sample = out[tile_h // 2, tile_w // 2]
+    right_sample = out[tile_h // 2, tile_w + tile_w // 2]
+
+    assert left_sample[0] > left_sample[2]  # blue tile first
+    assert right_sample[2] > right_sample[0]  # red tile second
 
 
 def test_create_tiled_frame_empty_returns_default_canvas():
@@ -110,16 +193,18 @@ def test_create_tiled_frame_canvas_shape_matches_geometry():
 
 
 def test_compute_tile_info_offset_and_scale_matches_tiling():
-    # 2 frames => 1x2 tiling, cam ids sorted: ["cam1", "cam2"]
+    # 2 frames => 1x2 tiling, preserving insertion/display order: ["cam2", "cam1"]
     frames = {"cam2": _frame(200, 400, 3), "cam1": _frame(200, 400, 3)}
     cam_ids, rows, cols, tile_w, tile_h = compute_tiling_geometry(frames, max_canvas=(1200, 800))
 
     original = _frame(200, 400, 3)
     (ox, oy), (sx, sy) = compute_tile_info("cam2", original, frames, max_canvas=(1200, 800))
 
-    # cam2 is index 1 -> row 0 col 1
+    assert cam_ids == ["cam2", "cam1"]
     assert (rows, cols) == (1, 2)
-    assert ox == tile_w
+
+    # cam2 is first in display order => row 0 col 0
+    assert ox == 0
     assert oy == 0
     assert sx == pytest.approx(tile_w / 400)
     assert sy == pytest.approx(tile_h / 200)
