@@ -3,9 +3,38 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from dlclivegui.services.dlc_processor import ProcessorStats
-from dlclivegui.services.video_recorder import RecorderStats
+if TYPE_CHECKING:
+    from dlclivegui.services.dlc_processor import ProcessorStats
+
+
+@dataclass
+class RecorderStats:
+    """Snapshot of recorder throughput metrics."""
+
+    frames_enqueued: int = 0
+    frames_written: int = 0
+    dropped_frames: int = 0
+    queue_size: int = 0
+    buffer_size: int = 0
+    average_latency: float = 0.0
+    last_latency: float = 0.0
+    write_fps: float = 0.0
+    buffer_seconds: float = 0.0
+
+    @property
+    def backlog_frames(self) -> int:
+        """Frames accepted by recorder but not yet written."""
+        return max(0, self.frames_enqueued - self.frames_written)
+
+    @property
+    def queue_fill_ratio(self) -> float:
+        """Queue fill ratio in [0, 1], or 0 when capacity is unknown."""
+        if self.buffer_size <= 0:
+            return 0.0
+        return min(1.0, max(0.0, self.queue_size / self.buffer_size))
 
 
 class WorkerTimingStats:
@@ -41,6 +70,7 @@ class WorkerTimingStats:
             self.parent = parent
             self.name = name
             self.t0 = 0.0
+            self.elapsed = 0.0
 
         def __enter__(self):
             if self.parent.enabled:
@@ -51,8 +81,8 @@ class WorkerTimingStats:
             if not self.parent.enabled:
                 return False
 
-            dt = time.perf_counter() - self.t0
-            self.parent._totals[self.name] = self.parent._totals.get(self.name, 0.0) + dt
+            self.elapsed = time.perf_counter() - self.t0
+            self.parent._totals[self.name] = self.parent._totals.get(self.name, 0.0) + self.elapsed
             self.parent._counts[self.name] = self.parent._counts.get(self.name, 0) + 1
             return False
 
@@ -112,11 +142,19 @@ def format_recorder_stats(stats: RecorderStats) -> str:
     latency_ms = stats.last_latency * 1000.0
     avg_ms = stats.average_latency * 1000.0
     buffer_ms = stats.buffer_seconds * 1000.0
+
+    if stats.buffer_size > 0:
+        fill_pct = stats.queue_fill_ratio * 100.0
+        queue_text = f"{stats.queue_size}/{stats.buffer_size} ({fill_pct:.0f}%, ~{buffer_ms:.0f} ms)"
+    else:
+        queue_text = f"{stats.queue_size} (~{buffer_ms:.0f} ms)"
+
     return (
         f"{stats.frames_written}/{stats.frames_enqueued} frames | "
         f"write {stats.write_fps:.1f} fps | "
         f"latency {latency_ms:.1f} ms (avg {avg_ms:.1f} ms) | "
-        f"queue {stats.queue_size} (~{buffer_ms:.0f} ms) | "
+        f"queue {queue_text} | "
+        f"backlog {stats.backlog_frames} | "
         f"dropped {stats.dropped_frames}"
     )
 

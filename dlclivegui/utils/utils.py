@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import re
+import sys
+import threading
 import time
+import traceback
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from dlclivegui.config import DEFAULT_RECORDING_CONTAINER
 
 _INVALID_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -36,7 +41,7 @@ def split_stem_ext(base_filename: str, container: str) -> tuple[str, str]:
     If user typed an extension, keep it. Else use container.
     """
     base = (base_filename or "").strip()
-    container = (container or "mp4").strip().lstrip(".") or "mp4"
+    container = (container or DEFAULT_RECORDING_CONTAINER).strip().lstrip(".") or DEFAULT_RECORDING_CONTAINER
 
     if not base:
         base = "recording"
@@ -83,6 +88,19 @@ def build_run_dir(session_dir: Path, *, use_timestamp: bool) -> Path:
     run_dir = session_dir / f"run_{idx:04d}"
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
+
+
+def format_thread_stack(thread: threading.Thread) -> str:
+    ident = thread.ident
+    if ident is None:
+        return f"Thread {thread.name!r} has no ident."
+
+    frame = sys._current_frames().get(ident)
+    if frame is None:
+        return f"No Python stack frame found for thread {thread.name!r} ident={ident}."
+
+    stack = "".join(traceback.format_stack(frame))
+    return f"Stack for thread {thread.name!r} ident={ident}:\n{stack}"
 
 
 @dataclass(frozen=True)

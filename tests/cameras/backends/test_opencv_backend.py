@@ -99,7 +99,7 @@ def test_open_does_not_use_alt_index_probe_when_disabled_in_code(monkeypatch, fa
 
     assert any(idx == 0 for idx, _ in calls)
     assert not any(idx == 1 for idx, _ in calls)  # since alt index probe is commented out
-    assert "camera" in backend.device_name().lower()
+    assert "test" in backend.device_name().lower()
 
 
 def test_open_raises_when_unable_to_open(monkeypatch, fake_capture_factory):
@@ -124,7 +124,8 @@ def test_read_returns_none_on_grab_failure(fake_capture_factory):
     cap.grab_ok = False
     backend._capture = cap
 
-    frame, ts = backend.read()
+    payload = backend.read()
+    frame, ts = payload.frame, payload.software_timestamp
     assert frame is None
     assert isinstance(ts, float)
 
@@ -135,7 +136,8 @@ def test_read_returns_none_on_retrieve_failure(fake_capture_factory):
     cap.retrieve_ok = False
     backend._capture = cap
 
-    frame, ts = backend.read()
+    payload = backend.read()
+    frame, ts = payload.frame, payload.software_timestamp
     assert frame is None
     assert isinstance(ts, float)
 
@@ -150,7 +152,8 @@ def test_read_never_raises_on_exception(fake_capture_factory):
     cap.grab = boom
     backend._capture = cap
 
-    frame, ts = backend.read()
+    payload = backend.read()
+    frame, ts = payload.frame, payload.software_timestamp
     assert frame is None
     assert isinstance(ts, float)
 

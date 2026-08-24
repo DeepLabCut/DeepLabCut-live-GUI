@@ -54,17 +54,154 @@ def test_open_starts_stream_and_read_returns_frame(patch_gentl_sdk, gentl_settin
     assert be._acquirer is not None
 
     # Strict model validated via behavior: read must succeed after normal open()
-    frame, ts = be.read()
-    assert isinstance(ts, float)
-    assert isinstance(frame, np.ndarray)
-    assert frame.size > 0
+    captured = be.read()
+    assert isinstance(captured.software_timestamp, float)
+    assert isinstance(captured.frame, np.ndarray)
+    assert captured.frame.size > 0
     # Backend converts to BGR; ensure 3-channel output
-    assert frame.ndim == 3 and frame.shape[2] == 3
+    assert captured.frame.ndim == 3 and captured.frame.shape[2] == 3
 
     be.close()
     assert be._harvester is None
     assert be._acquirer is None
     assert be._device_label is None
+
+
+@pytest.mark.parametrize(
+    (
+        "pixel_format",
+        "preserve_mono",
+        "source_dtype",
+        "expected_shape",
+        "expected_output_format",
+    ),
+    [
+        (
+            "Mono8",
+            True,
+            np.uint8,
+            (2, 3),
+            "Mono8",
+        ),
+        (
+            "Mono8",
+            False,
+            np.uint8,
+            (2, 3, 3),
+            "BGR8",
+        ),
+        (
+            "Mono12",
+            True,
+            np.uint16,
+            (2, 3),
+            "Mono8",
+        ),
+    ],
+)
+def test_mono_output_format_conversion_and_persistence(
+    patch_gentl_sdk,
+    gentl_settings_factory,
+    pixel_format,
+    preserve_mono,
+    source_dtype,
+    expected_shape,
+    expected_output_format,
+):
+    gb = patch_gentl_sdk
+
+    settings = gentl_settings_factory(
+        preserve_mono=preserve_mono,
+        properties={
+            "gentl": {
+                "pixel_format": pixel_format,
+            }
+        },
+    )
+    backend = gb.GenTLCameraBackend(settings)
+
+    if source_dtype == np.uint8:
+        source = np.array(
+            [
+                [0, 32, 64],
+                [128, 192, 255],
+            ],
+            dtype=np.uint8,
+        )
+    else:
+        source = np.array(
+            [
+                [0, 512, 1024],
+                [2048, 3072, 4095],
+            ],
+            dtype=np.uint16,
+        )
+
+    component = types.SimpleNamespace(
+        data=source.ravel(),
+        height=source.shape[0],
+        width=source.shape[1],
+    )
+    buffer = types.SimpleNamespace(
+        payload=types.SimpleNamespace(
+            components=[component],
+        )
+    )
+
+    class FetchContext:
+        def __enter__(self):
+            return buffer
+
+        def __exit__(
+            self,
+            exc_type,
+            exc_value,
+            traceback,
+        ):
+            return False
+
+    class FakeAcquirer:
+        remote_device = types.SimpleNamespace(
+            node_map=types.SimpleNamespace(),
+        )
+
+        def fetch(self, timeout):
+            return FetchContext()
+
+    backend._acquirer = FakeAcquirer()
+    backend._pixel_format = pixel_format
+    backend._camera_pixel_format = pixel_format
+
+    captured = backend.read()
+    frame = captured.frame
+
+    assert frame.dtype == np.uint8
+    assert frame.shape == expected_shape
+
+    # Native camera format and emitted application format are distinct.
+    assert backend.actual_pixel_format == pixel_format
+    assert backend.actual_output_format == expected_output_format
+
+    namespace = settings.properties["gentl"]
+    assert namespace["actual_output_format"] == expected_output_format
+    assert namespace["preserve_mono"] is preserve_mono
+
+    if preserve_mono:
+        assert frame.ndim == 2
+    else:
+        assert frame.ndim == 3
+        assert frame.shape[2] == 3
+
+        # Grayscale-to-BGR conversion duplicates the mono value
+        # across all three channels.
+        np.testing.assert_array_equal(
+            frame[:, :, 0],
+            frame[:, :, 1],
+        )
+        np.testing.assert_array_equal(
+            frame[:, :, 1],
+            frame[:, :, 2],
+        )
 
 
 def test_fast_start_does_not_start_stream_and_read_times_out(patch_gentl_sdk, gentl_settings_factory):
@@ -422,7 +559,7 @@ def test_pixel_format_unavailable_does_not_crash_open_and_streams(patch_gentl_sd
     be.open()
 
     # No fake-internal checks; just verify it can read
-    frame, _ = be.read()
+    frame = be.read().frame
     assert frame is not None and frame.size > 0
 
     be.close()

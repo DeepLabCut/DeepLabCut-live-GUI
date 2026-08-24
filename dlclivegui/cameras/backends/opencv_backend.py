@@ -10,10 +10,9 @@ import time
 from typing import TYPE_CHECKING, Literal
 
 import cv2
-import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
-from ..base import CameraBackend, SupportLevel, register_backend
+from ..base import CameraBackend, CapturedFrame, SupportLevel, register_backend
 from ..factory import DetectedCamera
 from .utils.opencv_discovery import (
     ModeRequest,
@@ -199,21 +198,45 @@ class OpenCVCameraBackend(CameraBackend):
 
         self._configure_capture()
 
-    def read(self) -> tuple[np.ndarray | None, float]:
-        """Robust frame read: return (None, ts) on transient failures; never raises."""
+    def read(self) -> CapturedFrame:
+        """Robust frame read: return CapturedFrame(frame=None, ...) on transient failures; never raises."""
         if self._capture is None:
             logger.warning("OpenCVCameraBackend.read() called before open()")
-            return None, time.time()
+            return CapturedFrame(
+                frame=None,
+                software_timestamp=time.time(),
+                timestamp_metadata=None,
+            )
+
         try:
             if not self._capture.grab():
-                return None, time.time()
+                return CapturedFrame(
+                    frame=None,
+                    software_timestamp=time.time(),
+                    timestamp_metadata=None,
+                )
+
             success, frame = self._capture.retrieve()
             if not success or frame is None or frame.size == 0:
-                return None, time.time()
-            return frame, time.time()
+                return CapturedFrame(
+                    frame=None,
+                    software_timestamp=time.time(),
+                    timestamp_metadata=None,
+                )
+
+            return CapturedFrame(
+                frame=frame,
+                software_timestamp=time.time(),
+                timestamp_metadata=None,
+            )
+
         except Exception as exc:
-            logger.debug(f"OpenCV read transient error: {exc}")
-            return None, time.time()
+            logger.debug("OpenCV read transient error: %s", exc)
+            return CapturedFrame(
+                frame=None,
+                software_timestamp=time.time(),
+                timestamp_metadata=None,
+            )
 
     def close(self) -> None:
         self._release_capture()
@@ -222,15 +245,26 @@ class OpenCVCameraBackend(CameraBackend):
         self._release_capture()
 
     def device_name(self) -> str:
-        base_name = "OpenCV"
+        ns = self.parse_options(self.settings)
+
+        if ns.device_name:
+            return ns.device_name
+
+        name = str(getattr(self.settings, "name", "") or "").strip()
+        if name:
+            return name
+
+        api_name = ""
         if self._capture and hasattr(self._capture, "getBackendName"):
             try:
-                backend_name = self._capture.getBackendName()
+                api_name = self._capture.getBackendName()
             except Exception:
-                backend_name = ""
-            if backend_name:
-                base_name = backend_name
-        return f"{base_name} camera #{self.settings.index}"
+                api_name = ""
+
+        if api_name:
+            return f"OpenCV {api_name} camera #{self.settings.index}"
+
+        return f"OpenCV camera #{self.settings.index}"
 
     @property
     def actual_fps(self) -> float | None:
@@ -253,6 +287,16 @@ class OpenCVCameraBackend(CameraBackend):
     def actual_gain(self) -> None:
         """Not supported by OpenCV backend."""
         return None
+
+    @property
+    def actual_pixel_format(self) -> str | None:
+        """OpenCV does not reliably expose native camera pixel format."""
+        return None
+
+    @property
+    def actual_output_format(self) -> str | None:
+        """OpenCV VideoCapture returns BGR frames in this backend."""
+        return "BGR8"
 
     # ----------------------------
     # Internal helpers

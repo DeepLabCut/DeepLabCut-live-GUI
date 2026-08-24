@@ -9,11 +9,14 @@ import queue
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from dlclivegui.config import DEFAULT_RECORDING_FPS, REC_DO_LOG_TIMING
+from dlclivegui.utils.stats import RecorderStats, WorkerTimingStats
+from dlclivegui.utils.writegear_options import WriteGearOptionOverrides, WriteGearOptions, normalize_writegear_options
 
 try:
     from vidgear.gears import WriteGear
@@ -26,25 +29,84 @@ logger = logging.getLogger(__name__)
 STOP_JOIN_TIMEOUT = 5.0  # seconds
 
 
-@dataclass
-class RecorderStats:
-    """Snapshot of recorder throughput metrics."""
-
-    frames_enqueued: int = 0
-    frames_written: int = 0
-    dropped_frames: int = 0
-    queue_size: int = 0
-    average_latency: float = 0.0
-    last_latency: float = 0.0
-    write_fps: float = 0.0
-    buffer_seconds: float = 0.0
-
-
 _SENTINEL = object()
 
 
+def build_writegear_options(
+    *,
+    frame_rate: float | None,
+    codec: str,
+    crf: int,
+    overrides: WriteGearOptionOverrides | None = None,
+) -> WriteGearOptions:
+    """Build the final WriteGear/FFmpeg options."""
+    try:
+        fps = float(frame_rate or 0.0)
+    except (TypeError, ValueError):
+        fps = 0.0
+
+    if fps <= 0:
+        fps = DEFAULT_RECORDING_FPS
+
+    options: WriteGearOptions = {
+        "-input_framerate": fps,
+        "-vcodec": str(codec or "").strip() or "libx264",
+        "-crf": crf,
+    }
+
+    if overrides:
+        options.update(key_value for key_value in overrides.items() if key_value[1] is not None)
+
+    return normalize_writegear_options(options)
+
+
 class VideoRecorder:
-    """Thin wrapper around :class:`vidgear.gears.WriteGear`."""
+    """Asynchronous video recorder backed by VidGear/FFmpeg.
+
+    `VideoRecorder` wraps VidGear's `WriteGear` writer with a bounded in-memory
+    queue and a dedicated writer thread. Calls to `write()` perform minimal frame
+    validation/preprocessing, enqueue accepted frames without blocking, and return
+    immediately. The writer thread consumes queued frames and writes them to disk,
+    while also recording timestamps for successfully written frames.
+
+    The recorder is intended for high-throughput camera pipelines where frame
+    acquisition should not block on video encoding. If the internal queue fills,
+    incoming frames are dropped and counted in recorder statistics. Timestamp
+    sidecar files are written on `stop()` for frames that were actually written.
+
+    Args:
+        output: Output video path.
+        frame_size: Expected frame size as `(height, width)`. If provided,
+            incoming frames with different dimensions are rejected and the
+            recorder enters an error state.
+        frame_rate: Output video frame rate. If missing or non-positive, the
+            recorder falls back to 30 FPS and logs a warning.
+        codec: FFmpeg video codec name passed to WriteGear, for example
+            `"libx264"`.
+        crf: Constant Rate Factor passed to compatible FFmpeg encoders. Lower
+            values generally increase quality and file size.
+        buffer_size: Maximum number of frames that may wait in the recorder
+            queue before new frames are dropped.
+        convert_grayscale_to_rgb: Whether 2D grayscale frames should be expanded
+            to 3-channel RGB before writing. Set to `False` to preserve mono
+            frames when supported by the chosen writer/codec path.
+        writer_options_overrides: Optional WriteGear/FFmpeg option overrides.
+            These values are merged over the recorder defaults.
+            Known numeric options are validated and normalized before WriteGear is created.
+
+    Attributes:
+        is_running: Whether the writer thread is currently alive.
+
+    Raises:
+        RuntimeError: If VidGear is unavailable, if the recorder is abandoned
+            after a failed stop, or if a previous encoding error is detected
+            during `write()`.
+
+    Notes:
+        This class does not guarantee that every submitted frame is written.
+        Frames may be dropped when the queue is full, and timestamps are only
+        saved for frames successfully consumed by the writer thread.
+    """
 
     def __init__(
         self,
@@ -54,15 +116,20 @@ class VideoRecorder:
         codec: str = "libx264",
         crf: int = 23,
         buffer_size: int = 240,
+        convert_grayscale_to_rgb: bool = True,
+        writer_options_overrides: WriteGearOptionOverrides | None = None,
     ):
         # Config
         self._output = Path(output)
         self._writer: Any | None = None
         self._frame_size = frame_size
         self._frame_rate = frame_rate
+        self._hardware_timestamp_source: dict[str, Any] | None = None
         self._codec = codec
         self._crf = int(crf)
         self._buffer_size = max(1, int(buffer_size))
+        self._convert_grayscale_to_rgb = bool(convert_grayscale_to_rgb)
+        self._writer_options_overrides = dict(writer_options_overrides) if writer_options_overrides else {}
         # Worker state
         self._queue: queue.Queue[Any] | None = None
         self._writer_thread: threading.Thread | None = None
@@ -79,11 +146,29 @@ class VideoRecorder:
         self._written_times: deque[float] = deque(maxlen=600)
         self._encode_error: Exception | None = None
         self._last_log_time = 0.0
-        self._frame_timestamps: list[float] = []
+        self._frame_timestamps: list[dict[str, Any]] = []
+        # Timing
+        self._process_timing = WorkerTimingStats(
+            f"RecorderProcess[{self._output.name}]", logger=logger, log_interval=1.0, enabled=REC_DO_LOG_TIMING
+        )
+        self._writer_timing = WorkerTimingStats(
+            f"RecorderWriter[{self._output.name}]", logger=logger, log_interval=1.0, enabled=REC_DO_LOG_TIMING
+        )
+        self._logged_first_frame = False
 
     @property
     def is_running(self) -> bool:
         return self._writer_thread is not None and self._writer_thread.is_alive()
+
+    @property
+    def output_path(self) -> Path:
+        """Video output path."""
+        return self._output
+
+    @property
+    def timestamp_json_path(self) -> Path:
+        """Timestamp JSON sidecar path written by _save_timestamps()."""
+        return self._output.with_suffix("").with_suffix(self._output.suffix + "_timestamps.json")
 
     def start(self) -> None:
         if WriteGear is None:
@@ -111,19 +196,46 @@ class VideoRecorder:
                     self._queue = None
                     self._writer_thread = None
 
-            fps_value = float(self._frame_rate) if self._frame_rate else 30.0
+            requested_fps = self._frame_rate
 
-            writer_kwargs: dict[str, Any] = {
-                "compression_mode": True,
-                "logging": False,
-                "-input_framerate": fps_value,
-                "-vcodec": (self._codec or "libx264").strip() or "libx264",
-                "-crf": int(self._crf),
-            }
-            # TODO deal with pixel format
+            writer_kwargs = build_writegear_options(
+                frame_rate=requested_fps,
+                codec=self._codec,
+                crf=self._crf,
+                overrides=self._writer_options_overrides,
+            )
+
+            fps_value = float(writer_kwargs["-input_framerate"])
+
+            try:
+                requested_fps_value = float(requested_fps or 0.0)
+            except (TypeError, ValueError):
+                requested_fps_value = 0.0
+
+            if requested_fps_value <= 0:
+                logger.warning(
+                    "VideoRecorder frame_rate missing/zero for %s; "
+                    "falling back to %.3f FPS. Video playback duration "
+                    "may not match capture timestamps.",
+                    self._output.name,
+                    fps_value,
+                )
+
+            logger.info(
+                "Starting VideoRecorder output=%s frame_size=%s frame_rate=%.3f "
+                "codec=%s crf=%s buffer_size=%s convert_grayscale_to_rgb=%s writer_options=%s",
+                self._output,
+                self._frame_size,
+                fps_value,
+                self._codec,
+                self._crf,
+                self._buffer_size,
+                self._convert_grayscale_to_rgb,
+                self._writer_options_overrides,
+            )
 
             self._output.parent.mkdir(parents=True, exist_ok=True)
-            self._writer = WriteGear(output=str(self._output), **writer_kwargs)
+            self._writer = WriteGear(output=str(self._output), compression_mode=True, logging=False, **writer_kwargs)
             self._queue = queue.Queue(maxsize=self._buffer_size)
             self._frames_enqueued = 0
             self._frames_written = 0
@@ -132,6 +244,7 @@ class VideoRecorder:
             self._last_latency = 0.0
             self._written_times.clear()
             self._frame_timestamps.clear()
+            self._hardware_timestamp_source = None
             self._encode_error = None
             self._stop_event.clear()
             self._writer_thread = threading.Thread(
@@ -145,7 +258,9 @@ class VideoRecorder:
         self._frame_size = frame_size
         self._frame_rate = frame_rate
 
-    def write(self, frame: np.ndarray, timestamp: float | None = None) -> bool:
+    def write(
+        self, frame: np.ndarray, timestamp: float | None = None, timestamp_metadata: object | None = None
+    ) -> bool:
         error = self._current_error()
         if error is not None:
             raise RuntimeError(f"Video encoding failed: {error}") from error
@@ -160,41 +275,60 @@ class VideoRecorder:
         if timestamp is None:
             timestamp = time.time()
 
-        # Convert frame to uint8 if needed
-        if frame.dtype != np.uint8:
-            frame_float = frame.astype(np.float32, copy=False)
-            max_val = float(frame_float.max()) if frame_float.size else 0.0
-            scale = 1.0
-            if max_val > 0:
-                scale = 255.0 / max_val if max_val > 255.0 else (255.0 if max_val <= 1.0 else 1.0)
-            frame = np.clip(frame_float * scale, 0.0, 255.0).astype(np.uint8)
+        with self._process_timing.measure("Recorder.preprocess"):
+            # Convert frame to uint8 if needed
+            if frame.dtype != np.uint8:
+                frame_float = frame.astype(np.float32, copy=False)
+                max_val = float(frame_float.max()) if frame_float.size else 0.0
+                scale = 1.0
+                if max_val > 0:
+                    scale = 255.0 / max_val if max_val > 255.0 else (255.0 if max_val <= 1.0 else 1.0)
+                frame = np.clip(frame_float * scale, 0.0, 255.0).astype(np.uint8)
 
-        # Convert grayscale to RGB if needed
-        if frame.ndim == 2:
-            frame = np.repeat(frame[:, :, None], 3, axis=2)
+            # Convert grayscale to RGB if needed
+            if self._convert_grayscale_to_rgb and frame.ndim == 2:
+                frame = np.repeat(frame[:, :, None], 3, axis=2)
 
-        # Ensure contiguous array
-        frame = np.ascontiguousarray(frame)
+            # Ensure contiguous array
+            frame = np.ascontiguousarray(frame)
 
-        # Check if frame size matches expected size
-        if self._frame_size is not None:
-            expected_h, expected_w = self._frame_size
-            actual_h, actual_w = frame.shape[:2]
-            if (actual_h, actual_w) != (expected_h, expected_w):
-                logger.warning(
-                    f"Frame size mismatch: expected (h={expected_h}, w={expected_w}), "
-                    f"got (h={actual_h}, w={actual_w}). "
-                    "Stopping recorder to prevent encoding errors."
+            if not self._logged_first_frame:
+                self._logged_first_frame = True
+                logger.info(
+                    "Recorder %s first frame: shape=%s dtype=%s "
+                    "contiguous=%s nbytes=%.2f MB convert_grayscale_to_rgb=%s",
+                    self._output.name,
+                    frame.shape,
+                    frame.dtype,
+                    frame.flags.c_contiguous,
+                    frame.nbytes / (1024 * 1024),
+                    self._convert_grayscale_to_rgb,
                 )
-                # Set error to stop recording gracefully
-                with self._stats_lock:
-                    self._encode_error = ValueError(
-                        f"Frame size changed from (h={expected_h}, w={expected_w}) to (h={actual_h}, w={actual_w})"
+
+            # Check if frame size matches expected size
+            if self._frame_size is not None:
+                expected_h, expected_w = self._frame_size
+                actual_h, actual_w = frame.shape[:2]
+                if (actual_h, actual_w) != (expected_h, expected_w):
+                    message = (
+                        f"Frame size mismatch for recorder {self._output.name}: "
+                        f"expected_hw=({expected_h}, {expected_w}) "
+                        f"actual_hw=({actual_h}, {actual_w}) "
+                        f"{self._describe_frame(frame)}. "
+                        "Stopping recorder to prevent FFmpeg pipe errors."
                     )
-                return False
+
+                    logger.warning(message)
+                    self._set_encode_error(message)
+                    self._process_timing.note_error()
+                    self._process_timing.maybe_log()
+                    return False
 
         try:
-            q.put((frame, timestamp), block=False)
+            with self._process_timing.measure("Recorder.queue_put"):
+                # writer consumes frames async, so we copy before returning control to the capture pipeline
+                queued_frame = frame.copy()
+                q.put((queued_frame, timestamp, timestamp_metadata), block=False)
         except queue.Full:
             with self._stats_lock:
                 self._dropped_frames += 1
@@ -204,9 +338,16 @@ class VideoRecorder:
                 queue_size,
                 self._buffer_size,
             )
+            self._process_timing.note_error()
+            self._process_timing.maybe_log()
             return False
+
         with self._stats_lock:
             self._frames_enqueued += 1
+
+        self._process_timing.note_frame()
+        self._process_timing.maybe_log()
+
         return True
 
     def stop(self) -> None:
@@ -282,12 +423,21 @@ class VideoRecorder:
             avg_latency = self._total_latency / self._frames_written if self._frames_written else 0.0
             last_latency = self._last_latency
             write_fps = self._compute_write_fps_locked()
-        buffer_seconds = queue_size * avg_latency if avg_latency > 0 else 0.0
+
+        if write_fps > 0:
+            buffer_seconds = queue_size / write_fps
+        elif avg_latency > 0:
+            buffer_seconds = queue_size * avg_latency
+        elif last_latency > 0:
+            buffer_seconds = queue_size * last_latency
+        else:
+            buffer_seconds = 0.0
         return RecorderStats(
             frames_enqueued=frames_enqueued,
             frames_written=frames_written,
             dropped_frames=dropped,
             queue_size=queue_size,
+            buffer_size=self._buffer_size,
             average_latency=avg_latency,
             last_latency=last_latency,
             write_fps=write_fps,
@@ -311,9 +461,12 @@ class VideoRecorder:
                         break
                     continue
                 except Exception as exc:
-                    with self._stats_lock:
-                        self._encode_error = exc
-                    logger.exception("Could not retrieve item from queue", exc_info=exc)
+                    message = (
+                        f"Could not retrieve frame from recorder queue for {self._output.name}: "
+                        f"{type(exc).__name__}: {exc!s}"
+                    )
+                    self._set_encode_error(message, exc)
+                    logger.exception(message)
                     self._stop_event.set()
                     break
 
@@ -321,19 +474,68 @@ class VideoRecorder:
                     if item is _SENTINEL:
                         break
                     else:
-                        frame, timestamp = item
+                        frame, timestamp, timestamp_metadata = item
                         start = time.perf_counter()
 
                         try:
                             writer = self._writer
                             if writer is None:
                                 raise RuntimeError("WriteGear writer is not initialized")
-                            writer.write(frame)
+
+                            with self._writer_timing.measure("Recorder.writer_write"):
+                                writer.write(frame)
+
+                            record: dict[str, Any] = {
+                                "frame_index": self._frames_written,
+                                "software_timestamp": float(timestamp),
+                            }
+
+                            if timestamp_metadata is not None:
+                                if (
+                                    hasattr(timestamp_metadata, "to_source_dict")
+                                    and self._hardware_timestamp_source is None
+                                ):
+                                    self._hardware_timestamp_source = timestamp_metadata.to_source_dict()
+
+                                if hasattr(timestamp_metadata, "to_frame_dict"):
+                                    record["hardware_timestamp"] = timestamp_metadata.to_frame_dict()
+                                    if hasattr(timestamp_metadata, "get_default_reported"):
+                                        default_value = timestamp_metadata.get_default_reported()
+                                        if default_value is not None:
+                                            record["hardware_timestamp_default"] = default_value
+                                elif isinstance(timestamp_metadata, dict):
+                                    record["hardware_timestamp"] = dict(timestamp_metadata)
+                                else:
+                                    record["hardware_timestamp"] = repr(timestamp_metadata)
+
+                            self._frame_timestamps.append(record)
+
                         except Exception as exc:
+                            queue_size = q.qsize() if q is not None else -1
+
                             with self._stats_lock:
-                                self._encode_error = exc
-                            logger.exception("Video encoding failed while writing frame", exc_info=exc)
+                                frames_enqueued = self._frames_enqueued
+                                frames_written = self._frames_written
+                                dropped_frames = self._dropped_frames
+
+                            message = (
+                                f"Video encoding failed for recorder {self._output.name}: "
+                                f"{type(exc).__name__}: {exc!s}. "
+                                f"{self._describe_frame(frame)} "
+                                f"expected_frame_size={self._frame_size} "
+                                f"frames_written={frames_written} "
+                                f"frames_enqueued={frames_enqueued} "
+                                f"dropped={dropped_frames} "
+                                f"queue_size={queue_size}. "
+                                "The FFmpeg/WriteGear pipe is no longer usable; stopping this recorder."
+                            )
+
+                            self._set_encode_error(message, exc)
+
+                            logger.exception(message)
                             self._stop_event.set()
+                            self._writer_timing.note_error()
+                            self._writer_timing.maybe_log()
                             break
                         else:
                             elapsed = time.perf_counter() - start
@@ -343,10 +545,12 @@ class VideoRecorder:
                                 self._total_latency += elapsed
                                 self._last_latency = elapsed
                                 self._written_times.append(now)
-                                self._frame_timestamps.append(timestamp)
                                 if now - self._last_log_time >= 1.0:
                                     self._compute_write_fps_locked()
                                     self._last_log_time = now
+
+                            self._writer_timing.note_frame()
+                            self._writer_timing.maybe_log()
 
                 finally:
                     # Ensure queue accounting is correct for every item pulled from q
@@ -369,6 +573,29 @@ class VideoRecorder:
             except Exception:
                 logger.exception("Failed to close WriteGear during finalisation")
 
+    @staticmethod
+    def _normalize_writer_options(
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(options)
+
+        try:
+            normalized["-input_framerate"] = float(normalized["-input_framerate"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("WriteGear option '-input_framerate' must be numeric.") from exc
+
+        try:
+            normalized["-crf"] = int(normalized["-crf"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("WriteGear option '-crf' must be an integer.") from exc
+
+        codec = str(normalized.get("-vcodec") or "").strip()
+        if not codec:
+            raise ValueError("WriteGear option '-vcodec' must be a non-empty string.")
+
+        normalized["-vcodec"] = codec
+        return normalized
+
     def _compute_write_fps_locked(self) -> float:
         if len(self._written_times) < 2:
             return 0.0
@@ -377,9 +604,33 @@ class VideoRecorder:
             return 0.0
         return (len(self._written_times) - 1) / duration
 
+    def _describe_frame(self, frame: np.ndarray | None) -> str:
+        if frame is None:
+            return "frame=None"
+
+        try:
+            return (
+                f"shape={frame.shape} "
+                f"dtype={frame.dtype} "
+                f"contiguous={frame.flags.c_contiguous} "
+                f"nbytes={frame.nbytes / (1024 * 1024):.2f}MB"
+            )
+        except Exception:
+            return f"frame=<uninspectable type={type(frame)!r}>"
+
     def _current_error(self) -> Exception | None:
         with self._stats_lock:
             return self._encode_error
+
+    def _set_encode_error(self, message: str, exc: Exception | None = None) -> Exception:
+        error = RuntimeError(message)
+        if exc is not None:
+            error.__cause__ = exc
+
+        with self._stats_lock:
+            self._encode_error = error
+
+        return error
 
     def _save_timestamps(self) -> None:
         """Save frame timestamps to a JSON file alongside the video."""
@@ -387,27 +638,46 @@ class VideoRecorder:
             logger.info("No timestamps to save")
             return
 
-        # Create timestamps file path
-        timestamp_file = self._output.with_suffix("").with_suffix(self._output.suffix + "_timestamps.json")
+        timestamp_file = self.timestamp_json_path
 
         try:
             with self._stats_lock:
-                timestamps = self._frame_timestamps.copy()
+                frame_timestamps = self._frame_timestamps.copy()
+                hardware_timestamp_source = (
+                    dict(self._hardware_timestamp_source) if self._hardware_timestamp_source is not None else None
+                )
 
-            # Prepare metadata
+            software_timestamps = [
+                float(rec["software_timestamp"]) for rec in frame_timestamps if "software_timestamp" in rec
+            ]
+
             data = {
+                "schema_version": 2,
                 "video_file": str(self._output.name),
-                "num_frames": len(timestamps),
-                "timestamps": timestamps,
-                "start_time": timestamps[0] if timestamps else None,
-                "end_time": timestamps[-1] if timestamps else None,
-                "duration_seconds": timestamps[-1] - timestamps[0] if len(timestamps) > 1 else 0.0,
+                "num_frames": len(frame_timestamps),
+                # "timestamps": software_timestamps,
+                "timestamp_sources": {
+                    "software_timestamp": {
+                        "source": "host_time.time",
+                        "backend": "host",
+                        "kind": "software_wall_clock",
+                        "timebase": "Unix epoch",
+                        "unit": "seconds",
+                        "description": "Host-side software timestamp captured during acquisition.",
+                    },
+                    "hardware_timestamp": hardware_timestamp_source,
+                },
+                "frame_timestamps": frame_timestamps,
+                "start_time": software_timestamps[0] if software_timestamps else None,
+                "end_time": software_timestamps[-1] if software_timestamps else None,
+                "duration_seconds": (
+                    software_timestamps[-1] - software_timestamps[0] if len(software_timestamps) > 1 else 0.0
+                ),
             }
 
-            # Write to JSON
             with open(timestamp_file, "w") as f:
                 json.dump(data, f, indent=2)
 
-            logger.info(f"Saved {len(timestamps)} frame timestamps to {timestamp_file}")
+            logger.info("Saved %d frame timestamps to %s", len(frame_timestamps), timestamp_file)
         except Exception as exc:
-            logger.exception(f"Failed to save timestamps to {timestamp_file}: {exc}")
+            logger.exception("Failed to save timestamps to %s: %s", timestamp_file, exc)

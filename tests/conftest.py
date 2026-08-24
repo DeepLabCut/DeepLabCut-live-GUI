@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.cameras.base import (
     CameraBackend,
+    CapturedFrame,
     SupportLevel,
     register_backend_direct,
     unregister_backend,
@@ -86,7 +87,7 @@ def make_backend_class(
                 raise RuntimeError("not opened")
             self._counter += 1
             frame = np.zeros(frame_shape, dtype=np.uint8)
-            return frame, float(timestamp_fn())
+            return CapturedFrame(frame=frame, software_timestamp=float(timestamp_fn()), timestamp_metadata=None)
 
     _TestBackend.__name__ = f"TestBackend_{name}"
     return _TestBackend
@@ -153,6 +154,18 @@ def fake_backend_factory(fake_backend_cls):
 # ---------------------------------------------------------------------
 # Test doubles
 # ---------------------------------------------------------------------
+class FakeRunner:
+    """Minimal fake DLCLive runner used by DLCLiveProcessor._process_frame."""
+
+    def __init__(self, parent):
+        self._parent = parent
+        self.device = "cpu"
+        self.model = None
+        self.net = None
+
+    def get_pose(self, processed_frame):
+        self._parent.pose_calls += 1
+        return np.ones((2, 3), dtype=float)
 
 
 class FakeDLCLive:
@@ -162,13 +175,30 @@ class FakeDLCLive:
         self.opts = opts
         self.init_called = False
         self.pose_calls = 0
+        self.process_frame_calls = 0
+
+        self.processor = opts.get("processor")
+        self.cfg = {"fake": True}
+        self.runner = FakeRunner(self)
+        self.pose = None
 
     def init_inference(self, frame):
         self.init_called = True
 
+    def process_frame(self, frame):
+        self.process_frame_calls += 1
+        return frame
+
     def get_pose(self, frame, frame_time=None):
+        # Keep this for compatibility with older tests, but production code now
+        # uses self.runner.get_pose(...).
         self.pose_calls += 1
         return np.ones((2, 3), dtype=float)
+
+    def _post_process_pose(self, processed_frame, frame_time=None):
+        if self.pose is None:
+            self.pose = self.runner.get_pose(processed_frame)
+        return self.pose
 
 
 @pytest.fixture
@@ -237,6 +267,12 @@ def make_app_config(
 def app_config_two_cams(tmp_path) -> ApplicationSettings:
     """An app config with two enabled cameras and writable recording dir."""
     return make_app_config(tmp_path=tmp_path, num_cams=2, backend="fake", enabled=True, fps=30.0)
+
+
+@pytest.fixture
+def camera_worker_settings(app_config_two_cams) -> CameraSettings:
+    """Single enabled fake camera settings for SingleCameraWorker tests."""
+    return app_config_two_cams.multi_camera.cameras[0].model_copy(deep=True)
 
 
 # ---------------------------------------------------------------------
@@ -324,7 +360,7 @@ def start_all_spy(monkeypatch, tmp_path):
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
 
-    from dlclivegui.gui import recording_manager as rm_mod
+    from dlclivegui.services import recording_manager as rm_mod
 
     monkeypatch.setattr(rm_mod.RecordingManager, "start_all", _fake_start_all)
     return calls
@@ -349,12 +385,28 @@ def fake_processor():
 class FakeVideoRecorder:
     """Lightweight test double for VideoRecorder (no threads/ffmpeg)."""
 
-    def __init__(self, output, frame_size=None, frame_rate=None, codec="libx264", crf=23, **kwargs):
+    def __init__(
+        self,
+        output,
+        frame_size=None,
+        frame_rate=None,
+        codec="libx264",
+        crf=23,
+        buffer_size=240,
+        convert_grayscale_to_rgb=True,
+        writer_options_overrides=None,
+        **kwargs,
+    ):
         self.output = Path(output)
         self.frame_size = frame_size
         self.frame_rate = frame_rate
         self.codec = codec
         self.crf = crf
+        self.buffer_size = buffer_size
+        self.convert_grayscale_to_rgb = convert_grayscale_to_rgb
+        self.writer_options_overrides = dict(writer_options_overrides) if writer_options_overrides is not None else None
+        self.extra_kwargs = dict(kwargs)
+
         self.started = False
         self.stopped = False
         self.write_calls = []
@@ -370,14 +422,15 @@ class FakeVideoRecorder:
         if self.raise_on_start:
             raise RuntimeError("start failed")
         self.started = True
+        self.stopped = False
 
     def stop(self):
         self.stopped = True
 
-    def write(self, frame, timestamp=None):
+    def write(self, frame, timestamp=None, timestamp_metadata=None):
         if self.raise_on_write:
             raise RuntimeError("write failed")
-        self.write_calls.append((frame, timestamp))
+        self.write_calls.append((frame, timestamp, timestamp_metadata))
         return True
 
     def get_stats(self):
@@ -391,7 +444,7 @@ def recording_settings(app_config_two_cams):
 
 @pytest.fixture
 def patch_video_recorder(monkeypatch):
-    import dlclivegui.gui.recording_manager as rm_mod
+    import dlclivegui.services.recording_manager as rm_mod
 
     monkeypatch.setattr(rm_mod, "VideoRecorder", FakeVideoRecorder)
     return FakeVideoRecorder
@@ -401,7 +454,7 @@ def patch_video_recorder(monkeypatch):
 def recording_frame_spy(monkeypatch, window):
     captured = {}
 
-    def _fake_write_frame(cam_id, frame, timestamp=None):
+    def _fake_write_frame(cam_id, frame, timestamp=None, timestamp_metadata=None):
         captured[cam_id] = frame.copy()
 
     monkeypatch.setattr(window._rec_manager, "write_frame", _fake_write_frame)
@@ -410,7 +463,7 @@ def recording_frame_spy(monkeypatch, window):
 
 @pytest.fixture
 def patch_build_run_dir(monkeypatch, tmp_path):
-    import dlclivegui.gui.recording_manager as rm_mod
+    import dlclivegui.services.recording_manager as rm_mod
 
     spy = {"session_dir": None, "use_timestamp": None}
     run_dir = tmp_path / "videos" / "Sess_SANITIZED" / "run_TEST"

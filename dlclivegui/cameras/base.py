@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -11,6 +12,7 @@ import numpy as np
 from ..config import CameraSettings
 
 if TYPE_CHECKING:
+    from ..utils.timestamps import FrameTimestampMetadata
     from .factory import DetectedCamera
 
 _BACKEND_REGISTRY: dict[str, type[CameraBackend]] = {}
@@ -68,10 +70,26 @@ DEFAULT_CAPABILITIES: dict[str, SupportLevel] = {
     "set_fps": SupportLevel.UNSUPPORTED,
     "set_exposure": SupportLevel.UNSUPPORTED,
     "set_gain": SupportLevel.UNSUPPORTED,
+    "preserve_mono": SupportLevel.UNSUPPORTED,
     "device_discovery": SupportLevel.UNSUPPORTED,
     "stable_identity": SupportLevel.UNSUPPORTED,
     "hardware_trigger": SupportLevel.UNSUPPORTED,
+    "hardware_frame_timestamps": SupportLevel.UNSUPPORTED,
 }
+
+
+@dataclass(frozen=True)
+class CapturedFrame:
+    """Frame plus software timestamp and optional backend timestamp metadata."""
+
+    frame: np.ndarray | None
+    software_timestamp: float
+    timestamp_metadata: FrameTimestampMetadata | None = None
+
+    def __iter__(self):
+        """Backwards-compatible unpacking: frame, software_timestamp = backend.read()"""
+        yield self.frame
+        yield self.software_timestamp
 
 
 class CameraBackend(ABC):
@@ -97,6 +115,14 @@ class CameraBackend(ABC):
     def static_capabilities(cls) -> dict[str, SupportLevel]:
         """Return a dict describing supported features for UI purposes."""
         return DEFAULT_CAPABILITIES
+
+    @property
+    def actual_pixel_format(self) -> str | None:
+        return None
+
+    @property
+    def recommended_preserve_mono(self) -> bool | None:
+        return None
 
     @classmethod
     def options_key(cls) -> str:
@@ -162,7 +188,7 @@ class CameraBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def read(self) -> tuple[np.ndarray, float]:
+    def read(self) -> CapturedFrame:
         """Read a frame and return the image with a timestamp."""
         raise NotImplementedError
 

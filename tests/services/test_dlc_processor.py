@@ -1,12 +1,26 @@
+from __future__ import annotations
+
+import queue
+import threading
+
 import numpy as np
 import pytest
 
-# from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.config import DLCProcessorSettings
+
+# from dlclivegui.config import DLCProcessorSettings
+from dlclivegui.processors.processor_utils import ProcessorSpec
 from dlclivegui.services.dlc_processor import (
     DLCLiveProcessor,
     ProcessorStats,
+    WorkerState,
 )
+
+
+class _AliveThread:
+    def is_alive(self) -> bool:
+        return True
+
 
 # ---------------------------------------------------------------------
 # Tests
@@ -44,6 +58,104 @@ def test_worker_initializes_on_first_frame(qtbot, monkeypatch_dlclive, settings_
 
 
 @pytest.mark.unit
+def test_processor_spec_builds_in_worker_and_is_cleaned(
+    qtbot,
+    monkeypatch,
+    settings_model,
+):
+    """Build a ProcessorSpec in DLCLiveWorker and clean it on reset."""
+    from dlclivegui.services import dlc_processor as dlc_processor_module
+
+    built_processors = []
+    dlclive_instances = []
+
+    class WorkerBuiltProcessor:
+        PROCESSOR_NAME = "Worker-built test processor"
+
+        def __init__(self):
+            self.build_thread_name = threading.current_thread().name
+            self.stop_calls = 0
+            built_processors.append(self)
+
+        def process(self, pose, **kwargs):
+            return pose
+
+        def stop(self):
+            self.stop_calls += 1
+
+    class FakeRunner:
+        def get_pose(self, _processed_frame):
+            return np.array(
+                [[1.0, 2.0, 0.9]],
+                dtype=np.float32,
+            )
+
+    class FakeDLCLive:
+        def __init__(self, **options):
+            self.processor = options["processor"]
+            self.runner = FakeRunner()
+            self.pose = None
+            self.cfg = {}
+            self.init_called = False
+            dlclive_instances.append(self)
+
+        def init_inference(self, _frame):
+            self.init_called = True
+
+        def process_frame(self, frame):
+            return frame
+
+    monkeypatch.setattr(
+        dlc_processor_module,
+        "DLCLive",
+        FakeDLCLive,
+    )
+
+    proc = DLCLiveProcessor()
+    proc.configure(
+        settings_model,
+        processor_spec=ProcessorSpec(
+            cls=WorkerBuiltProcessor,
+        ),
+    )
+
+    frame = np.zeros(
+        (32, 32, 3),
+        dtype=np.uint8,
+    )
+
+    try:
+        with qtbot.waitSignal(
+            proc.initialized,
+            timeout=1500,
+        ) as blocker:
+            proc.enqueue_frame(frame, timestamp=1.0)
+
+        assert blocker.args == [True]
+        assert len(built_processors) == 1
+        assert len(dlclive_instances) == 1
+
+        built_processor = built_processors[0]
+        dlclive_instance = dlclive_instances[0]
+
+        assert built_processor.build_thread_name == "DLCLiveWorker"
+        assert proc._processor is built_processor
+        assert proc._processor_built_from_spec is True
+        assert dlclive_instance.processor is built_processor
+        assert dlclive_instance.init_called is True
+
+        proc.reset(reset_processor_plugin=True)
+
+        assert built_processor.stop_calls == 1
+        assert proc._processor is None
+        assert proc._processor_built_from_spec is False
+        assert proc._state == WorkerState.STOPPED
+
+    finally:
+        proc.shutdown()
+
+
+@pytest.mark.unit
 def test_worker_processes_frames(qtbot, monkeypatch_dlclive, settings_model):
     proc = DLCLiveProcessor()
     proc.configure(settings_model)
@@ -73,28 +185,36 @@ def test_worker_processes_frames(qtbot, monkeypatch_dlclive, settings_model):
         proc.reset()
 
 
-@pytest.mark.unit
-def test_queue_full_drops_frames(qtbot, monkeypatch_dlclive, settings_model):
+def test_enqueue_frame_drops_stale_when_queue_is_full(settings_model):
     proc = DLCLiveProcessor()
     proc.configure(settings_model)
 
     try:
-        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        proc._queue = queue.Queue(maxsize=1)
+        proc._worker_thread = _AliveThread()
+        proc._state = WorkerState.RUNNING
+        proc._stop_event.clear()
 
-        # Start the worker with the first frame
-        with qtbot.waitSignal(proc.initialized, timeout=1500):
-            proc.enqueue_frame(frame, 1.0)
+        frame1 = np.zeros((32, 32, 3), dtype=np.uint8)
+        frame2 = np.ones((32, 32, 3), dtype=np.uint8)
 
-        # Flood the 1-slot queue to force drops
-        for _ in range(50):
-            proc.enqueue_frame(frame, 2.0)
+        proc.enqueue_frame(frame1, 1.0)
+        proc.enqueue_frame(frame2, 2.0)
 
-        # Wait until we observe dropped frames
-        qtbot.waitUntil(lambda: proc._frames_dropped > 0, timeout=1500)
-        assert proc._frames_dropped > 0
+        stats = proc.get_stats()
+        assert stats.frames_enqueued == 2
+        assert stats.frames_dropped == 1
+        assert stats.queue_size == 1
+
+        queued_frame, queued_timestamp, _queued_at = proc._queue.get_nowait()
+        assert queued_timestamp == 2.0
+        np.testing.assert_array_equal(queued_frame, frame2)
 
     finally:
-        proc.reset()
+        proc._queue = None
+        proc._worker_thread = None
+        proc._state = WorkerState.STOPPED
+        proc._stop_event.clear()
 
 
 @pytest.mark.unit

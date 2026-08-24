@@ -1,4 +1,5 @@
 # tests/services/test_multicam_controller.py
+import numpy as np
 import pytest
 
 from dlclivegui.cameras.factory import CameraFactory
@@ -12,6 +13,7 @@ from dlclivegui.services.multi_camera_controller import (
     get_camera_id,
     get_display_id,
 )
+from dlclivegui.utils.timestamps import FrameTimestampMetadata
 
 
 @pytest.mark.unit
@@ -122,61 +124,6 @@ def test_initialization_failure(qtbot, monkeypatch):
 
 
 @pytest.mark.unit
-def test_controller_uses_stable_camera_id_not_display_id(qtbot, patch_factory):
-    mc = MultiCameraController()
-
-    cam = CameraSettings(
-        name="C1",
-        backend="gentl",
-        index=0,
-        fps=30.0,
-        enabled=True,
-        properties={
-            "gentl": {
-                "device_id": "serial:SER0",
-                "serial_number": "SER0",
-            }
-        },
-    ).apply_defaults()
-
-    stable_id = get_camera_id(cam)
-    display_id = get_display_id(cam)
-
-    assert stable_id == "gentl:serial:SER0"
-    assert display_id == "gentl:0"
-    assert stable_id != display_id
-
-    seen = []
-
-    def on_ready(mfd):
-        seen.append(mfd)
-
-    mc.frame_ready.connect(on_ready)
-
-    try:
-        with qtbot.waitSignal(mc.all_started, timeout=1500):
-            mc.start([cam])
-
-        qtbot.waitUntil(lambda: bool(seen), timeout=2000)
-
-        mfd = seen[-1]
-
-        assert mfd.source_camera_id == stable_id
-        assert stable_id in mfd.frames
-        assert stable_id in mfd.timestamps
-
-        assert display_id not in mfd.frames
-        assert display_id not in mfd.timestamps
-
-        assert mfd.display_ids is not None
-        assert mfd.display_ids[stable_id] == display_id
-
-    finally:
-        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
-            mc.stop(wait=True)
-
-
-@pytest.mark.unit
 def test_get_camera_id_prefers_stable_device_id():
     cam = CameraSettings(
         name="GenTL Cam",
@@ -202,6 +149,25 @@ def test_get_camera_id_falls_back_to_index_without_stable_identity():
     ).apply_defaults()
 
     assert get_camera_id(cam) == "opencv:index:2"
+
+
+@pytest.mark.unit
+def test_get_display_id_is_human_index_label():
+    cam = CameraSettings(
+        name="GenTL Cam",
+        backend="gentl",
+        index=3,
+        properties={
+            "gentl": {
+                "device_id": "serial:30220469",
+                "serial_number": "30220469",
+            }
+        },
+    ).apply_defaults()
+
+    assert get_camera_id(cam) == "gentl:serial:30220469"
+    assert get_display_id(cam) == "GenTL Cam"
+    assert get_camera_id(cam) != get_display_id(cam)
 
 
 @pytest.mark.unit
@@ -234,6 +200,23 @@ def test_trigger_role_from_settings_aliases(role, expected):
     ).apply_defaults()
 
     assert _trigger_role_from_settings(cam) == expected
+
+
+@pytest.mark.unit
+def test_get_display_id_falls_back_to_backend_index_without_name():
+    cam = CameraSettings(
+        name="",
+        backend="gentl",
+        index=3,
+        properties={
+            "gentl": {
+                "device_id": "serial:30220469",
+                "serial_number": "30220469",
+            }
+        },
+    ).apply_defaults()
+
+    assert get_display_id(cam) == "gentl:3"
 
 
 @pytest.mark.unit
@@ -345,6 +328,56 @@ def test_frame_ready_emits_frames_in_user_configured_order(qtbot, patch_factory)
         qtbot.waitUntil(lambda: bool(seen_orders), timeout=2500)
 
         assert seen_orders[-1] == expected_order
+
+    finally:
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_controller_uses_stable_camera_id_not_display_id(qtbot, patch_factory):
+    mc = MultiCameraController()
+
+    cam = CameraSettings(
+        name="C1",
+        backend="gentl",
+        index=0,
+        fps=30.0,
+        enabled=True,
+        properties={
+            "gentl": {
+                "device_id": "serial:SER0",
+                "serial_number": "SER0",
+            }
+        },
+    ).apply_defaults()
+
+    stable_id = get_camera_id(cam)
+    display_id = get_display_id(cam)
+
+    assert stable_id == "gentl:serial:SER0"
+    assert display_id == "C1"
+    assert stable_id != display_id
+
+    seen = []
+    mc.frame_ready.connect(seen.append)
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([cam])
+
+        qtbot.waitUntil(lambda: bool(seen), timeout=2000)
+
+        mfd = seen[-1]
+
+        assert mfd.source_camera_id == stable_id
+        assert stable_id in mfd.frames
+        assert stable_id in mfd.timestamps
+        assert display_id not in mfd.frames
+        assert display_id not in mfd.timestamps
+
+        assert mfd.display_ids is not None
+        assert mfd.display_ids[stable_id] == display_id
 
     finally:
         with qtbot.waitSignal(mc.all_stopped, timeout=2000):
@@ -466,5 +499,127 @@ def test_non_trigger_timeouts_are_fatal_after_retries(qtbot, monkeypatch):
 
     # Cleanup if still running.
     if mc.is_running():
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_recording_sink_receives_frames_when_enabled(qtbot, patch_factory):
+    mc = MultiCameraController()
+
+    cam = CameraSettings(
+        name="C",
+        backend="opencv",
+        index=0,
+        enabled=True,
+        properties={"opencv": {"device_id": "cam-0"}},
+    ).apply_defaults()
+
+    cam_id = get_camera_id(cam)
+    seen: list[tuple[str, tuple, float, object]] = []
+
+    def sink(camera_id, frame, timestamp, timestamp_metadata=None):
+        seen.append((camera_id, frame.shape, timestamp, timestamp_metadata))
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([cam])
+
+        # Disabled by default.
+        qtbot.wait(300)
+        assert seen == []
+
+        mc.set_recording_sink(sink)
+        mc.set_recording_frame_is_enabled(True)
+
+        qtbot.waitUntil(lambda: bool(seen), timeout=2000)
+
+        camera_id, shape, timestamp, timestamp_metadata = seen[-1]
+        assert camera_id == cam_id
+        assert isinstance(timestamp, float)
+        assert len(shape) in (2, 3)
+
+        mc.set_recording_frame_is_enabled(False)
+        count_after_disable = len(seen)
+
+        qtbot.wait(300)
+        assert len(seen) == count_after_disable
+
+    finally:
+        with qtbot.waitSignal(mc.all_stopped, timeout=2000):
+            mc.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_recording_sink_forwards_timestamp_metadata(qtbot, monkeypatch):
+    from dlclivegui.cameras.base import CapturedFrame
+    from dlclivegui.cameras.factory import CameraFactory
+
+    meta = FrameTimestampMetadata(
+        source="grab_result.GetTimeStamp",
+        backend="basler",
+        default_reported="seconds",
+        seconds=0.001,
+        raw_value=1_000_000,
+        raw_unit="ticks",
+        tick_frequency_hz=1_000_000_000.0,
+        kind="camera_clock",
+    )
+
+    class TimestampBackend:
+        waits_for_hardware_trigger = False
+
+        def __init__(self, settings):
+            self.settings = settings
+            self._count = 0
+
+        def open(self):
+            pass
+
+        def read(self):
+            self._count += 1
+            return CapturedFrame(
+                frame=np.zeros((10, 10), dtype=np.uint8),
+                software_timestamp=123.0 + self._count,
+                timestamp_metadata=meta,
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(CameraFactory, "create", staticmethod(lambda settings: TimestampBackend(settings)))
+
+    mc = MultiCameraController()
+    cam = CameraSettings(
+        name="C",
+        backend="basler",
+        index=0,
+        enabled=True,
+        properties={"basler": {"device_id": "0815-0000"}},
+    ).apply_defaults()
+
+    cam_id = get_camera_id(cam)
+    seen = []
+
+    def sink(camera_id, frame, timestamp, timestamp_metadata=None):
+        seen.append((camera_id, frame, timestamp, timestamp_metadata))
+
+    try:
+        with qtbot.waitSignal(mc.all_started, timeout=1500):
+            mc.start([cam])
+
+        # Recording is disabled by start(); enable the new sink path after cameras are running.
+        mc.set_recording_sink(sink)
+        mc.set_recording_frame_is_enabled(True)
+
+        qtbot.waitUntil(lambda: bool(seen), timeout=2000)
+
+        camera_id, frame, timestamp, timestamp_metadata = seen[-1]
+        assert camera_id == cam_id
+        assert frame.shape == (10, 10)
+        assert isinstance(timestamp, float)
+        assert timestamp_metadata is meta
+
+    finally:
         with qtbot.waitSignal(mc.all_stopped, timeout=2000):
             mc.stop(wait=True)

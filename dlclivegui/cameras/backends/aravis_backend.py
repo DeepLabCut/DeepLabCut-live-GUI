@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 from ...config import CameraSettings
-from ..base import CameraBackend, SupportLevel, register_backend
+from ..base import CameraBackend, CapturedFrame, SupportLevel, register_backend
 from ..factory import DetectedCamera
 
 LOG = logging.getLogger(__name__)
@@ -52,6 +52,8 @@ class AravisCameraBackend(CameraBackend):
         self._actual_width: int | None = None
         self._actual_height: int | None = None
         self._actual_fps: float | None = None
+        self._camera_pixel_format: str | None = None
+        self._actual_output_format: str | None = None
 
         self._camera = None
         self._stream = None
@@ -68,6 +70,16 @@ class AravisCameraBackend(CameraBackend):
     def actual_fps(self) -> float | None:
         """Return the actual frame rate of the camera after opening."""
         return self._actual_fps
+
+    @property
+    def actual_pixel_format(self) -> str | None:
+        """Camera/native pixel format requested/reported for Aravis."""
+        return self._camera_pixel_format or self._pixel_format
+
+    @property
+    def actual_output_format(self) -> str | None:
+        """Current Aravis backend emits BGR uint8 frames."""
+        return self._actual_output_format or "BGR8"
 
     @classmethod
     def is_available(cls) -> bool:
@@ -360,7 +372,7 @@ class AravisCameraBackend(CameraBackend):
 
         self._camera.start_acquisition()
 
-    def read(self) -> tuple[np.ndarray, float]:
+    def read(self) -> CapturedFrame:
         """Read a frame from the camera."""
         if self._camera is None or self._stream is None:
             raise RuntimeError("Aravis camera not initialized")
@@ -418,7 +430,7 @@ class AravisCameraBackend(CameraBackend):
             # Always push buffer back to stream
             self._stream.push_buffer(buffer)
 
-        return frame, timestamp
+        return CapturedFrame(frame=frame, software_timestamp=timestamp, timestamp_metadata=None)
 
     def stop(self) -> None:
         """Stop camera acquisition."""
@@ -615,10 +627,12 @@ class AravisCameraBackend(CameraBackend):
 
             if self._pixel_format in format_map:
                 self._camera.set_pixel_format(format_map[self._pixel_format])
+                self._camera_pixel_format = self._pixel_format
                 LOG.info(f"Pixel format set to '{self._pixel_format}'")
             else:
                 # Try setting as string
                 self._camera.set_pixel_format_from_string(self._pixel_format)
+                self._camera_pixel_format = self._pixel_format
                 LOG.info(f"Pixel format set to '{self._pixel_format}' (from string)")
         except Exception as e:
             LOG.warning(f"Failed to set pixel format '{self._pixel_format}': {e}")

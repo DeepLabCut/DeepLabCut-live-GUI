@@ -1,0 +1,558 @@
+from __future__ import annotations
+
+import logging
+import math
+import queue
+import threading
+import time
+from pathlib import Path
+
+import numpy as np
+
+from dlclivegui.config import CameraSettings, RecordingSettings
+from dlclivegui.services.multi_camera_controller import get_camera_id
+from dlclivegui.services.video_recorder import VideoRecorder
+from dlclivegui.utils.stats import RecorderStats
+from dlclivegui.utils.utils import build_run_dir, sanitize_name
+
+log = logging.getLogger(__name__)
+
+DISPATCH_STOP_TIMEOUT = 2.0
+DISPATCH_QUEUE_MAXSIZE = 4096
+
+_FRAME_SENTINEL = object()
+
+
+class RecordingManager:
+    """Handle multi-camera recording lifecycle and filenames."""
+
+    def __init__(self):
+        self._recorders: dict[str, VideoRecorder] = {}
+        self._session_dir: Path | None = None
+        self._run_dir: Path | None = None
+
+        self._lock = threading.RLock()
+        self._frame_queue: queue.Queue | None = None
+        self._dispatch_thread: threading.Thread | None = None
+        self._dispatch_accepting: bool = False
+        self._dispatch_sentinel_enqueued: bool = False
+
+        # Utility for operation on latest recording file context (e.g., for processor hooks)
+        self._last_recording_file_context: dict | None = None
+
+    @property
+    def is_active(self) -> bool:
+        with self._lock:
+            return bool(self._recorders)
+
+    @property
+    def recorders(self) -> dict[str, VideoRecorder]:
+        with self._lock:
+            return dict(self._recorders)
+
+    @property
+    def session_dir(self) -> Path | None:
+        with self._lock:
+            return self._session_dir
+
+    @property
+    def run_dir(self) -> Path | None:
+        with self._lock:
+            return self._run_dir
+
+    @staticmethod
+    def _backend_ns(cam: CameraSettings) -> dict:
+        backend = (cam.backend or "").lower()
+        props = cam.properties if isinstance(cam.properties, dict) else {}
+        ns = props.get(backend, {})
+        return ns if isinstance(ns, dict) else {}
+
+    @staticmethod
+    def _valid_fps(value) -> float | None:
+        try:
+            fps = float(value)
+        except (TypeError, ValueError):
+            return None
+
+        return fps if math.isfinite(fps) and fps > 0.0 else None
+
+    @classmethod
+    def _resolve_recording_fps(
+        cls,
+        cam: CameraSettings,
+        cam_id: str,
+        frame_rates: dict[str, float] | None,
+    ) -> float | None:
+        """Resolve writer FPS.
+
+        Prefer runtime measured FPS, then backend-probed detected_fps,
+        then explicit requested cam.fps. Auto/unknown returns None.
+        """
+        measured_fps = cls._valid_fps(frame_rates.get(cam_id) if frame_rates is not None else None)
+        if measured_fps is not None:
+            return measured_fps
+
+        detected_fps = cls._valid_fps(cls._backend_ns(cam).get("detected_fps"))
+        if detected_fps is not None:
+            return detected_fps
+
+        return cls._valid_fps(cam.fps)
+
+    def pop(self, cam_id: str, default=None) -> VideoRecorder | None:
+        with self._lock:
+            return self._recorders.pop(cam_id, default)
+
+    def _start_dispatcher(self) -> None:
+        with self._lock:
+            if self._dispatch_thread is not None and self._dispatch_thread.is_alive():
+                return
+
+            self._frame_queue = queue.Queue(maxsize=DISPATCH_QUEUE_MAXSIZE)
+            self._dispatch_accepting = True
+            self._dispatch_sentinel_enqueued = False
+            self._dispatch_thread = threading.Thread(
+                target=self._dispatch_loop,
+                name="RecordingManagerDispatcher",
+                daemon=True,
+            )
+            self._dispatch_thread.start()
+
+    def _stop_dispatcher(
+        self,
+        timeout: float = DISPATCH_STOP_TIMEOUT,
+    ) -> bool:
+        with self._lock:
+            q = self._frame_queue
+            t = self._dispatch_thread
+
+            if t is None:
+                self._frame_queue = None
+                self._dispatch_accepting = False
+                self._dispatch_sentinel_enqueued = False
+                return True
+
+            # Establish the stop boundary while holding the same lock used
+            # by write_frame(). No new frame can be accepted after this.
+            self._dispatch_accepting = False
+
+            should_enqueue_sentinel = not self._dispatch_sentinel_enqueued
+            self._dispatch_sentinel_enqueued = True
+
+        if should_enqueue_sentinel and q is not None:
+            try:
+                q.put(
+                    _FRAME_SENTINEL,
+                    block=True,
+                    timeout=timeout,
+                )
+            except queue.Full:
+                # No sentinel was inserted, so allow a later stop attempt
+                # to retry once the dispatcher has freed queue capacity.
+                with self._lock:
+                    if self._dispatch_thread is t:
+                        self._dispatch_sentinel_enqueued = False
+
+                log.warning(
+                    "Could not enqueue recording dispatcher sentinel within %.1fs; preserving live dispatcher state",
+                    timeout,
+                )
+                return False
+
+        t.join(timeout=timeout)
+
+        if t.is_alive():
+            log.warning(
+                "Recording frame dispatcher did not stop within %.1fs; preserving its queue and thread state",
+                timeout,
+            )
+            return False
+
+        with self._lock:
+            # Do not clear a newer dispatcher if one was somehow started.
+            if self._dispatch_thread is t:
+                self._dispatch_thread = None
+                self._frame_queue = None
+                self._dispatch_accepting = False
+                self._dispatch_sentinel_enqueued = False
+
+        return True
+
+    def _dispatch_loop(self) -> None:
+        with self._lock:
+            q = self._frame_queue
+
+        if q is None:
+            return
+
+        while True:
+            item = q.get()
+
+            try:
+                if item is _FRAME_SENTINEL:
+                    return
+
+                (
+                    cam_id,
+                    frame,
+                    timestamp,
+                    timestamp_metadata,
+                ) = item
+
+                self._write_frame_now(
+                    cam_id,
+                    frame,
+                    timestamp,
+                    timestamp_metadata,
+                )
+
+            except Exception:
+                log.exception("Unhandled error dispatching a recording frame")
+
+            finally:
+                try:
+                    q.task_done()
+                except ValueError:
+                    log.warning("Recording dispatcher called task_done() too many times")
+
+    def start_all(
+        self,
+        recording: RecordingSettings,
+        active_cams: list[CameraSettings],
+        current_frames: dict[str, np.ndarray],
+        *,
+        frame_rates: dict[str, float] | None = None,
+        session_name: str = "session",
+        use_timestamp: bool = True,
+        all_or_nothing: bool = False,
+    ) -> Path | None:
+        """Start recording for all active cameras.
+
+        Record into <directory>/<session_name>/<unique_run_dir>/
+
+        Args:
+            recording: Recording settings including output directory and codec.
+            active_cams: List of active camera settings to record.
+            current_frames: Dict of current frames by camera ID for size reference.
+            session_name: Name of the recording session (used in directory name).
+            use_timestamp: Whether to use timestamp-based run directories instead of indexed.
+            all_or_nothing: If True, stop all and return None if any recorder fails to start.
+
+        Returns:
+            run_dir if at least one recorder started, else None.
+        """
+        with self._lock:
+            if self._recorders:
+                return self._run_dir
+
+        if not active_cams:
+            return None
+
+        base_path = recording.output_path()
+        base_stem = base_path.stem
+
+        # create session/run directories
+        session_safe = sanitize_name(session_name, fallback="session")
+        session_dir = base_path.parent / session_safe
+        try:
+            run_dir = build_run_dir(session_dir, use_timestamp=use_timestamp)
+        except Exception as exc:
+            log.error("Failed to create run dir: %s", exc)
+            return None
+
+        with self._lock:
+            self._session_dir = session_dir
+            self._run_dir = run_dir
+
+        started_any = False
+
+        for cam in active_cams:
+            cam_id = get_camera_id(cam)
+            cam_filename = f"{base_stem}_{cam.backend}_cam{cam.index}{base_path.suffix}"
+            cam_path = run_dir / cam_filename
+
+            frame = current_frames.get(cam_id)
+            frame_size = (frame.shape[0], frame.shape[1]) if frame is not None else None
+            recorder_fps = self._resolve_recording_fps(cam, cam_id, frame_rates)
+            writer_options = recording.writegear_overrides() or None
+
+            log.debug(
+                "Starting recorder %s -> %s frame_size=%s requested_fps=%s detected_fps=%s "
+                "recorder_fps=%s fast_encoding=%s writer_options=%s",
+                cam_id,
+                cam_path,
+                frame_size,
+                getattr(cam, "fps", None),
+                self._backend_ns(cam).get("detected_fps"),
+                f"{recorder_fps:.3f}" if recorder_fps else "auto/fallback",
+                bool(getattr(recording, "fast_encoding", False)),
+                writer_options,
+            )
+
+            recorder = VideoRecorder(
+                cam_path,
+                frame_size=frame_size,
+                frame_rate=recorder_fps,
+                codec=recording.codec,
+                crf=recording.crf,
+                convert_grayscale_to_rgb=not bool(getattr(cam, "preserve_mono", False)),
+                writer_options_overrides=recording.writegear_overrides() or None,
+            )
+            try:
+                recorder.start()
+                with self._lock:
+                    self._recorders[cam_id] = recorder
+                started_any = True
+                log.info("Started recording %s -> %s", cam_id, cam_path)
+            except Exception as exc:
+                log.error("Failed to start recording for %s: %s", cam_id, exc)
+                if all_or_nothing:
+                    self.stop_all()
+                    return None
+
+        if not started_any:
+            with self._lock:
+                self._recorders.clear()
+                self._session_dir = None
+                self._run_dir = None
+            return None
+
+        with self._lock:
+            self._last_recording_file_context = self._build_recording_file_context_unlocked()
+
+        return run_dir
+
+    def stop_all(self) -> bool:
+        if not self._stop_dispatcher():
+            log.warning("Recording stop is incomplete, frame dispatcher is still draining.")
+            return False
+
+        with self._lock:
+            recorders = list(self._recorders.items())
+            run_dir = self._run_dir
+            session_dir = self._session_dir
+            self._last_recording_file_context = self._build_recording_file_context_unlocked(
+                recorders=recorders, run_dir=run_dir, session_dir=session_dir
+            )
+            self._recorders.clear()
+
+        for cam_id, rec in recorders:
+            try:
+                rec.stop()
+                log.info("Stopped recording %s", cam_id)
+            except Exception as exc:
+                log.warning("Error stopping recorder for %s: %s", cam_id, exc)
+
+        with self._lock:
+            self._session_dir = None
+            self._run_dir = None
+
+        return True
+
+    def _write_frame_now(
+        self, cam_id: str, frame: np.ndarray, timestamp: float | None = None, timestamp_metadata: object | None = None
+    ) -> None:
+        with self._lock:
+            rec = self._recorders.get(cam_id)
+
+        if not rec or not rec.is_running:
+            return
+
+        try:
+            rec.write(
+                frame,
+                timestamp=timestamp if timestamp is not None else time.time(),
+                timestamp_metadata=timestamp_metadata,
+            )
+        except Exception as exc:
+            log.warning(
+                "Failed to write frame for %s: %s: %s frame_shape=%s dtype=%s. Removing recorder.",
+                cam_id,
+                type(exc).__name__,
+                str(exc) or repr(exc),
+                getattr(frame, "shape", None),
+                getattr(frame, "dtype", None),
+            )
+
+            with self._lock:
+                rec = self._recorders.pop(cam_id, None)
+
+            if rec is not None:
+                try:
+                    rec.stop()
+                except Exception:
+                    log.exception("Failed to stop recorder for %s after write error.", cam_id)
+
+    def write_frame(
+        self,
+        cam_id: str,
+        frame: np.ndarray,
+        timestamp: float | None = None,
+        timestamp_metadata: object | None = None,
+    ) -> None:
+        payload = (
+            cam_id,
+            frame,
+            timestamp if timestamp is not None else time.time(),
+            timestamp_metadata,
+        )
+
+        with self._lock:
+            if cam_id not in self._recorders:
+                return
+
+            if self._frame_queue is None or self._dispatch_thread is None or not self._dispatch_thread.is_alive():
+                self._start_dispatcher()
+
+            q = self._frame_queue
+
+            if q is None or not self._dispatch_accepting:
+                return
+
+            try:
+                q.put_nowait(payload)
+                return
+            except queue.Full:
+                pass
+
+        log.warning(
+            "Recording manager frame queue full; dropping frame for %s. frame_shape=%s dtype=%s",
+            cam_id,
+            getattr(frame, "shape", None),
+            getattr(frame, "dtype", None),
+        )
+
+    def flush(self, timeout: float = 2.0) -> bool:
+        """Wait until all currently queued recording frames have been dispatched.
+
+        Returns True if the queue drained before timeout, False otherwise.
+        """
+        with self._lock:
+            q = self._frame_queue
+
+        if q is None:
+            return True
+
+        done = threading.Event()
+
+        def waiter() -> None:
+            q.join()
+            done.set()
+
+        t = threading.Thread(target=waiter, name="RecordingManagerFlush", daemon=True)
+        t.start()
+        return done.wait(timeout)
+
+    def get_stats_summary(self) -> str:
+        totals = {
+            "enqueued": 0,
+            "written": 0,
+            "dropped": 0,
+            "queue": 0,
+            "buffer": 0,
+            "backlog": 0,
+            "write_fps": 0.0,
+            "max_latency": 0.0,
+            "avg_latencies": [],
+        }
+
+        with self._lock:
+            recorders = list(self._recorders.values())
+
+        for rec in recorders:
+            stats: RecorderStats | None = rec.get_stats()
+            if not stats:
+                continue
+            totals["enqueued"] += stats.frames_enqueued
+            totals["written"] += stats.frames_written
+            totals["dropped"] += stats.dropped_frames
+            totals["queue"] += stats.queue_size
+            totals["buffer"] += stats.buffer_size
+            totals["backlog"] += stats.backlog_frames
+            totals["write_fps"] += stats.write_fps
+            totals["max_latency"] = max(totals["max_latency"], stats.last_latency)
+            totals["avg_latencies"].append(stats.average_latency)
+
+        if len(recorders) == 1:
+            rec = recorders[0]
+            stats = rec.get_stats()
+            if stats:
+                from dlclivegui.utils.stats import format_recorder_stats
+
+                return format_recorder_stats(stats)
+            return "Recording..."
+        else:
+            avg = sum(totals["avg_latencies"]) / len(totals["avg_latencies"]) if totals["avg_latencies"] else 0.0
+
+            buffer = totals["buffer"]
+            queue_text = f"{totals['queue']}/{buffer}" if buffer > 0 else str(totals["queue"])
+            fill_pct = (100.0 * totals["queue"] / buffer) if buffer > 0 else 0.0
+
+            return (
+                f"{len(recorders)} cams | {totals['written']}/{totals['enqueued']} frames | "
+                f"writer {totals['write_fps']:.1f} fps | "
+                f"latency {totals['max_latency'] * 1000:.1f}ms (avg {avg * 1000:.1f}ms) | "
+                f"queue {queue_text} ({fill_pct:.0f}%) | "
+                f"backlog {totals['backlog']} | "
+                f"dropped {totals['dropped']}"
+            )
+
+    def _build_recording_file_context_unlocked(
+        self,
+        recorders: list[tuple[str, VideoRecorder]] | None = None,
+        run_dir: Path | None = None,
+        session_dir: Path | None = None,
+    ) -> dict:
+        """Build a file context for active or recently stopped recorders.
+
+        Must be called with self._lock held if using internal state.
+        """
+        if recorders is None:
+            recorders = list(self._recorders.items())
+
+        if run_dir is None:
+            run_dir = self._run_dir
+
+        if session_dir is None:
+            session_dir = self._session_dir
+
+        video_files: dict[str, Path] = {}
+        timestamp_json_files: dict[str, Path] = {}
+
+        for cam_id, recorder in recorders:
+            video_path = getattr(recorder, "output_path", None)
+            timestamp_path = getattr(recorder, "timestamp_json_path", None)
+
+            if video_path is not None:
+                video_files[str(cam_id)] = Path(video_path)
+
+            if timestamp_path is not None:
+                timestamp_json_files[str(cam_id)] = Path(timestamp_path)
+
+        return {
+            "run_dir": run_dir,
+            "session_dir": session_dir,
+            "video_files": video_files,
+            "timestamp_json_files": timestamp_json_files,
+        }
+
+    def get_recording_file_context(self) -> dict:
+        """Return current or last recording file context.
+
+        This is used by optional custom processors to save compatibility sidecars
+        next to the videos after RecordingManager.stop_all() has finalized them.
+        """
+        with self._lock:
+            if self._recorders:
+                context = self._build_recording_file_context_unlocked()
+                self._last_recording_file_context = context
+                return dict(context)
+
+            if self._last_recording_file_context is not None:
+                return dict(self._last_recording_file_context)
+
+            return {
+                "run_dir": self._run_dir,
+                "session_dir": self._session_dir,
+                "video_files": {},
+                "timestamp_json_files": {},
+            }

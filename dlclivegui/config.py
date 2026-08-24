@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+if TYPE_CHECKING:
+    from dlclivegui.utils.writegear_options import WriteGearOptions
 
 Rotation = Literal[0, 90, 180, 270]
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
@@ -20,13 +23,27 @@ TriggerStrobeOperation = Literal["Exposure", "FixedDuration"]
 # Global settings
 ## GUI
 GUI_MAX_DISPLAY_FPS: float = 30.0
+## Recording
+DEFAULT_RECORDING_FPS: float = 30.0
+ALLOWED_VIDEO_CONTAINERS: set[str] = {"mp4", "avi", "mov"}
+DEFAULT_RECORDING_CONTAINER: str = "mp4"
+RECORD_STOP_RETRY_INTERVAL: float = 0.25
+RECORD_STOP_RETRY_TIMEOUT: float = 5.0
 
 
 ## Debug
 ### Timing logs
 SINGLE_CAMERA_WORKER_DO_LOG_TIMING: bool = False
 MULTI_CAMERA_WORKER_DO_LOG_TIMING: bool = False
+REC_DO_LOG_TIMING: bool = False
+DLC_DO_LOG_TIMING: bool = False
+### Trigger debug logging
+DEBUG_TRIGGER_LOGS = False
+### Extra logs for DLC lifecycle (model loading, etc)
+DLC_LIFECYCLE_EXTRA_LOGS: bool = False
 # MAIN_WINDOW_DO_LOG_TIMING: bool = False
+#### Backends
+BASLER_DO_LOG_TIMING: bool = False
 
 
 class CameraSettings(BaseModel):
@@ -42,6 +59,7 @@ class CameraSettings(BaseModel):
 
     exposure: int = 0  # 0=auto else µs
     gain: float = 0.0  # 0.0=auto else value
+    preserve_mono: bool = False  # if True, preserve mono images as mono (not BGR) when reading
 
     crop_x0: int = 0
     crop_y0: int = 0
@@ -65,6 +83,7 @@ class CameraSettings(BaseModel):
             f"  fps={self.fps}, size={self.width or 'auto'}x{self.height or 'auto'}, "
             f"exposure={self.exposure or 'auto'}, gain={self.gain or 'auto'}\n"
             f"  rotation={self.rotation}, crop={crop}\n"
+            f"  preserve_mono={self.preserve_mono}, max_devices={self.max_devices}\n"
             f"]"
         )
 
@@ -497,9 +516,10 @@ class RecordingSettings(BaseModel):
     enabled: bool = False
     directory: str = Field(default_factory=lambda: str(Path.home() / "Videos" / "deeplabcut-live"))
     filename: str = "session.mp4"
-    container: Literal["mp4", "avi", "mov"] = "mp4"
+    container: Literal["mp4", "avi", "mov"] = DEFAULT_RECORDING_CONTAINER
     codec: str = "libx264"
     crf: int = Field(default=23, ge=0, le=51)
+    fast_encoding: bool = False
 
     def output_path(self) -> Path:
         """Return the absolute output path for recordings."""
@@ -513,17 +533,20 @@ class RecordingSettings(BaseModel):
             filename = name.with_suffix(f".{self.container}")
         return directory / filename
 
-    def writegear_options(self, fps: float) -> dict[str, Any]:
+    @field_validator("codec", mode="before")
+    @classmethod
+    def _normalize_codec(cls, v) -> str:
+        return str(v or "").strip() or "libx264"
+
+    def writegear_overrides(self) -> WriteGearOptions | None:
         """Return compression parameters for WriteGear."""
 
-        fps_value = float(fps) if fps else 30.0
-        codec_value = (self.codec or "libx264").strip() or "libx264"
-        crf_value = int(self.crf) if self.crf is not None else 23
-        return {
-            "-input_framerate": f"{fps_value:.6f}",
-            "-vcodec": codec_value,
-            "-crf": str(crf_value),
-        }
+        if self.fast_encoding and self.codec in ("libx264", "libx265"):
+            return {
+                "-preset": "ultrafast",
+                "-tune": "zerolatency",
+            }
+        return {}
 
 
 class ApplicationSettings(BaseModel):

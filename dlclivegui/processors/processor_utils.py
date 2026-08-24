@@ -5,11 +5,30 @@ import inspect
 import logging
 import pkgutil
 import sys
+from dataclasses import dataclass, field
 from importlib import import_module
 from importlib.resources import as_file, files
 from pathlib import Path
+from typing import Any
+
+from dlclivegui.config import DLC_LIFECYCLE_EXTRA_LOGS
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ProcessorSpec:
+    cls: type
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        return getattr(self.cls, "PROCESSOR_NAME", self.cls.__name__)
+
+    def build(self) -> Any:
+        """Instantiate the processor class with the provided kwargs."""
+        log_processor_context(f"ProcessorSpec.build: {self.name} with kwargs={self.kwargs}", logger)
+        return self.cls(**self.kwargs)
 
 
 def default_processors_dir() -> str:
@@ -17,7 +36,104 @@ def default_processors_dir() -> str:
         return str(path)
 
 
-def scan_processor_folder(folder_path):
+def _processor_base_class():
+    from dlclive.processor import Processor
+
+    return Processor
+
+
+def _is_processor_subclass(
+    obj,
+    *,
+    include_base: bool = False,
+) -> bool:
+    """Return whether obj is a selectable Processor subclass."""
+    if not inspect.isclass(obj):
+        return False
+
+    try:
+        processor_base = _processor_base_class()
+    except Exception:
+        logger.exception("Could not import dlclive.Processor")
+        return False
+
+    try:
+        if obj is processor_base:
+            return bool(include_base)
+
+        if not issubclass(obj, processor_base):
+            return False
+
+        # Check only the class itself, not inherited values. This lets concrete
+        # subclasses of a non-discoverable base remain discoverable by default.
+        # getattr would return the inherited value.
+        if obj.__dict__.get("PROCESSOR_DISCOVERABLE", True) is False:
+            return False
+
+        return True
+    except Exception:
+        logger.exception(
+            "Error checking whether %r is a Processor subclass",
+            obj,
+        )
+        return False
+
+
+def _add_processor_results(
+    target: dict[str, dict],
+    processors: dict[str, dict],
+    *,
+    file_name: str,
+    file_path: str,
+) -> None:
+    """Normalize discovered processors and add them to a scan result."""
+    for class_name, processor_info in processors.items():
+        key = f"{file_name}::{class_name}"
+        info = dict(processor_info)
+        info.update(
+            {
+                "file": file_name,
+                "class_name": class_name,
+                "file_path": file_path,
+            }
+        )
+        target[key] = info
+
+
+def _processor_info_from_class(cls, fallback_name: str) -> dict:
+    return {
+        "class": cls,
+        "name": getattr(cls, "PROCESSOR_NAME", fallback_name),
+        "description": getattr(cls, "PROCESSOR_DESCRIPTION", ""),
+        "params": getattr(cls, "PROCESSOR_PARAMS", {}),
+    }
+
+
+def discover_processor_classes(module, *, only_defined_in_module: bool = True) -> dict[str, dict]:
+    """Discover dlclive.Processor subclasses in a module.
+
+    Includes indirect subclasses of Processor.
+
+    Args:
+        module: Imported Python module.
+        only_defined_in_module: If True, ignore Processor subclasses imported
+            from other modules to avoid duplicate registry entries.
+    """
+    processors: dict[str, dict] = {}
+
+    for name, obj in inspect.getmembers(module, inspect.isclass):
+        if only_defined_in_module and getattr(obj, "__module__", None) != module.__name__:
+            continue
+
+        if not _is_processor_subclass(obj):
+            continue
+
+        processors[name] = _processor_info_from_class(obj, name)
+
+    return processors
+
+
+def scan_processor_folder(folder_path: str | Path) -> dict[str, dict]:
     all_processors = {}
     folder = Path(folder_path)
 
@@ -27,23 +143,21 @@ def scan_processor_folder(folder_path):
 
         try:
             processors = load_processors_from_file(py_file)
-            for class_or_id, processor_info in processors.items():
-                key = f"{py_file.name}::{class_or_id}"
-                processor_info["file"] = py_file.name
-                processor_info["class_name"] = class_or_id
-                processor_info["file_path"] = str(py_file)
-                all_processors[key] = processor_info
+            _add_processor_results(
+                all_processors,
+                processors,
+                file_name=py_file.name,
+                file_path=str(py_file),
+            )
         except Exception:
             logger.exception(f"Error loading {py_file}")
 
     return all_processors
 
 
-def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[str | dict]:
+def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[str, dict]:
     """
     Discover and load processor classes from a package namespace.
-    Returns a dict keyed as 'module.py::ClassName' with the same
-    structure you use today.
     """
     all_processors: dict[str, dict] = {}
 
@@ -59,38 +173,13 @@ def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[
             continue
         try:
             mod = import_module(mod_name)
-
-            # Prefer module-level registry function if present
-            if hasattr(mod, "get_available_processors"):
-                processors = mod.get_available_processors()
-            else:
-                # Fallback: scan for dlclive.Processor subclasses
-                from dlclive import Processor
-
-                processors = {}
-                for attr_name in dir(mod):
-                    obj = getattr(mod, attr_name)
-                    try:
-                        if isinstance(obj, type) and obj is not Processor and issubclass(obj, Processor):
-                            processors[attr_name] = {
-                                "class": obj,
-                                "name": getattr(obj, "PROCESSOR_NAME", attr_name),
-                                "description": getattr(obj, "PROCESSOR_DESCRIPTION", ""),
-                                "params": getattr(obj, "PROCESSOR_PARAMS", {}),
-                            }
-                    except Exception:
-                        # Non-class or weird metaclass; ignore
-                        pass
-
-            # Normalize into your “file::class” shape
-            module_file = mod.__name__.split(".")[-1] + ".py"
-            for class_name, info in processors.items():
-                key = f"{module_file}::{class_name}"
-                info = dict(info)  # copy
-                info["file"] = module_file
-                info["class_name"] = class_name
-                info["file_path"] = mod.__file__ or ""
-                all_processors[key] = info
+            processors = discover_processor_classes(mod)
+            _add_processor_results(
+                all_processors,
+                processors,
+                file_name=mod_name.split(".")[-1] + ".py",
+                file_path=getattr(mod, "__file__", ""),
+            )
 
         except Exception:
             logger.exception(f"Error importing processor module '{mod_name}'")
@@ -98,7 +187,7 @@ def scan_processor_package(package_name: str = "dlclivegui.processors") -> dict[
     return all_processors
 
 
-def load_processors_from_file(file_path: str | Path):
+def load_processors_from_file(file_path: str | Path) -> dict[str, dict]:
     """
     Load all processor classes from a Python file.
 
@@ -123,34 +212,8 @@ def load_processors_from_file(file_path: str | Path):
         sys.modules[module_name] = module  # Make visible during import for intra-module imports
         spec.loader.exec_module(module)
 
-        # Preferred path: the module exposes get_available_processors()
-        if hasattr(module, "get_available_processors"):
-            processors = module.get_available_processors()
-            if not isinstance(processors, dict):
-                raise TypeError(f"{file_path}: get_available_processors() must return a dict, got {type(processors)}")
-            return processors
-
         # Fallback path: discover subclasses of dlclive.Processor
-        from dlclive import Processor
-
-        processors: dict[str, dict] = {}
-        for name, obj in inspect.getmembers(module, inspect.isclass):
-            if obj is Processor:
-                continue
-            # Guard: module might define other classes; only include Processor subclasses
-            try:
-                if issubclass(obj, Processor):
-                    processors[name] = {
-                        "class": obj,
-                        "name": getattr(obj, "PROCESSOR_NAME", name),
-                        "description": getattr(obj, "PROCESSOR_DESCRIPTION", ""),
-                        "params": getattr(obj, "PROCESSOR_PARAMS", {}),
-                    }
-            except Exception:
-                # Some "classes" can fail issubclass checks; ignore safely
-                continue
-
-        return processors
+        return discover_processor_classes(module)
 
     except Exception:
         # Full traceback helps a ton when a plugin fails to import
@@ -158,7 +221,29 @@ def load_processors_from_file(file_path: str | Path):
         return {}
 
 
-def instantiate_from_scan(processors_dict, processor_key, **kwargs):
+def create_spec_from_scan(processors_dict, processor_key, **kwargs) -> ProcessorSpec:
+    """Create a ProcessorSpec from scan_processor_folder results, without instantiating the processor yet."""
+    if processor_key not in processors_dict:
+        available = ", ".join(processors_dict.keys())
+        raise ValueError(f"Unknown processor '{processor_key}'. Available: {available}")
+
+    processor_info = processors_dict[processor_key]
+    processor_class = processor_info["class"]
+    return ProcessorSpec(cls=processor_class, kwargs=kwargs)
+
+
+def processor_builds_in_worker(processor_class: type) -> bool:
+    """
+    Return True if this processor class requests construction inside DLCLiveWorker.
+
+    Processors opt in by defining:
+
+        PROCESSOR_BUILD_IN_WORKER = True
+    """
+    return bool(getattr(processor_class, "PROCESSOR_BUILD_IN_WORKER", False))
+
+
+def instantiate_from_scan(processors_dict: dict[str, dict], processor_key: str, **kwargs):
     """
     Instantiate a processor from scan_processor_folder results.
 
@@ -202,3 +287,22 @@ def display_processor_info(processors):
             print(f"      - {param_name} ({param_info['type']})")
             print(f"        Default: {param_info['default']}")
             print(f"        {param_info['description']}")
+
+
+def log_processor_context(label: str, custom_logger: logging.Logger = logger):
+    if not DLC_LIFECYCLE_EXTRA_LOGS:
+        return
+
+    import multiprocessing as mp
+    import os
+    import threading
+    import time
+
+    custom_logger.info(
+        "[CUSTOM PROCESSOR] %s | pid=%s process=%s thread=%s time=%.6f",
+        label,
+        os.getpid(),
+        mp.current_process().name,
+        threading.current_thread().name,
+        time.time(),
+    )

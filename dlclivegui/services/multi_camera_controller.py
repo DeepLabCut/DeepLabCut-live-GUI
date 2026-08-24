@@ -7,26 +7,25 @@ import logging
 import time
 from dataclasses import dataclass
 from functools import partial
-from threading import Event, Lock
+from threading import Lock
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 
-from dlclivegui.cameras import CameraFactory
-from dlclivegui.cameras.base import CameraBackend
 from dlclivegui.cameras.factory import camera_identity_key
 
 # from dlclivegui.config import CameraSettings
 from dlclivegui.config import (
     GUI_MAX_DISPLAY_FPS,
     MULTI_CAMERA_WORKER_DO_LOG_TIMING,
-    SINGLE_CAMERA_WORKER_DO_LOG_TIMING,
     CameraSettings,
     CameraTriggerSettings,
 )
 from dlclivegui.utils.stats import WorkerTimingStats
+
+from .camera_controller import SingleCameraWorker
 
 LOGGER = logging.getLogger(__name__)
 
@@ -45,184 +44,24 @@ class MultiFrameData:
     display_ids: dict[str, str] = None  # camera_id -> display_id (for labeling)
 
 
-class SingleCameraWorker(QObject):
-    """Worker for a single camera in multi-camera mode."""
-
-    frame_captured = Signal(str, object, float)  # camera_id, frame, timestamp
-    error_occurred = Signal(str, str)  # camera_id, error_message
-    started = Signal(str)  # camera_id
-    stopped = Signal(str)  # camera_id
-
-    def __init__(self, camera_id: str, settings: CameraSettings):
-        super().__init__()
-        self._camera_id = camera_id
-        self._settings = copy.deepcopy(settings)
-        self._stop_event = Event()
-        self._backend: CameraBackend | None = None
-        self._max_consecutive_errors = 5
-        self._retry_delay = 0.1
-        self._trigger_timeout_delay = 0.05
-
-        self._trigger_wait_log_interval = 2.0
-        self._last_trigger_wait_log = 0.0
-        self._trigger_wait_suppressed_count = 0
-
-        # Performance logs
-        self._timing = WorkerTimingStats(
-            camera_id, logger=LOGGER, log_interval=1.0, enabled=SINGLE_CAMERA_WORKER_DO_LOG_TIMING
-        )
-
-    @Slot()
-    def run(self) -> None:
-        self._stop_event.clear()
-
-        try:
-            LOGGER.debug(
-                "[Worker %s] before create: backend=%s index=%s properties=%s",
-                self._camera_id,
-                self._settings.backend,
-                self._settings.index,
-                self._settings.properties,
-            )
-
-            self._backend = CameraFactory.create(self._settings)
-
-            LOGGER.debug(
-                "[Worker %s] after create: backend=%s index=%s properties=%s",
-                self._camera_id,
-                self._backend.settings.backend,
-                self._backend.settings.index,
-                self._backend.settings.properties,
-            )
-
-            self._backend.open()
-
-            if self._stop_event.is_set():
-                try:
-                    self._backend.close()
-                except Exception:
-                    LOGGER.debug(
-                        "[Worker %s] failed to close backend during early stop", self._camera_id, exc_info=True
-                    )
-                finally:
-                    self._backend = None
-
-                self.stopped.emit(self._camera_id)
-                return
-
-        except Exception as exc:
-            LOGGER.exception(f"Failed to initialize camera {self._camera_id}", exc_info=exc)
-            self.error_occurred.emit(self._camera_id, f"Failed to initialize camera: {exc}")
-            self.stopped.emit(self._camera_id)
-            return
-
-        self.started.emit(self._camera_id)
-        consecutive_errors = 0
-
-        while not self._stop_event.is_set():
-            try:
-                with self._timing.measure("Single.read"):
-                    frame, timestamp = self._backend.read()
-                if frame is None or frame.size == 0:
-                    consecutive_errors += 1
-                    if consecutive_errors >= self._max_consecutive_errors:
-                        self.error_occurred.emit(
-                            self._camera_id, "Too many empty frames.\nWas the device disconnected ?"
-                        )
-                        break
-                    if self._stop_event.wait(self._retry_delay):
-                        break
-                    continue
-
-                consecutive_errors = 0
-                with self._timing.measure("Single.emit.frame_captured"):
-                    self.frame_captured.emit(self._camera_id, frame, timestamp)
-
-                self._timing.note_frame()
-                self._timing.maybe_log()
-
-            except TimeoutError as exc:
-                self._timing.note_timeout()
-                self._timing.maybe_log()
-                if self._stop_event.is_set():
-                    break
-
-                # In hardware-trigger mode, a timeout usually means:
-                # "no trigger pulse arrived during this poll interval".
-                # This is expected and should not count as a camera failure.
-                if bool(getattr(self._backend, "waits_for_hardware_trigger", False)):
-                    self._log_trigger_wait_throttled(exc)
-                    consecutive_errors = 0
-
-                    if self._stop_event.wait(self._trigger_timeout_delay):
-                        break  # Stop event set during wait
-                    continue
-
-                consecutive_errors += 1
-                if consecutive_errors >= self._max_consecutive_errors:
-                    self.error_occurred.emit(self._camera_id, f"Camera read timeout: {exc}")
-                    break
-                if self._stop_event.wait(self._retry_delay):
-                    break
-                continue
-
-            except Exception as exc:
-                self._timing.note_error()
-                self._timing.maybe_log()
-                consecutive_errors += 1
-                if self._stop_event.is_set():
-                    break
-                if consecutive_errors >= self._max_consecutive_errors:
-                    self.error_occurred.emit(self._camera_id, f"Camera read error: {exc}")
-                    break
-                if self._stop_event.wait(self._retry_delay):
-                    break
-                continue
-
-        # Cleanup
-        if self._backend is not None:
-            try:
-                self._backend.close()
-            except Exception:
-                pass
-        self.stopped.emit(self._camera_id)
-
-    def stop(self) -> None:
-        self._stop_event.set()
-
-    def _log_trigger_wait_throttled(self, exc: BaseException) -> None:
-        """Log hardware-trigger wait timeouts at a controlled rate.
-
-        In trigger-waiting modes, read timeouts are expected polling misses.
-        Without throttling, the log can be flooded at ~10-20 messages/sec/camera.
-        """
-        now = time.monotonic()
-
-        if now - self._last_trigger_wait_log < self._trigger_wait_log_interval:
-            self._trigger_wait_suppressed_count += 1
-            return
-
-        suppressed = self._trigger_wait_suppressed_count
-        self._trigger_wait_suppressed_count = 0
-        self._last_trigger_wait_log = now
-
-        if suppressed:
-            LOGGER.debug(
-                "[Worker %s] waiting for hardware trigger: %s (suppressed %d repeated timeout logs)",
-                self._camera_id,
-                exc,
-                suppressed,
-            )
-        else:
-            LOGGER.debug(
-                "[Worker %s] waiting for hardware trigger: %s",
-                self._camera_id,
-                exc,
-            )
-
-
 def get_display_id(settings: CameraSettings) -> str:
-    return f"{settings.backend}:{settings.index}"
+    """Return the human-friendly camera label used for GUI display.
+    Intentionally different from get_camera_id(), which should return a stable
+    internal, reliable and unambiguous identity and may contain serials or machine paths.
+    """
+    name = str(getattr(settings, "name", "") or "").strip()
+    if name:
+        return name
+
+    backend = (settings.backend or "").lower()
+    props = settings.properties if isinstance(settings.properties, dict) else {}
+    ns = props.get(backend, {}) if isinstance(props.get(backend), dict) else {}
+
+    device_name = str(ns.get("device_name", "") or "").strip()
+    if device_name:
+        return device_name
+
+    return f"{backend}:{int(settings.index)}"
 
 
 def get_camera_id(settings: CameraSettings) -> str:
@@ -270,7 +109,10 @@ class MultiCameraController(QObject):
     """Controller for managing multiple cameras simultaneously."""
 
     # Signals
-    frame_ready = Signal(object)  # MultiFrameData (full cam FPS; recording and inference only)
+    frame_ready = Signal(object)  # MultiFrameData (full cam FPS; inference only)
+    # recording_frame_ready = Signal(
+    #     str, object, float, object
+    # )  # camera_id, frame, timestamp, timestamp_metadata (full cam FPS; for recording)
     display_ready = Signal(object)  # MultiFrameData for GUI display (throttled to GUI_MAX_DISPLAY_FPS)
     camera_started = Signal(str, object)  # camera_id, settings
     camera_stopped = Signal(str)  # camera_id
@@ -286,12 +128,15 @@ class MultiCameraController(QObject):
         self._workers: dict[str, SingleCameraWorker] = {}
         self._threads: dict[str, QThread] = {}
         self._settings: dict[str, CameraSettings] = {}
+        self._runtime_info: dict[str, dict] = {}
         self._frames: dict[str, np.ndarray] = {}
         self._timestamps: dict[str, float] = {}
         self._frame_lock = Lock()
         self._running = False
         self._stopping = False
         self._all_stopped_emitted = False
+        self._recording_frame_emission_enabled: bool = False
+        self._recording_sink = None
         self._started_cameras: set = set()
         self._display_ids: dict[str, str] = {}  # camera_id -> display_id (for labeling)
         self._camera_display_order: list[str] = []
@@ -314,7 +159,8 @@ class MultiCameraController(QObject):
 
     def is_starting(self) -> bool:
         """Check whether cam initialization is still in progress"""
-        return bool(self._running and not self._stopping and not self._started_cameras and self._workers)
+        total_reported = len(self._started_cameras) + len(self._failed_cameras)
+        return bool(self._running and not self._stopping and total_reported < self._expected_cameras)
 
     def get_active_count(self) -> int:
         """Get the number of active cameras."""
@@ -332,11 +178,14 @@ class MultiCameraController(QObject):
             self._timing_per_cam[camera_id] = timing
         return timing
 
-    def _should_emit_display_ready(self) -> bool:
-        """Return True when the UI/display path should be updated.
+    def set_recording_frame_is_enabled(self, enabled: bool) -> None:
+        self._recording_frame_emission_enabled = bool(enabled)
+        for worker in list(self._workers.values()):
+            worker.set_recording_enabled(enabled)
 
-        This only throttles display_ready. It must not throttle frame_ready,
-        because frame_ready is used for full-rate consumers such as recording.
+    def _should_emit_display_ready(self) -> bool:
+        """
+        Return True if enough time has passed since the last display_ready emission, based on GUI_MAX_DISPLAY_FPS.
         """
         if self._gui_display_max_fps <= 0:
             return True
@@ -402,11 +251,13 @@ class MultiCameraController(QObject):
         self._running = True
         self._stopping = False
         self._all_stopped_emitted = False
+        self._recording_frame_emission_enabled = False
         self._frames.clear()
         self._timestamps.clear()
         self._started_cameras.clear()
         self._failed_cameras.clear()
         self._display_ids.clear()
+        self._runtime_info.clear()
         self._expected_cameras = len(active_settings)
 
         for settings in active_settings:
@@ -434,11 +285,14 @@ class MultiCameraController(QObject):
         self._display_ids[cam_id] = display_id
         dc = self._settings[cam_id]
         worker = SingleCameraWorker(cam_id, dc)
+        worker.set_recording_sink(self._recording_sink)
+        worker.set_recording_enabled(self._recording_frame_emission_enabled)
         thread = QThread()
         worker.moveToThread(thread)
 
         # Connections unchanged
         thread.started.connect(worker.run)
+        worker.runtime_info.connect(self._on_camera_runtime_info)
         worker.frame_captured.connect(self._on_frame_captured)
         worker.started.connect(self._on_camera_started)
         worker.stopped.connect(self._on_camera_stopped)
@@ -450,7 +304,13 @@ class MultiCameraController(QObject):
         worker.stopped.connect(thread.quit)
         thread.start()
 
+    def set_recording_sink(self, sink) -> None:
+        self._recording_sink = sink
+        for worker in list(self._workers.values()):
+            worker.set_recording_sink(sink)
+
     def _cleanup_camera(self, camera_id: str, *, finalize: bool = True) -> None:
+        # remove stored frame data
         with self._frame_lock:
             self._frames.pop(camera_id, None)
             self._timestamps.pop(camera_id, None)
@@ -459,6 +319,7 @@ class MultiCameraController(QObject):
         thread = self._threads.pop(camera_id, None)
         self._settings.pop(camera_id, None)
         self._display_ids.pop(camera_id, None)
+        self._runtime_info.pop(camera_id, None)
         self._started_cameras.discard(camera_id)
 
         if worker is not None:
@@ -471,7 +332,6 @@ class MultiCameraController(QObject):
 
     def _maybe_finalize_stop(self) -> None:
         """Finalize shutdown after every owned camera thread has finished."""
-        # FUTURE FIXME: clear runtime info
         if not self._stopping:
             return
 
@@ -486,13 +346,12 @@ class MultiCameraController(QObject):
             return
 
         self._running = False
-        self._recording_frame_emission_enabled = False
         self._timing_per_cam.clear()
         self._gui_display_last_emit = 0.0
 
         self._workers.clear()
         self._settings.clear()
-        # self._runtime_info.clear()
+        self._runtime_info.clear()
         self._started_cameras.clear()
         self._failed_cameras.clear()
         self._display_ids.clear()
@@ -578,22 +437,28 @@ class MultiCameraController(QObject):
 
         self._maybe_finalize_stop()
 
-    def _on_frame_captured(self, camera_id: str, frame: np.ndarray, timestamp: float) -> None:
+    def _on_frame_captured(
+        self, camera_id: str, frame: np.ndarray, timestamp: float, timestamp_metadata: object | None = None
+    ) -> None:
         """Handle a frame from one camera."""
         timing = self._timing_for_camera(camera_id)
         frame_data: MultiFrameData | None = None
 
         with timing.measure("Multi.slot.total"):
-            settings = self._settings.get(camera_id)
+            # self._settings.get(camera_id)
 
-            with timing.measure("Multi.apply_transforms"):
-                if settings and settings.rotation:
-                    frame = MultiCameraController.apply_rotation(frame, settings.rotation)
+            # with timing.measure("Multi.apply_transforms"):
+            #     if settings and settings.rotation:
+            #         frame = MultiCameraController.apply_rotation(frame, settings.rotation)
 
-                if settings:
-                    crop_region = settings.get_crop_region()
-                    if crop_region:
-                        frame = MultiCameraController.apply_crop(frame, crop_region)
+            #     if settings:
+            #         crop_region = settings.get_crop_region()
+            #         if crop_region:
+            #             frame = MultiCameraController.apply_crop(frame, crop_region)
+
+            # if self._recording_frame_emission_enabled:
+            #     with timing.measure("Multi.emit.recording_frame_ready"):
+            #         self.recording_frame_ready.emit(camera_id, frame, timestamp)
 
             with self._frame_lock:
                 with timing.measure("Multi.store_latest"):
@@ -639,31 +504,35 @@ class MultiCameraController(QObject):
         timing.note_frame()
         timing.maybe_log()
 
-    @staticmethod
-    def apply_rotation(frame: np.ndarray, degrees: int) -> np.ndarray:
-        """Apply rotation to frame."""
-        if degrees == 90:
-            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        elif degrees == 180:
-            return cv2.rotate(frame, cv2.ROTATE_180)
-        elif degrees == 270:
-            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        return frame
+    def _on_camera_runtime_info(self, camera_id: str, info: object) -> None:
+        if not isinstance(info, dict):
+            return
 
-    @staticmethod
-    def apply_crop(frame: np.ndarray, crop_region: tuple[int, int, int, int]) -> np.ndarray:
-        """Apply crop to frame."""
-        x0, y0, x1, y1 = crop_region
-        height, width = frame.shape[:2]
+        self._runtime_info[camera_id] = dict(info)
 
-        x0 = max(0, min(x0, width))
-        y0 = max(0, min(y0, height))
-        x1 = max(x0, min(x1, width)) if x1 > 0 else width
-        y1 = max(y0, min(y1, height)) if y1 > 0 else height
+        actual_fps = info.get("actual_fps")
+        LOGGER.info(
+            "Camera %s runtime info: actual_fps=%s actual_resolution=%s pixel_format=%s output_format=%s",
+            camera_id,
+            actual_fps,
+            info.get("actual_resolution"),
+            info.get("actual_pixel_format"),
+            info.get("actual_output_format"),
+        )
 
-        if x0 < x1 and y0 < y1:
-            return frame[y0:y1, x0:x1]
-        return frame
+    def actual_fps_by_camera_id(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+
+        for camera_id, info in self._runtime_info.items():
+            try:
+                fps = float(info.get("actual_fps") or 0.0)
+            except Exception:
+                fps = 0.0
+
+            if fps > 0.0:
+                out[camera_id] = fps
+
+        return out
 
     @staticmethod
     def apply_resize(frame: np.ndarray, max_w: int, max_h: int, allow_upscale: bool = False) -> np.ndarray:
@@ -710,98 +579,6 @@ class MultiCameraController(QObject):
         bytes_per_line = ch * w
         q_img = QImage(frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
         return QPixmap.fromImage(q_img)
-
-    def _create_tiled_frame(self) -> np.ndarray:
-        """Create a tiled frame from all camera frames.
-
-        The tiled frame is scaled to fit within a maximum canvas size
-        while maintaining aspect ratio of individual camera frames.
-        """
-        if not self._frames:
-            return np.zeros((480, 640, 3), dtype=np.uint8)
-
-        frames_list = [self._frames[idx] for idx in sorted(self._frames.keys())]
-        num_frames = len(frames_list)
-
-        if num_frames == 0:
-            return np.zeros((480, 640, 3), dtype=np.uint8)
-
-        # Determine grid layout
-        if num_frames == 1:
-            rows, cols = 1, 1
-        elif num_frames == 2:
-            rows, cols = 1, 2
-        elif num_frames <= 4:
-            rows, cols = 2, 2
-        else:
-            rows, cols = 2, 2  # Limit to 4
-
-        # Maximum canvas size to fit on screen (leaving room for UI elements)
-        max_canvas_width = 1200
-        max_canvas_height = 800
-
-        # Calculate tile size based on frame aspect ratio and available space
-        first_frame = frames_list[0]
-        frame_h, frame_w = first_frame.shape[:2]
-        frame_aspect = frame_w / frame_h if frame_h > 0 else 1.0
-
-        # Calculate tile dimensions that fit within the canvas
-        tile_w = max_canvas_width // cols
-        tile_h = max_canvas_height // rows
-
-        # Maintain aspect ratio of original frames
-        tile_aspect = tile_w / tile_h if tile_h > 0 else 1.0
-
-        if frame_aspect > tile_aspect:
-            # Frame is wider than tile slot - constrain by width
-            tile_h = int(tile_w / frame_aspect)
-        else:
-            # Frame is taller than tile slot - constrain by height
-            tile_w = int(tile_h * frame_aspect)
-
-        # Ensure minimum size
-        tile_w = max(160, tile_w)
-        tile_h = max(120, tile_h)
-
-        # Create canvas
-        canvas = np.zeros((rows * tile_h, cols * tile_w, 3), dtype=np.uint8)
-
-        # Get sorted camera IDs for consistent ordering
-        cam_ids = sorted(self._frames.keys())
-        frames_list = [self._frames[cam_id] for cam_id in cam_ids]
-
-        # Place each frame in the grid
-        for idx, frame in enumerate(frames_list[: rows * cols]):
-            row = idx // cols
-            col = idx % cols
-
-            # Ensure frame is 3-channel
-            frame = MultiCameraController.ensure_color_bgr(frame)
-
-            # Resize to tile size
-            resized = MultiCameraController.apply_resize(frame, tile_w, tile_h, allow_upscale=True)
-
-            # Add camera ID label
-            if idx < len(cam_ids):
-                label = cam_ids[idx]
-                cv2.putText(
-                    resized,
-                    label,
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2,
-                )
-
-            # Place in canvas
-            y_start = row * tile_h
-            y_end = y_start + tile_h
-            x_start = col * tile_w
-            x_end = x_start + tile_w
-            canvas[y_start:y_end, x_start:x_end] = resized
-
-        return canvas
 
     def _on_camera_started(self, camera_id: str) -> None:
         """Handle camera start event."""
@@ -859,20 +636,3 @@ class MultiCameraController(QObject):
         if camera_id not in self._started_cameras:
             self._failed_cameras[camera_id] = message
         self.camera_error.emit(camera_id, message)
-
-    def get_frame(self, camera_id: str) -> np.ndarray | None:
-        """Get the latest frame from a specific camera."""
-        with self._frame_lock:
-            return self._frames.get(camera_id)
-
-    def get_all_frames(self) -> dict[str, np.ndarray]:
-        """Get the latest frames from all cameras."""
-        with self._frame_lock:
-            return dict(self._frames)
-
-    def get_tiled_frame(self) -> np.ndarray | None:
-        """Get a tiled view of all camera frames."""
-        with self._frame_lock:
-            if self._frames:
-                return self._create_tiled_frame()
-        return None

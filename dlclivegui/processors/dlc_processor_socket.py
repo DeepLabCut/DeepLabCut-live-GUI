@@ -7,14 +7,13 @@ import socket
 import sys
 import time
 from collections import deque
-from math import acos, atan2, copysign, degrees, pi, sqrt
 from multiprocessing.connection import Client, Listener
 from pathlib import Path
 from threading import Event, Thread
 
 import numpy as np
 import pandas as pd
-from dlclive import Processor  # type: ignore
+from dlclive.processor import Processor  # type: ignore
 
 logger = logging.getLogger("dlc_processor_socket")
 
@@ -23,59 +22,6 @@ if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
     _handler = logging.StreamHandler()
     _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logger.addHandler(_handler)
-
-# Registry for GUI discovery
-PROCESSOR_REGISTRY = {}
-
-
-def register_processor(cls):
-    registry_key = getattr(cls, "PROCESSOR_ID", cls.__name__)
-    if registry_key in PROCESSOR_REGISTRY:
-        raise ValueError(
-            f"Duplicate processor registration key '{registry_key}': "
-            f"{PROCESSOR_REGISTRY[registry_key].__name__} vs {cls.__name__}"
-        )
-    PROCESSOR_REGISTRY[registry_key] = cls
-    return cls
-
-
-class OneEuroFilter:  # pragma: no cover
-    def __init__(self, t0, x0, dx0=None, min_cutoff=1.0, beta=0.0, d_cutoff=1.0):
-        self.min_cutoff = min_cutoff
-        self.beta = beta
-        self.d_cutoff = d_cutoff
-        self.x_prev = x0
-        if dx0 is None:
-            dx0 = np.zeros_like(x0)
-        self.dx_prev = dx0
-        self.t_prev = t0
-
-    @staticmethod
-    def smoothing_factor(t_e, cutoff):
-        r = 2 * pi * cutoff * t_e
-        return r / (r + 1)
-
-    @staticmethod
-    def exponential_smoothing(alpha, x, x_prev):
-        return alpha * x + (1 - alpha) * x_prev
-
-    def __call__(self, t, x):
-        t_e = t - self.t_prev
-        if t_e <= 0:
-            return x
-        a_d = self.smoothing_factor(t_e, self.d_cutoff)
-        dx = (x - self.x_prev) / t_e
-        dx_hat = self.exponential_smoothing(a_d, dx, self.dx_prev)
-
-        cutoff = self.min_cutoff + self.beta * abs(dx_hat)
-        a = self.smoothing_factor(t_e, cutoff)
-        x_hat = self.exponential_smoothing(a, x, self.x_prev)
-
-        self.x_prev = x_hat
-        self.dx_prev = dx_hat
-        self.t_prev = t
-
-        return x_hat
 
 
 # pragma: cover
@@ -90,6 +36,12 @@ class BaseProcessorSocket(Processor):
     PROCESSOR_NAME = "Base Socket Processor"
     PROCESSOR_DESCRIPTION = "Base class for socket-based processors with multi-client support"
     PROCESSOR_PARAMS = {}
+    PROCESSOR_DISCOVERABLE = False  # base class, not intended to be an example processor
+
+    # Experimental:
+    # Socket/Teensy/Unity processors often start threads, sockets, serial ports, etc.
+    # Build them inside the DLCLive worker to match legacy Tk GUI behavior.
+    PROCESSOR_BUILD_IN_WORKER = False
 
     def __init__(
         self,
@@ -131,6 +83,8 @@ class BaseProcessorSocket(Processor):
         self._vid_recording = Event()
         self.curr_step = 0
         self.save_original = save_original
+        self.recording_context = {}
+        self.save_path = None
 
         # Networking (optional)
         self.address = bind
@@ -310,8 +264,14 @@ class BaseProcessorSocket(Processor):
     # STOP / SHUTDOWN
     # --------------------------------------------------------------------------------------
 
-    def stop(self):
+    def stop(self, save: bool = False, file=None):
         """Gracefully stop listener and clients."""
+        if save:
+            try:
+                self.save(file)
+            except Exception:
+                logger.exception("Failed to save processor data on stop")
+
         if self._stop.is_set():
             return
 
@@ -415,22 +375,82 @@ class BaseProcessorSocket(Processor):
             self.original_pose.clear()
 
     def save(self, file=None):
-        if not file:
+        target = file
+        explicit_file = file is not None
+
+        if target is None:
+            target = getattr(self, "save_path", None)
+
+        if target is None:
+            logger.warning("Processor save skipped: no file or save_path provided.")
             return 0
+
         try:
             save_dict = self.get_data()
-            path2save = Path(__file__).parent.parent.parent / "data" / file
-            path2save.parent.mkdir(parents=True, exist_ok=True)
+            save_path = Path(target)
+            if explicit_file and not save_path.is_absolute():
+                save_path = Path("data") / save_path
+
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+
             if self.save_original:
                 original_pose = save_dict.pop("original_pose")
-                self.save_original_pose(original_pose, save_dict["frame_time"], save_dict["time_stamp"], path2save)
-            with open(path2save, "wb") as f:
+                self.save_original_pose(
+                    original_pose,
+                    save_dict["frame_time"],
+                    save_dict["time_stamp"],
+                    save_path,
+                )
+
+            with open(save_path, "wb") as f:
                 pickle.dump(save_dict, f)
-            logger.info(f"Saved data to {path2save}")
+
+            logger.info(f"Saved processor data to {save_path}")
             return 1
+
         except Exception as e:
             logger.error(f"Save failed: {e}")
             return -1
+
+    def set_recording_context(self, context: dict | None) -> None:
+        """Set GUI-provided recording context.
+
+        This is intentionally generic. Custom processors may use it to derive
+        processor-specific output paths.
+
+        Expected keys may include:
+            run_dir
+            session_name
+            filename
+            filename_stem
+            processor_base_path
+            video_files
+            timestamp_json_files
+        """
+        self.recording_context = dict(context or {})
+
+        base_path = self.recording_context.get("processor_base_path")
+        if base_path is not None:
+            self.save_path = Path(base_path)
+
+    def set_save_path(self, path) -> None:
+        """Set default save path used by save() when no file is provided."""
+        self.save_path = Path(path) if path is not None else None
+
+    def get_save_path(self):
+        """Return default save path, if any."""
+        return getattr(self, "save_path", None)
+
+    def on_recording_started(self, context: dict) -> None:
+        """Optional hook called by GUI when recording starts."""
+        self.set_recording_context(context)
+
+    def on_recording_stopped(self, context: dict) -> None:
+        """Optional hook called by GUI when recording stops.
+
+        Base implementation only updates context. Custom processors can override.
+        """
+        self.set_recording_context(context)
 
     def save_original_pose(
         self,
@@ -474,375 +494,3 @@ class BaseProcessorSocket(Processor):
         if self.dlc_cfg is not None:
             save_dict["dlc_cfg"] = self.dlc_cfg
         return save_dict
-
-
-@register_processor
-class ExampleProcessorSocketCalculateMousePose(BaseProcessorSocket):  # pragma: no cover
-    """
-    DLC Processor with pose calculations (center, heading, head angle) and optional filtering.
-
-    Calculates:
-    - center: Weighted average of head keypoints
-    - heading: Body orientation (degrees)
-    - head_angle: Head rotation relative to body (radians)
-
-    Broadcasts: [timestamp, center_x, center_y, heading, head_angle]
-    """
-
-    PROCESSOR_NAME = "Example Experiment Pose Processor"
-    PROCESSOR_DESCRIPTION = "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
-    PROCESSOR_PARAMS = {
-        "bind": {
-            "type": "tuple",
-            "default": ("127.0.0.1", 6000),
-            "description": "Server address (host, port)",
-        },
-        "authkey": {
-            "type": "bytes",
-            "default": b"secret password",
-            "description": "Authentication key for clients",
-        },
-        "use_perf_counter": {
-            "type": "bool",
-            "default": False,
-            "description": "Use time.perf_counter() instead of time.time()",
-        },
-        "use_filter": {
-            "type": "bool",
-            "default": False,
-            "description": "Apply One-Euro filter to calculated values",
-        },
-        "filter_kwargs": {
-            "type": "dict",
-            "default": {"min_cutoff": 1.0, "beta": 0.02, "d_cutoff": 1.0},
-            "description": "One-Euro filter parameters (min_cutoff, beta, d_cutoff)",
-        },
-        "save_original": {
-            "type": "bool",
-            "default": False,
-            "description": "Save raw pose arrays for analysis",
-        },
-    }
-
-    def __init__(
-        self,
-        bind=("127.0.0.1", 6000),
-        authkey=b"secret password",
-        use_perf_counter=False,
-        use_filter=False,
-        filter_kwargs: dict | None = None,
-        save_original=False,
-    ):
-        super().__init__(
-            bind=bind,
-            authkey=authkey,
-            use_perf_counter=use_perf_counter,
-            save_original=save_original,
-        )
-
-        self.center_x = deque()
-        self.center_y = deque()
-        self.heading_direction = deque()
-        self.head_angle = deque()
-
-        self.use_filter = use_filter
-        self.filter_kwargs = filter_kwargs if filter_kwargs is not None else {}
-        self.filters = None
-
-    def _clear_data_queues(self):
-        super()._clear_data_queues()
-        self.center_x.clear()
-        self.center_y.clear()
-        self.heading_direction.clear()
-        self.head_angle.clear()
-
-    def _initialize_filters(self, vals):
-        t0 = self.timing_func()
-        self.filters = {
-            "center_x": OneEuroFilter(t0, vals[0], **self.filter_kwargs),
-            "center_y": OneEuroFilter(t0, vals[1], **self.filter_kwargs),
-            "heading": OneEuroFilter(t0, vals[2], **self.filter_kwargs),
-            "head_angle": OneEuroFilter(t0, vals[3], **self.filter_kwargs),
-        }
-        logger.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
-
-    def process(self, pose, **kwargs):
-        # Extract keypoints and confidence
-        xy = pose[:, :2]
-        conf = pose[:, 2]
-
-        # Calculate weighted center from head keypoints
-        head_xy = xy[[0, 1, 2, 3, 4, 5, 6, 26], :]
-        head_conf = conf[[0, 1, 2, 3, 4, 5, 6, 26]]
-        center = np.average(head_xy, axis=0, weights=head_conf)
-
-        # Calculate body axis (tail_base -> neck)
-        body_axis = xy[7] - xy[13]
-        body_axis /= sqrt(np.sum(body_axis**2))
-
-        # Calculate head axis (neck -> nose)
-        head_axis = xy[0] - xy[7]
-        head_axis /= sqrt(np.sum(head_axis**2))
-
-        # Calculate head angle relative to body
-        cross = body_axis[0] * head_axis[1] - head_axis[0] * body_axis[1]
-        sign = copysign(1, cross)  # Positive when looking left
-        sign = copysign(1, cross)
-        try:
-            head_angle = acos(body_axis @ head_axis) * sign
-        except ValueError:
-            head_angle = 0
-
-        # Calculate heading (body orientation)
-        heading = degrees(atan2(body_axis[1], body_axis[0]))
-
-        # Raw values (heading unwrapped for filtering)
-        vals = [center[0], center[1], heading, head_angle]
-
-        # Apply filtering if enabled
-        curr_time = self.timing_func()
-        if self.use_filter:
-            if self.filters is None:
-                self._initialize_filters(vals)
-
-            vals = [
-                self.filters["center_x"](curr_time, vals[0]),
-                self.filters["center_y"](curr_time, vals[1]),
-                self.filters["heading"](curr_time, vals[2]),
-                self.filters["head_angle"](curr_time, vals[3]),
-            ]
-
-        # Wrap heading to [0, 360) after filtering
-        vals[2] = vals[2] % 360
-        # Update step counter
-        self.curr_step = self.curr_step + 1
-
-        # Store processed data (only if recording)
-        if self.recording:
-            if self.save_original and self.original_pose is not None:
-                self.original_pose.append(pose.copy())
-            self.center_x.append(vals[0])
-            self.center_y.append(vals[1])
-            self.heading_direction.append(vals[2])
-            self.head_angle.append(vals[3])
-            self.time_stamp.append(curr_time)
-            self.step.append(self.curr_step)
-            self.frame_time.append(kwargs.get("frame_time", -1))
-            if "pose_time" in kwargs:
-                self.pose_time.append(kwargs["pose_time"])
-
-        payload = [curr_time, vals[0], vals[1], vals[2], vals[3]]
-        self.broadcast(payload)
-        return pose
-
-    def get_data(self):
-        save_dict = super().get_data()
-        save_dict["x_pos"] = np.array(self.center_x)
-        save_dict["y_pos"] = np.array(self.center_y)
-        save_dict["heading_direction"] = np.array(self.heading_direction)
-        save_dict["head_angle"] = np.array(self.head_angle)
-        save_dict["use_filter"] = self.use_filter
-        save_dict["filter_kwargs"] = self.filter_kwargs
-        return save_dict
-
-
-@register_processor
-class ExampleProcessorSocketFilterKeypoints(BaseProcessorSocket):  # pragma: no cover
-    PROCESSOR_NAME = "Mouse Pose with less keypoints"
-    PROCESSOR_DESCRIPTION = "Calculates mouse center, heading, and head angle with optional One-Euro filtering"
-    PROCESSOR_PARAMS = {
-        "bind": {
-            "type": "tuple",
-            "default": ("127.0.0.1", 6000),
-            "description": "Server address (host, port)",
-        },
-        "authkey": {
-            "type": "bytes",
-            "default": b"secret password",
-            "description": "Authentication key for clients",
-        },
-        "use_perf_counter": {
-            "type": "bool",
-            "default": False,
-            "description": "Use time.perf_counter() instead of time.time()",
-        },
-        "use_filter": {
-            "type": "bool",
-            "default": False,
-            "description": "Apply One-Euro filter to calculated values",
-        },
-        "filter_kwargs": {
-            "type": "dict",
-            "default": {"min_cutoff": 1.0, "beta": 0.02, "d_cutoff": 1.0},
-            "description": "One-Euro filter parameters (min_cutoff, beta, d_cutoff)",
-        },
-        "save_original": {
-            "type": "bool",
-            "default": True,
-            "description": "Save raw pose arrays for analysis",
-        },
-    }
-
-    def __init__(
-        self,
-        bind=("127.0.0.1", 6000),
-        authkey=b"secret password",
-        use_perf_counter=False,
-        use_filter=False,
-        filter_kwargs: dict | None = None,
-        save_original=True,
-        p_cutoff=0.4,
-    ):
-        super().__init__(
-            bind=bind,
-            authkey=authkey,
-            use_perf_counter=use_perf_counter,
-            save_original=save_original,
-        )
-
-        self.center_x = deque()
-        self.center_y = deque()
-        self.heading_direction = deque()
-        self.head_angle = deque()
-
-        self.p_cutoff = p_cutoff
-
-        self.use_filter = use_filter
-        self.filter_kwargs = filter_kwargs if filter_kwargs is not None else {}
-        self.filters = None
-
-    def _clear_data_queues(self):
-        super()._clear_data_queues()
-        self.center_x.clear()
-        self.center_y.clear()
-        self.heading_direction.clear()
-        self.head_angle.clear()
-
-    def _initialize_filters(self, vals):
-        t0 = self.timing_func()
-        self.filters = {
-            "center_x": OneEuroFilter(t0, vals[0], **self.filter_kwargs),
-            "center_y": OneEuroFilter(t0, vals[1], **self.filter_kwargs),
-            "heading": OneEuroFilter(t0, vals[2], **self.filter_kwargs),
-            "head_angle": OneEuroFilter(t0, vals[3], **self.filter_kwargs),
-        }
-        logger.debug(f"Initialized One-Euro filters with parameters: {self.filter_kwargs}")
-
-    def process(self, pose, **kwargs):
-        # Extract keypoints and confidence
-        xy = pose[:, :2]
-        conf = pose[:, 2]
-
-        # Calculate weighted center from head keypoints
-        head_xy = xy[[0, 1, 2, 3, 5, 6, 7], :]
-        head_conf = conf[[0, 1, 2, 3, 5, 6, 7]]
-        # set low confidence keypoints to zero weight
-        head_conf = np.where(head_conf < self.p_cutoff, 0, head_conf)
-        try:
-            center = np.average(head_xy, axis=0, weights=head_conf)
-        except ZeroDivisionError:
-            # If all keypoints have zero weight, return without processing
-            return pose
-
-        neck = np.average(xy[[2, 3, 6, 7], :], axis=0, weights=conf[[2, 3, 6, 7]])
-
-        # Calculate body axis (tail_base -> neck)
-        body_axis = neck - xy[9]
-        body_axis /= sqrt(np.sum(body_axis**2))
-
-        # Calculate head axis (neck -> nose)
-        head_axis = xy[0] - neck
-        head_axis /= sqrt(np.sum(head_axis**2))
-
-        # Calculate head angle relative to body
-        cross = body_axis[0] * head_axis[1] - head_axis[0] * body_axis[1]
-        sign = copysign(1, cross)  # Positive when looking left
-        sign = copysign(1, cross)
-        try:
-            head_angle = acos(body_axis @ head_axis) * sign
-        except ValueError:
-            head_angle = 0
-
-        # Calculate heading (body orientation)
-        heading = degrees(atan2(body_axis[1], body_axis[0]))
-        vals = [center[0], center[1], heading, head_angle]
-
-        curr_time = self.timing_func()
-        if self.use_filter:
-            if self.filters is None:
-                self._initialize_filters(vals)
-
-            vals = [
-                self.filters["center_x"](curr_time, vals[0]),
-                self.filters["center_y"](curr_time, vals[1]),
-                self.filters["heading"](curr_time, vals[2]),
-                self.filters["head_angle"](curr_time, vals[3]),
-            ]
-
-        # Wrap heading to [0, 360) after filtering
-        vals[2] = vals[2] % 360
-        # Update step counter
-        self.curr_step = self.curr_step + 1
-
-        # Store processed data (only if recording)
-        if self.recording:
-            if self.save_original and self.original_pose is not None:
-                self.original_pose.append(pose.copy())
-            self.center_x.append(vals[0])
-            self.center_y.append(vals[1])
-            self.heading_direction.append(vals[2])
-            self.head_angle.append(vals[3])
-            self.time_stamp.append(curr_time)
-            self.step.append(self.curr_step)
-            self.frame_time.append(kwargs.get("frame_time", -1))
-            if "pose_time" in kwargs:
-                self.pose_time.append(kwargs["pose_time"])
-
-        payload = [curr_time, vals[0], vals[1], vals[2], vals[3]]
-        self.broadcast(payload)
-        return pose
-
-    def get_data(self):
-        save_dict = super().get_data()
-        save_dict["x_pos"] = np.array(self.center_x)
-        save_dict["y_pos"] = np.array(self.center_y)
-        save_dict["heading_direction"] = np.array(self.heading_direction)
-        save_dict["head_angle"] = np.array(self.head_angle)
-        save_dict["use_filter"] = self.use_filter
-        save_dict["filter_kwargs"] = self.filter_kwargs
-        return save_dict
-
-
-def get_available_processors():
-    """
-    Get list of available processor classes.
-
-    Returns:
-        dict: Dictionary mapping registry keys to processor info.
-    """
-    return {
-        name: {
-            "class": cls,
-            "name": getattr(cls, "PROCESSOR_NAME", name),
-            "description": getattr(cls, "PROCESSOR_DESCRIPTION", ""),
-            "params": getattr(cls, "PROCESSOR_PARAMS", {}),
-        }
-        for name, cls in PROCESSOR_REGISTRY.items()
-    }
-
-
-def instantiate_processor(class_name, **kwargs):
-    """
-    Instantiate a processor by class name with given parameters.
-
-    Args:
-        class_name: Registry key (e.g., "MyProcessorSocket")
-        **kwargs: Constructor kwargs
-
-    Raises:
-        ValueError: If class_name is not in registry
-    """
-    if class_name not in PROCESSOR_REGISTRY:
-        available = ", ".join(PROCESSOR_REGISTRY.keys())
-        raise ValueError(f"Unknown processor '{class_name}'. Available: {available}")
-    return PROCESSOR_REGISTRY[class_name](**kwargs)

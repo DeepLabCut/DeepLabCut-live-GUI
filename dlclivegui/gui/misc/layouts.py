@@ -3,8 +3,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from PySide6.QtCore import QObject, Qt
-from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QSizePolicy, QStyle, QStyleOptionComboBox, QWidget
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
+from PySide6.QtWidgets import (
+    QComboBox,
+    QFrame,
+    QGridLayout,
+    QLabel,
+    QScrollArea,
+    QSizePolicy,
+    QStyle,
+    QStyleOptionComboBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 def _combo_width_for_current_text(combo: QComboBox, extra_padding: int = 10) -> int:
@@ -226,3 +237,186 @@ def make_two_field_row(
         grid.setColumnStretch(c, s)
 
     return row
+
+
+class _VerticalOnlyScrollArea(QScrollArea):
+    """
+    Vertical-only scroll area.
+
+    It does not introduce horizontal scrolling and does not manually force the
+    child width on resize. Instead, it makes the child keep at least its natural
+    layout width, and makes the scroll area advertise that width as its own
+    minimum width.
+
+    This avoids horizontal clipping without creating a width feedback loop.
+    """
+
+    def __init__(self, content_widget: QWidget, parent: QWidget | None = None):
+        super().__init__(parent)
+
+        self._content_widget = content_widget
+
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setViewportMargins(0, 0, 0, 0)
+        self.setContentsMargins(0, 0, 0, 0)
+
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        # Let the scroll area resize the content to the available viewport size,
+        # but never below the content's minimum width.
+        self.setWidgetResizable(True)
+        self.setWidget(content_widget)
+
+        self.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Expanding)
+        content_widget.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Preferred)
+
+        self.update_width_constraints()
+
+    def _scrollbar_extent(self) -> int:
+        return self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent, None, self)
+
+    def _frame_width_total(self) -> int:
+        frame = self.frameWidth()
+        return frame * 2
+
+    def _natural_content_width(self) -> int:
+        """
+        Return the content's natural layout width.
+
+        Important: do not use content_widget.minimumWidth() here, because this
+        class sets that value. Using it would create a feedback loop where the
+        natural width grows after resizes.
+        """
+        layout = self._content_widget.layout()
+
+        candidates: list[int] = [
+            self._content_widget.sizeHint().width(),
+            self._content_widget.minimumSizeHint().width(),
+        ]
+
+        if layout is not None:
+            candidates.append(layout.sizeHint().width())
+            candidates.append(layout.minimumSize().width())
+
+        return max(0, *candidates)
+
+    def _natural_content_height(self) -> int:
+        layout = self._content_widget.layout()
+
+        candidates: list[int] = [
+            self._content_widget.sizeHint().height(),
+            self._content_widget.minimumSizeHint().height(),
+        ]
+
+        if layout is not None:
+            candidates.append(layout.sizeHint().height())
+            candidates.append(layout.minimumSize().height())
+
+        return max(0, *candidates)
+
+    def update_width_constraints(self) -> None:
+        natural_width = self._natural_content_width()
+
+        # Reserve vertical-scrollbar width so that when the scrollbar appears,
+        # the content still has enough viewport width and is not horizontally clipped.
+        min_scroll_width = natural_width + self._scrollbar_extent() + self._frame_width_total()
+
+        if self._content_widget.minimumWidth() != natural_width:
+            self._content_widget.setMinimumWidth(natural_width)
+
+        if self.minimumWidth() != min_scroll_width:
+            self.setMinimumWidth(min_scroll_width)
+
+        self._content_widget.updateGeometry()
+        self.updateGeometry()
+
+    def event(self, event) -> bool:
+        result = super().event(event)
+
+        if event.type() in {
+            QEvent.Type.Show,
+            QEvent.Type.LayoutRequest,
+            QEvent.Type.FontChange,
+            QEvent.Type.StyleChange,
+            QEvent.Type.PaletteChange,
+        }:
+            self.update_width_constraints()
+
+        return result
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.update_width_constraints()
+
+    def sizeHint(self) -> QSize:
+        return QSize(
+            self._natural_content_width() + self._scrollbar_extent() + self._frame_width_total(),
+            self._natural_content_height(),
+        )
+
+    def minimumSizeHint(self) -> QSize:
+        # Width is strict, height is deliberately small so vertical scrolling can happen.
+        return QSize(
+            self._natural_content_width() + self._scrollbar_extent() + self._frame_width_total(),
+            120,
+        )
+
+
+def make_scrollable_with_fixed_footer(
+    content_widget: QWidget,
+    footer_widget: QWidget | None = None,
+    *,
+    object_name: str | None = None,
+    scroll_object_name: str | None = None,
+    footer_object_name: str | None = None,
+    margins: tuple[int, int, int, int] = (0, 0, 0, 0),
+    spacing: int = 0,
+    footer_margins: tuple[int, int, int, int] = (0, 0, 0, 0),
+) -> QWidget:
+    """
+    Wrap `content_widget` in a vertical-only scroll area and keep `footer_widget`
+    outside the scroll area.
+
+    Guarantees:
+      - existing content layout is not restructured;
+      - vertical scrolling appears only when height is insufficient;
+      - horizontal scrolling is never introduced;
+      - content is not hidden horizontally: the wrapper advertises the natural
+        content width as its minimum width;
+      - footer controls remain visible.
+    """
+    wrapper = QWidget()
+    if object_name:
+        wrapper.setObjectName(object_name)
+
+    wrapper_layout = QVBoxLayout(wrapper)
+    wrapper_layout.setContentsMargins(*margins)
+    wrapper_layout.setSpacing(max(0, int(spacing)))
+
+    scroll = _VerticalOnlyScrollArea(content_widget, wrapper)
+    if scroll_object_name:
+        scroll.setObjectName(scroll_object_name)
+
+    wrapper_layout.addWidget(scroll, stretch=1)
+
+    if footer_widget is not None:
+        footer_wrapper = QWidget(wrapper)
+        if footer_object_name:
+            footer_wrapper.setObjectName(footer_object_name)
+
+        footer_layout = QVBoxLayout(footer_wrapper)
+        footer_layout.setContentsMargins(*footer_margins)
+        footer_layout.setSpacing(0)
+        footer_layout.addWidget(footer_widget)
+
+        footer_wrapper.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
+        wrapper_layout.addWidget(footer_wrapper, stretch=0)
+
+    wrapper.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Expanding)
+
+    # The wrapper must also resist horizontal shrinking, otherwise the dock can
+    # still become narrower than the scroll area's valid width.
+    QTimer.singleShot(0, lambda: wrapper.setMinimumWidth(scroll.minimumSizeHint().width()))
+
+    return wrapper

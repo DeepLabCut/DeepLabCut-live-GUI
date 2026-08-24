@@ -6,12 +6,13 @@ import importlib.metadata
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -48,8 +49,13 @@ from PySide6.QtWidgets import (
 
 from dlclivegui.cameras import CameraFactory
 from dlclivegui.config import (
+    ALLOWED_VIDEO_CONTAINERS,
     DEFAULT_CONFIG,
+    DEFAULT_RECORDING_CONTAINER,
+    DLC_DO_LOG_TIMING,
     GUI_MAX_DISPLAY_FPS,
+    RECORD_STOP_RETRY_INTERVAL,
+    RECORD_STOP_RETRY_TIMEOUT,
     ApplicationSettings,
     BoundingBoxSettings,
     CameraSettings,
@@ -60,23 +66,26 @@ from dlclivegui.config import (
 )
 
 from ..processors.processor_utils import (
+    create_spec_from_scan,
     default_processors_dir,
     instantiate_from_scan,
+    log_processor_context,
+    processor_builds_in_worker,
     scan_processor_folder,
     scan_processor_package,
 )
 from ..services.dlc_processor import DLCLiveProcessor, PoseResult
-from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id
+from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id, get_display_id
+from ..services.recording_manager import RecordingManager
 from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
-from ..utils.stats import format_dlc_stats
+from ..utils.stats import WorkerTimingStats, format_dlc_stats
 from ..utils.utils import FPSTracker
 from .camera_config.camera_config_dialog import CameraConfigDialog
 from .misc import color_dropdowns as color_ui
 from .misc import layouts as lyts
 from .misc.drag_spinbox import ScrubSpinBox
 from .misc.eliding_label import ElidingPathLabel
-from .recording_manager import RecordingManager
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 
 logger = logging.getLogger("DLCLiveGUI")
@@ -85,37 +94,40 @@ logger = logging.getLogger("DLCLiveGUI")
 class DLCLiveMainWindow(QMainWindow):
     """Main application window."""
 
+    _recording_stopped_async = Signal()
+    _rec_stop_failed_async = Signal(str)
+
     def __init__(self, config: ApplicationSettings | None = None):
         super().__init__()
         self.setWindowTitle("DeepLabCut Live GUI")
 
         self.settings = QSettings("DeepLabCut", "DLCLiveGUI")
-        self._model_path_store = ModelPathStore(self.settings)
-        self._settings_store = DLCLiveGUISettingsStore(self.settings)
+        self._model_path_store: ModelPathStore = ModelPathStore(self.settings)
+        self._settings_store: DLCLiveGUISettingsStore = DLCLiveGUISettingsStore(self.settings)
 
+        last_cfg_path = self._settings_store.get_last_config_path()
+        last_cfg_file = self._valid_config_file_path(last_cfg_path)
         if config is None:
             # 1) snapshot
             cfg = self._settings_store.load_full_config_snapshot()
             if cfg is not None:
                 config = cfg
-                self._config_path = None
-                logger.info("Loaded configuration from QSettings snapshot.")
+                self._config_path = last_cfg_file
+                if self._config_path is not None:
+                    logger.info(f"Loaded configuration from QSettings snapshot; associated file: {self._config_path}")
+                else:
+                    logger.info("Loaded configuration from QSettings snapshot without associated config file.")
+
             else:
                 # 2) last config file path
-                last_cfg_path = self._settings_store.get_last_config_path()
-                if last_cfg_path:
+                if last_cfg_file is not None:
                     try:
-                        p = Path(last_cfg_path)
-                        if p.exists() and p.is_file():
-                            config = ApplicationSettings.load(str(p))
-                            self._config_path = p
-                            logger.info(f"Loaded configuration from last config path: {p}")
-                        else:
-                            config = DEFAULT_CONFIG
-                            self._config_path = None
+                        config = ApplicationSettings.load(str(last_cfg_file))
+                        self._config_path = last_cfg_file
+                        logger.info(f"Loaded configuration from last config file: {last_cfg_file}")
                     except Exception as exc:
                         logger.warning(
-                            f"Failed to load last config path ({last_cfg_path}): {exc}. Using default config."
+                            f"Failed to load last config file ({last_cfg_file}): {exc}. Using default config."
                         )
                         config = DEFAULT_CONFIG
                         self._config_path = None
@@ -130,14 +142,22 @@ class DLCLiveMainWindow(QMainWindow):
         self._rec_manager = RecordingManager()
         self._dlc = DLCLiveProcessor()
         self.multi_camera_controller = MultiCameraController()
+        ### Time debug
+        self._dlc_timing = WorkerTimingStats(
+            "GUI - DLC Worker", logger=logger, log_interval=2.0, enabled=DLC_DO_LOG_TIMING
+        )
 
         self._config = config
-        self._inference_camera_id: str | None = None  # Camera ID used for inference
+        self._inference_camera_id: str | None = self._settings_store.get_inference_camera_id()
+        self._active_inference_camera_id: str | None = None
         self._running_cams_ids: set[str] = set()
         self._current_frame: np.ndarray | None = None
         self._raw_frame: np.ndarray | None = None
         self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
+        self._processor_recording_context: dict | None = None
+        self._processor_recording_started_notified = False
+        self._pending_recording_after_preview = False
         self._active_camera_settings: CameraSettings | None = None
         self._last_drop_warning = 0.0
         self._last_recorder_summary = "Recorder idle"
@@ -165,17 +185,22 @@ class DLCLiveMainWindow(QMainWindow):
         # Multi-camera state
         self._multi_camera_mode = False
         self._multi_camera_frames: dict[str, np.ndarray] = {}
+        self._multi_camera_display_ids: dict[str, str] = {}  # camera_id -> display_id (for labeling)
         # DLC pose rendering info for tiled view
         self._dlc_tile_offset: tuple[int, int] = (0, 0)  # (x, y) offset in tiled frame
         self._dlc_tile_scale: tuple[float, float] = (1.0, 1.0)  # (scale_x, scale_y)
         # Display flag (decoupled from frame capture for performance)
         self._display_dirty: bool = False
+        # Recording state
+        self._recording_stopping = False
+        self._recording_stopped_async.connect(self._on_recording_stopped_async)
+        self._rec_stop_failed_async.connect(self._on_recording_stop_failed_async)
 
         self._load_icons()
         self._preview_pixmap = QPixmap(LOGO_ALPHA)
         self._setup_ui()
         self._connect_signals()
-        self._apply_config(self._config)
+        self._apply_config(self._config, restore_local_prefs=True)
         self._refresh_processors()  # Scan and populate processor dropdown
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
@@ -209,6 +234,19 @@ class DLCLiveMainWindow(QMainWindow):
         super().resizeEvent(event)
         if not self.multi_camera_controller.is_running():
             self._show_logo_and_text()
+
+    def _valid_config_file_path(self, path: str | None) -> Path | None:
+        if not path:
+            return None
+
+        try:
+            p = Path(path).expanduser()
+            if p.exists() and p.is_file():
+                return p.resolve()
+        except Exception:
+            logger.debug("Invalid config file path: %s", path, exc_info=True)
+
+        return None
 
     # ------------------------------------------------------------------ UI
     def _init_theme_actions(self) -> None:
@@ -256,32 +294,46 @@ class DLCLiveMainWindow(QMainWindow):
         for lbl in (self.camera_stats_label, self.dlc_stats_label, self.recording_stats_label):
             lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        # Controls panel with fixed width to prevent shifting
-        controls_widget = QWidget()
-        # controls_widget.setMaximumWidth(500)
-        controls_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        controls_layout = QVBoxLayout(controls_widget)
-        controls_layout.setContentsMargins(5, 5, 5, 5)
+        # Controls panel content
+        controls_content_widget = QWidget()
+        controls_content_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        controls_layout = QVBoxLayout(controls_content_widget)
+        controls_layout.setContentsMargins(5, 5, 5, 0)
         controls_layout.addWidget(self._build_camera_group())
         controls_layout.addWidget(self._build_dlc_group())
         controls_layout.addWidget(self._build_recording_group())
         controls_layout.addWidget(self._build_viz_group())
 
-        # Preview/Stop buttons at bottom of controls - wrap in widget
+        # Preview/Stop buttons stay outside the scroll area as a fixed footer
         button_bar_widget = QWidget()
+        button_bar_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
         button_bar = QHBoxLayout(button_bar_widget)
         button_bar.setContentsMargins(0, 5, 0, 5)
+
         self.preview_button = QPushButton("Start Preview")
         self.preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.preview_button.setMinimumWidth(150)
+
         self.stop_preview_button = QPushButton("Stop Preview")
         self.stop_preview_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
         self.stop_preview_button.setEnabled(False)
         self.stop_preview_button.setMinimumWidth(150)
+
         button_bar.addWidget(self.preview_button)
         button_bar.addWidget(self.stop_preview_button)
-        controls_layout.addWidget(button_bar_widget)
-        controls_layout.addStretch(1)
+
+        controls_widget = lyts.make_scrollable_with_fixed_footer(
+            controls_content_widget,
+            button_bar_widget,
+            object_name="ControlsPanel",
+            scroll_object_name="ControlsScrollArea",
+            footer_object_name="ControlsFooter",
+            margins=(0, 0, 0, 0),
+            spacing=0,
+            footer_margins=(5, 0, 5, 0),
+        )
 
         # Add controls and video panel to main layout
         ## Dock widget for controls
@@ -408,6 +460,13 @@ class DLCLiveMainWindow(QMainWindow):
         self._apply_theme(self._current_style)
         self._init_theme_actions()
 
+        # Help menu
+        help_menu = self.menuBar().addMenu("&Help")
+
+        view_docs_action = QAction("View documentation", self)
+        view_docs_action.triggered.connect(self._action_view_documentation)
+        help_menu.addAction(view_docs_action)
+
     def _build_camera_group(self) -> QGroupBox:
         group = QGroupBox("Camera")
         form = QFormLayout(group)
@@ -444,7 +503,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Processor selection
         processor_path_layout = QHBoxLayout()
         self.processor_folder_edit = QLineEdit()
-        self.processor_folder_edit.setText(default_processors_dir())
+        self.processor_folder_edit.setText(self._settings_store.get_processor_folder(default=default_processors_dir()))
         processor_path_layout.addWidget(self.processor_folder_edit)
 
         self.browse_processor_folder_button = QPushButton("Browse...")
@@ -479,12 +538,33 @@ class DLCLiveMainWindow(QMainWindow):
         processing_sttgs = lyts.make_two_field_row(
             "Inference camera",
             self.dlc_camera_combo,
-            "Processor",
+            "Custom processor",
             self.processor_combo,
             key_width=None,
         )
         self.dlc_camera_combo.update_shrink_width()
         form.addRow(processing_sttgs)
+
+        self.processor_status_label = QLabel("Processor: No clients | Recording: No")
+        self.processor_status_label.setWordWrap(True)
+        # form.addRow("Processor Status", self.processor_status_label)
+        self.use_custom_proc_checkbox = QCheckBox("Use custom processor")
+        self.use_custom_proc_checkbox.setChecked(False)
+        self.use_custom_proc_checkbox.setToolTip(
+            "If enabled, the GUI will load and interact with the selected processor plugin.\n"
+        )
+        self.processor_toggle_row = lyts.make_two_field_row(
+            "Processor status",
+            self.processor_status_label,
+            None,
+            self.use_custom_proc_checkbox,
+            key_width=None,
+            left_stretch=0,
+            right_stretch=0,
+            style_values=False,
+        )
+        self.processor_toggle_row.setVisible(False)  # Hide until a processor is selected
+        form.addRow(self.processor_toggle_row)
 
         # Wrap inference buttons in a widget to prevent shifting
         inference_button_widget = QWidget()
@@ -505,17 +585,6 @@ class DLCLiveMainWindow(QMainWindow):
         # self.show_predictions_checkbox = QCheckBox("Display pose predictions")
         # self.show_predictions_checkbox.setChecked(True)
         # form.addRow(self.show_predictions_checkbox)
-
-        self.allow_processor_ctrl_checkbox = QCheckBox("Allow processor-based control")
-        self.allow_processor_ctrl_checkbox.setChecked(False)
-        self.allow_processor_ctrl_checkbox.setToolTip(
-            "If enabled, the GUI will load and interact with the selected processor plugin.\n"
-        )
-        form.addRow(self.allow_processor_ctrl_checkbox)
-
-        self.processor_status_label = QLabel("Processor: No clients | Recording: No")
-        self.processor_status_label.setWordWrap(True)
-        form.addRow("Processor Status", self.processor_status_label)
 
         return group
 
@@ -592,7 +661,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.container_combo.setToolTip("Select the video container/format")
         self.container_combo.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
         self.container_combo.setEditable(True)
-        self.container_combo.addItems(["mp4", "avi", "mov"])
+        self.container_combo.addItems(sorted(ALLOWED_VIDEO_CONTAINERS))
         # Ensure it never becomes unreadable:
         self.container_combo.setMinimumContentsLength(8)
         self.container_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -632,13 +701,29 @@ class DLCLiveMainWindow(QMainWindow):
 
         form.addRow(grid)
 
-        # Record with overlays
-        self.record_with_overlays_checkbox = QCheckBox("Record video with overlays")
-        self.record_with_overlays_checkbox.setToolTip(
-            "Enable to include pose overlays in recorded video (keypoints & bounding boxes)"
+        # Recording options
+        # self.record_with_overlays_checkbox = QCheckBox("Record video with overlays")
+        # self.record_with_overlays_checkbox.setToolTip(
+        # "Enable to include pose overlays in recorded video (keypoints & bounding boxes)"
+        # )
+        # self.record_with_overlays_checkbox.setChecked(False)
+
+        self.fast_encoding_checkbox = QCheckBox("Use faster encoding parameters")
+        self.fast_encoding_checkbox.setToolTip(
+            "Use faster FFmpeg parameters for supported codecs.\n"
+            "For libx264/libx265 this uses preset=ultrafast and tune=zerolatency.\n"
+            "This can improve recording throughput but may increase file size."
         )
-        self.record_with_overlays_checkbox.setChecked(False)
-        form.addRow(self.record_with_overlays_checkbox)
+        self.fast_encoding_checkbox.setChecked(False)
+
+        recording_options = QWidget()
+        recording_options_layout = QHBoxLayout(recording_options)
+        recording_options_layout.setContentsMargins(0, 0, 0, 0)
+        # recording_options_layout.addWidget(self.record_with_overlays_checkbox)
+        recording_options_layout.addWidget(self.fast_encoding_checkbox)
+        recording_options_layout.addStretch(1)
+
+        form.addRow(recording_options)
 
         # Wrap recording buttons in a widget to prevent shifting
         recording_button_widget = QWidget()
@@ -782,23 +867,22 @@ class DLCLiveMainWindow(QMainWindow):
         self._dlc.initialized.connect(self._on_dlc_initialised)
         self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
         self.dlc_camera_combo.currentTextChanged.connect(self.dlc_camera_combo.update_shrink_width)
+        self.processor_combo.currentIndexChanged.connect(self._on_processor_selection_changed)
+        self.use_custom_proc_checkbox.stateChanged.connect(self._on_custom_processor_enabled_changed)
 
         # Recording settings
         ## Session name persistence + preview updates
-        if hasattr(self, "session_name_edit"):
-            self.session_name_edit.editingFinished.connect(self._on_session_name_editing_finished)
-        if hasattr(self, "use_timestamp_checkbox"):
-            self.use_timestamp_checkbox.stateChanged.connect(self._on_use_timestamp_changed)
-        if hasattr(self, "output_directory_edit"):
-            self.output_directory_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
-        if hasattr(self, "filename_edit"):
-            self.filename_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
-        if hasattr(self, "container_combo"):
-            self.container_combo.currentTextChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.session_name_edit.editingFinished.connect(self._on_session_name_editing_finished)
+        self.filename_edit.editingFinished.connect(self._on_filename_editing_finished)
+        self.use_timestamp_checkbox.stateChanged.connect(self._on_use_timestamp_changed)
+        self.output_directory_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.filename_edit.textChanged.connect(lambda _t: self._update_recording_path_preview())
+        self.container_combo.currentTextChanged.connect(self._on_container_changed)
+        self.fast_encoding_checkbox.stateChanged.connect(self._on_fast_encoding_changed)
 
     # ------------------------------------------------------------------
     # Config
-    def _apply_config(self, config: ApplicationSettings) -> None:
+    def _apply_config(self, config: ApplicationSettings, *, restore_local_prefs: bool = False) -> None:
         # Update active cameras label
         self._update_active_cameras_label()
 
@@ -813,6 +897,10 @@ class DLCLiveMainWindow(QMainWindow):
         recording = config.recording
         self.output_directory_edit.setText(recording.directory)
         self.filename_edit.setText(recording.filename)
+        if restore_local_prefs:
+            persisted_filename = self._settings_store.get_rec_filename()
+            if persisted_filename:
+                self.filename_edit.setText(persisted_filename)
         self.container_combo.setCurrentText(recording.container)
         codec_index = self.codec_combo.findText(recording.codec)
         if codec_index >= 0:
@@ -821,6 +909,11 @@ class DLCLiveMainWindow(QMainWindow):
             self.codec_combo.addItem(recording.codec)
             self.codec_combo.setCurrentIndex(self.codec_combo.count() - 1)
         self.crf_spin.setValue(int(recording.crf))
+
+        if hasattr(self, "fast_encoding_checkbox"):
+            config_fast_encoding = bool(getattr(recording, "fast_encoding", False))
+            self.fast_encoding_checkbox.setChecked(self._settings_store.get_fast_encoding(default=config_fast_encoding))
+
         ## Restore persisted session name if empty
         if hasattr(self, "session_name_edit"):
             if not self.session_name_edit.text().strip():
@@ -848,6 +941,11 @@ class DLCLiveMainWindow(QMainWindow):
         self._bbox_color = viz.get_bbox_color_bgr()
         if hasattr(self, "bbox_color_combo"):
             color_ui.set_bbox_combo_from_bgr(self.bbox_color_combo, self._bbox_color)
+
+        # Processor
+        ## Use custom processor checkbox state
+        if hasattr(self, "use_custom_proc_checkbox"):
+            self.use_custom_proc_checkbox.setChecked(self._settings_store.get_processor_control_enabled(default=False))
 
         # Update DLC camera list
         self._refresh_dlc_camera_list()
@@ -926,13 +1024,18 @@ class DLCLiveMainWindow(QMainWindow):
         return DLCProcessorSettings.model_validate(updated_dlc)
 
     def _recording_settings_from_ui(self) -> RecordingSettings:
+        container = self.container_combo.currentText().strip() or DEFAULT_RECORDING_CONTAINER
+        filename = self._filename_matching_container(self.filename_edit.text().strip(), container)
         return RecordingSettings(
             enabled=True,  # Always enabled - recording controlled by button
             directory=self.output_directory_edit.text().strip(),
-            filename=self.filename_edit.text().strip() or "session.mp4",
-            container=self.container_combo.currentText().strip() or "mp4",
+            filename=filename,
+            container=container,
             codec=self.codec_combo.currentText().strip() or "libx264",
             crf=int(self.crf_spin.value()),
+            fast_encoding=bool(
+                getattr(self, "fast_encoding_checkbox", None) and self.fast_encoding_checkbox.isChecked()
+            ),
         )
 
     def _bbox_settings_from_ui(self) -> BoundingBoxSettings:
@@ -951,10 +1054,36 @@ class DLCLiveMainWindow(QMainWindow):
             bbox_color=self._bbox_color,
         )
 
+    def _suggest_config_dialog_path(self) -> str:
+        """Return best initial path for load/save config dialogs."""
+        if getattr(self, "_config_path", None) is not None:
+            try:
+                return str(self._config_path)
+            except Exception:
+                pass
+
+        last_cfg = self._settings_store.get_last_config_path()
+        valid_last = self._valid_config_file_path(last_cfg)
+        if valid_last is not None:
+            return str(valid_last)
+
+        if last_cfg:
+            try:
+                p = Path(last_cfg).expanduser()
+                parent = p.parent
+                if parent.exists() and parent.is_dir():
+                    return str(parent / (p.name or "config.json"))
+            except Exception:
+                logger.debug("Failed to derive config dialog path from %s", last_cfg, exc_info=True)
+
+        return str(Path.home() / "config.json")
+
     # ------------------------------------------------------------------
     # Actions
     def _action_load_config(self) -> None:
-        file_name, _ = QFileDialog.getOpenFileName(self, "Load configuration", str(Path.home()), "JSON files (*.json)")
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "Load configuration", self._suggest_config_dialog_path(), "JSON files (*.json)"
+        )
         if not file_name:
             return
         try:
@@ -964,6 +1093,12 @@ class DLCLiveMainWindow(QMainWindow):
             return
         self._settings_store.set_last_config_path(file_name)
         self._settings_store.save_full_config_snapshot(config)
+
+        try:
+            self.settings.sync()
+        except Exception:
+            logger.debug("Failed to sync settings after loading config", exc_info=True)
+
         self._config = config
         self._config_path = Path(file_name)
         self._apply_config(config)
@@ -975,28 +1110,38 @@ class DLCLiveMainWindow(QMainWindow):
         if self._config_path is None:
             self._action_save_config_as()
             return
-        self._save_config_to_path(self._config_path)
+        if self._save_config_to_path(self._config_path):
+            self._config_path = self._config_path.expanduser()
 
     def _action_save_config_as(self) -> None:
-        file_name, _ = QFileDialog.getSaveFileName(self, "Save configuration", str(Path.home()), "JSON files (*.json)")
+        file_name, _ = QFileDialog.getSaveFileName(
+            self, "Save configuration", self._suggest_config_dialog_path(), "JSON files (*.json)"
+        )
         if not file_name:
             return
-        path = Path(file_name)
+        path = Path(file_name).expanduser()
         if path.suffix.lower() != ".json":
             path = path.with_suffix(".json")
-        self._config_path = path
-        self._save_config_to_path(path)
+        if self._save_config_to_path(path):
+            self._config_path = path
 
-    def _save_config_to_path(self, path: Path) -> None:
+    def _save_config_to_path(self, path: Path) -> bool:
         try:
             config = self._current_config(allow_empty_model_path=True)
             config.save(path)
             self._settings_store.set_last_config_path(str(path))
             self._settings_store.save_full_config_snapshot(config)
+
+            try:
+                self.settings.sync()
+            except Exception:
+                logger.debug("Failed to sync settings after saving config", exc_info=True)
+
         except Exception as exc:  # pragma: no cover - GUI interaction
             self._show_error(str(exc))
-            return
+            return False
         self.statusBar().showMessage(f"Saved configuration to {path}", 5000)
+        return True
 
     def _action_browse_model(self) -> None:
         # Prefer persisted last-used directory, then config.dlc.model_directory, then home
@@ -1060,10 +1205,11 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _action_browse_processor_folder(self) -> None:
         """Browse for processor folder."""
-        current_path = self.processor_folder_edit.text() or default_processors_dir()
+        current_path = self.processor_folder_edit.text().strip() or default_processors_dir()
         directory = QFileDialog.getExistingDirectory(self, "Select processor folder", current_path)
         if directory:
             self.processor_folder_edit.setText(directory)
+            self._settings_store.set_processor_folder(directory)
             self._refresh_processors()
 
     def _action_open_recording_folder(self) -> None:
@@ -1107,58 +1253,177 @@ class DLCLiveMainWindow(QMainWindow):
             logger.error(f"Failed to open folder: {exc}")
             self.statusBar().showMessage("Could not open recording folder.", 5000)
 
-    def _processor_control_enabled(self) -> bool:
+    def _action_view_documentation(self) -> None:
+        """Open the DeepLabCut-live-GUI documentation."""
+        url = QUrl("https://deeplabcut.github.io/DeepLabCut/docs/dlc-live/dlc-live-gui/index.html")
+        if not QDesktopServices.openUrl(url):
+            self._show_warning("Could not open the documentation in your web browser.")
+
+    def _custom_processor_enabled(self) -> bool:
         return bool(
-            getattr(self, "allow_processor_ctrl_checkbox", None) and self.allow_processor_ctrl_checkbox.isChecked()
+            getattr(self, "use_custom_proc_checkbox", None)
+            and self.use_custom_proc_checkbox.isChecked()
+            and self.processor_combo.currentData() is not None
         )
 
+    def _on_processor_selection_changed(
+        self,
+        _index: int,
+    ) -> None:
+        """Persist selection and enable custom processing for a chosen processor."""
+        selected_key = self.processor_combo.currentData()
+        has_selection = selected_key is not None
+
+        self._settings_store.set_processor_key(selected_key)
+        self.processor_toggle_row.setVisible(has_selection)
+
+        self.use_custom_proc_checkbox.blockSignals(True)
+        self.use_custom_proc_checkbox.setChecked(has_selection)
+        self.use_custom_proc_checkbox.blockSignals(False)
+
+        self._settings_store.set_processor_control_enabled(has_selection)
+
+        if hasattr(
+            self.processor_combo,
+            "update_shrink_width",
+        ):
+            self.processor_combo.update_shrink_width()
+
+        self._update_processor_status()
+
+    def _on_custom_processor_enabled_changed(
+        self,
+        _state: int,
+    ) -> None:
+        """Persist whether the selected custom processor should be used."""
+        enabled = self._custom_processor_enabled()
+
+        self._settings_store.set_processor_control_enabled(enabled)
+        self._update_processor_status()
+
     def _refresh_processors(self) -> None:
-        self.processor_combo.clear()
-        self.processor_combo.addItem("No Processor", None)
+        """Scan processors and restore the previous selection best-effort."""
+        previous_key = self.processor_combo.currentData()
+        preferred_key = previous_key or self._settings_store.get_processor_key()
+        preferred_enabled = (
+            self.use_custom_proc_checkbox.isChecked()
+            if previous_key is not None
+            else self._settings_store.get_processor_control_enabled(default=False)
+        )
 
-        selected_folder = self.processor_folder_edit.text().strip()
-        if Path(selected_folder).exists():
-            self._scanned_processors = scan_processor_folder(selected_folder)
-        else:
-            self._scanned_processors = scan_processor_package("dlclivegui.processors")
-        self._processor_keys = list(self._scanned_processors.keys())
+        self.processor_combo.blockSignals(True)
+        try:
+            self.processor_combo.clear()
+            self.processor_combo.addItem(
+                "No Processor",
+                None,
+            )
 
-        for key in self._processor_keys:
-            info = self._scanned_processors[key]
-            display_name = f"{info['name']} ({info['file']})"
-            self.processor_combo.addItem(display_name, key)
+            selected_folder = self.processor_folder_edit.text().strip()
+            selected_path = Path(selected_folder).expanduser() if selected_folder else None
+
+            if selected_path is not None and selected_path.is_dir():
+                resolved_folder = str(selected_path.resolve())
+                self._settings_store.set_processor_folder(resolved_folder)
+                self._scanned_processors = scan_processor_folder(resolved_folder)
+                source_text = resolved_folder
+            else:
+                self._scanned_processors = scan_processor_package("dlclivegui.processors")
+                source_text = "package dlclivegui.processors"
+
+            self._processor_keys = list(self._scanned_processors)
+
+            for key in self._processor_keys:
+                info = self._scanned_processors[key]
+                display_name = f"{info['name']} ({info['file']})"
+                self.processor_combo.addItem(
+                    display_name,
+                    key,
+                )
+
+            selected_index = 0
+            if preferred_key is not None:
+                found_index = self.processor_combo.findData(preferred_key)
+                if found_index >= 0:
+                    selected_index = found_index
+
+            self.processor_combo.setCurrentIndex(selected_index)
+        finally:
+            self.processor_combo.blockSignals(False)
+
+        has_selection = self.processor_combo.currentData() is not None
+
+        self.processor_toggle_row.setVisible(has_selection)
+
+        self.use_custom_proc_checkbox.blockSignals(True)
+        self.use_custom_proc_checkbox.setChecked(has_selection and preferred_enabled)
+        self.use_custom_proc_checkbox.blockSignals(False)
+
+        # Clear a saved key that is no longer available.
+        selected_key = self.processor_combo.currentData()
+        self._settings_store.set_processor_key(selected_key)
+        self._settings_store.set_processor_control_enabled(self._custom_processor_enabled())
 
         self.processor_combo.update_shrink_width()
+        self._update_processor_status()
+
         self.statusBar().showMessage(
-            f"Found {len(self._processor_keys)} processor(s) in package dlclivegui.processors", 3000
+            f"Found {len(self._processor_keys)} processor(s) in {source_text}",
+            3000,
         )
 
     # ------------------------------------------------------------------
     # Recording path preview and session name persistence
+    def _known_recording_extensions(self) -> set[str]:
+        """Return known recording container extensions without leading dots."""
+        known = ALLOWED_VIDEO_CONTAINERS.copy()
+        if hasattr(self, "container_combo"):
+            known.update(
+                self.container_combo.itemText(i).strip().lower().lstrip(".")
+                for i in range(self.container_combo.count())
+                if self.container_combo.itemText(i).strip()
+            )
+        return known
+
+    def _filename_matching_container(self, filename: str, container: str) -> str:
+        """
+        Adjust filename extension to match selected container, but only when
+        the existing extension is another known recording container.
+        """
+        name = filename.strip() or "recording"
+        selected_ext = container.strip().lower().lstrip(".")
+        suffix = Path(name).suffix
+
+        if not suffix or not selected_ext:
+            return name
+
+        current_ext = suffix.lower().lstrip(".")
+        if current_ext in self._known_recording_extensions() and current_ext != selected_ext:
+            return str(Path(name).with_suffix(f".{selected_ext}"))
+
+        return name
+
+    def _on_container_changed(self, text: str) -> None:
+        """Keep filename extension aligned with selected container when safe."""
+        if hasattr(self, "filename_edit"):
+            current = self.filename_edit.text()
+            updated = self._filename_matching_container(current, text)
+            if updated != current:
+                self.filename_edit.blockSignals(True)
+                self.filename_edit.setText(updated)
+                self.filename_edit.blockSignals(False)
+
+        self._update_recording_path_preview()
+
     def _on_session_name_editing_finished(self) -> None:
         name = self.session_name_edit.text().strip()
         self._settings_store.set_session_name(name)
         self._update_recording_path_preview()
 
-    # def _update_recording_path_preview(self) -> None:
-    #     """Update the label showing where files will go (best-effort)."""
-    #     if not hasattr(self, "recording_path_preview"):
-    #         return
-    #     out_dir = self.output_directory_edit.text().strip()
-    #     sess = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
-    #     base = self.filename_edit.text().strip()
-    #     container = self.container_combo.currentText().strip() if hasattr(self, "container_combo") else "mp4"
-    #     use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
-
-    #     # Preview is approximate (since run index/time is decided at start).
-    #     sess_safe = sess.strip() or "session"
-    #     run_hint = "run_<timestamp>" if use_ts else "run_<next>"
-    #     stem_hint = Path(base).stem if base.strip() else "recording"  # shows user-provided stem or default
-    #     full_hint = str(Path(out_dir).expanduser() / sess_safe / run_hint / f"{stem_hint}_<camera>.{container}")
-    #     self.recording_path_preview.setText(f"<span style='color: gray;'>{full_hint}</span>")
-    #     self.recording_path_preview.setToolTip(
-    #         f"<b>Click to copy to clipboard :</b><br>{full_hint.replace('<camera>', '*')}"
-    #     )
+    def _on_filename_editing_finished(self) -> None:
+        filename = self.filename_edit.text().strip()
+        self._settings_store.set_rec_filename(filename)
+        self._update_recording_path_preview()
 
     def _update_recording_path_preview(self) -> None:
         """Update the label showing where files will go (best-effort)."""
@@ -1167,8 +1432,12 @@ class DLCLiveMainWindow(QMainWindow):
 
         out_dir = self.output_directory_edit.text().strip()
         sess = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
-        base = self.filename_edit.text().strip()
-        container = self.container_combo.currentText().strip() if hasattr(self, "container_combo") else "mp4"
+        container = (
+            self.container_combo.currentText().strip()
+            if hasattr(self, "container_combo")
+            else DEFAULT_RECORDING_CONTAINER
+        )
+        base = self._filename_matching_container(self.filename_edit.text(), container)
         use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
 
         # Preview is approximate (since run index/time is decided at start).
@@ -1191,6 +1460,9 @@ class DLCLiveMainWindow(QMainWindow):
     def _on_use_timestamp_changed(self, _state: int) -> None:
         self._settings_store.set_use_timestamp(self.use_timestamp_checkbox.isChecked())
         self._update_recording_path_preview()
+
+    def _on_fast_encoding_changed(self, _state: int) -> None:
+        self._settings_store.set_fast_encoding(self.fast_encoding_checkbox.isChecked())
 
     def _on_colormap_changed(self, _index: int) -> None:
         self._colormap = color_ui.get_cmap_name_from_combo(self.cmap_combo, fallback=self._colormap)
@@ -1232,16 +1504,20 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage(f"Camera configuration updated: {active_count} active camera(s)", 3000)
 
     def _update_active_cameras_label(self) -> None:
-        """Update the label showing active cameras."""
         active_cams = self._config.multi_camera.get_active_cameras()
+
         if not active_cams:
             self.active_cameras_label.setText("No cameras configured")
-        elif len(active_cams) == 1:
+            return
+
+        if len(active_cams) == 1:
             cam = active_cams[0]
-            self.active_cameras_label.setText(f"{cam.name} [{cam.backend}:{cam.index}] @ {cam.fps:.1f} fps")
-        else:
-            cam_names = [f"{c.name}" for c in active_cams]
-            self.active_cameras_label.setText(f"{len(active_cams)} cameras: {', '.join(cam_names)}")
+            display_id = get_display_id(cam)
+            self.active_cameras_label.setText(f"{display_id} [{cam.backend}:{cam.index}]")
+            return
+
+        cam_names = [get_display_id(c) for c in active_cams]
+        self.active_cameras_label.setText(f"{len(active_cams)} cameras: {', '.join(cam_names)}")
 
     def _validate_configured_cameras(self) -> None:
         """Validate that configured cameras are available.
@@ -1283,68 +1559,111 @@ class DLCLiveMainWindow(QMainWindow):
     def _label_for_cam_id(self, cam_id: str) -> str:
         for cam in self._config.multi_camera.get_active_cameras():
             if get_camera_id(cam) == cam_id:
-                return f"{cam.name} [{cam.backend}:{cam.index}]"
-        return cam_id
+                display_id = get_display_id(cam)
+                return f"{display_id} [{cam.backend}:{cam.index}]"
+
+        display_id = self._multi_camera_display_ids.get(cam_id)
+        if display_id:
+            return display_id
+
+        return f"Unknown camera [{cam_id}]"
 
     def _refresh_dlc_camera_list_running(self) -> None:
-        """Populate the inference camera dropdown from currently running cameras."""
+        """Populate inference camera dropdown from currently running cameras.
+
+        - Keep the user's preferred camera if it is running
+        - Otherwise use a temporary runtime fallback
+        - Never persist fallback choices caused by preview/update events
+        """
+        preferred_id = self._inference_camera_id or self._settings_store.get_inference_camera_id()
+
         self.dlc_camera_combo.blockSignals(True)
         self.dlc_camera_combo.clear()
+
         for cam in self._config.multi_camera.get_active_cameras():
             cam_id = get_camera_id(cam)
             if cam_id in self._running_cams_ids:
                 self.dlc_camera_combo.addItem(self._label_for_cam_id(cam_id), cam_id)
 
-        # Keep current selection if still present, else select first running
-        if self._inference_camera_id in self._running_cams_ids:
-            idx = self.dlc_camera_combo.findData(self._inference_camera_id)
+        selected_id = None
+
+        if preferred_id in self._running_cams_ids:
+            idx = self.dlc_camera_combo.findData(preferred_id)
             if idx >= 0:
                 self.dlc_camera_combo.setCurrentIndex(idx)
-        elif self.dlc_camera_combo.count() > 0:
-            self.dlc_camera_combo.setCurrentIndex(0)
-            self._inference_camera_id = self.dlc_camera_combo.currentData()
-        self.dlc_camera_combo.blockSignals(False)
+                selected_id = preferred_id
 
-    def _set_dlc_combo_to_id(self, cam_id: str) -> None:
-        """Update combo selection to a given ID without firing signals."""
-        self.dlc_camera_combo.blockSignals(True)
-        idx = self.dlc_camera_combo.findData(cam_id)
-        if idx >= 0:
-            self.dlc_camera_combo.setCurrentIndex(idx)
+        if selected_id is None and self.dlc_camera_combo.count() > 0:
+            self.dlc_camera_combo.setCurrentIndex(0)
+            selected_id = self.dlc_camera_combo.currentData()
+
+        self._active_inference_camera_id = selected_id
+
         self.dlc_camera_combo.blockSignals(False)
+        self.dlc_camera_combo.update_shrink_width()
+
+    def _set_dlc_combo_to_id(self, cam_id: str) -> bool:
+        """Update combo selection to a given camera ID without firing signals."""
+        self.dlc_camera_combo.blockSignals(True)
+        try:
+            idx = self.dlc_camera_combo.findData(cam_id)
+            if idx >= 0:
+                self.dlc_camera_combo.setCurrentIndex(idx)
+                return True
+            return False
+        finally:
+            self.dlc_camera_combo.blockSignals(False)
+            self.dlc_camera_combo.update_shrink_width()
 
     def _refresh_dlc_camera_list(self) -> None:
-        """Populate the inference camera dropdown from active cameras."""
+        """Populate inference camera dropdown from configured active cameras."""
+        preferred_id = self._inference_camera_id or self._settings_store.get_inference_camera_id()
+
         self.dlc_camera_combo.blockSignals(True)
         self.dlc_camera_combo.clear()
 
         active_cams = self._config.multi_camera.get_active_cameras()
         for cam in active_cams:
-            cam_id = get_camera_id(cam)  # e.g., "opencv:0" or "pylon:1"
-            label = f"{cam.name} [{cam.backend}:{cam.index}]"
+            cam_id = get_camera_id(cam)
+            display_id = get_display_id(cam)
+            label = f"{display_id} [{cam.backend}:{cam.index}]"
             self.dlc_camera_combo.addItem(label, cam_id)
 
-        # Keep previous selection if still present, else default to first
-        if self._inference_camera_id is not None:
-            idx = self.dlc_camera_combo.findData(self._inference_camera_id)
+        selected_id = None
+
+        if preferred_id is not None:
+            idx = self.dlc_camera_combo.findData(preferred_id)
             if idx >= 0:
                 self.dlc_camera_combo.setCurrentIndex(idx)
-            elif self.dlc_camera_combo.count() > 0:
-                self.dlc_camera_combo.setCurrentIndex(0)
-                self._inference_camera_id = self.dlc_camera_combo.currentData()
-        else:
-            if self.dlc_camera_combo.count() > 0:
-                self.dlc_camera_combo.setCurrentIndex(0)
-                self._inference_camera_id = self.dlc_camera_combo.currentData()
+                selected_id = preferred_id
+
+        if selected_id is None and self.dlc_camera_combo.count() > 0:
+            self.dlc_camera_combo.setCurrentIndex(0)
+            selected_id = self.dlc_camera_combo.currentData()
+
+            # First-run convenience only.
+            # If there is no previous preference, initialize one.
+            if self._inference_camera_id is None and preferred_id is None:
+                self._inference_camera_id = selected_id
+                self._settings_store.set_inference_camera_id(selected_id)
+
+        self._active_inference_camera_id = selected_id
 
         self.dlc_camera_combo.blockSignals(False)
         self.dlc_camera_combo.update_shrink_width()
 
     def _on_dlc_camera_changed(self, _index: int) -> None:
-        """Track user selection of the inference camera."""
-        self._inference_camera_id = self.dlc_camera_combo.currentData()
+        """Track explicit user selection of the inference camera."""
+        cam_id = self.dlc_camera_combo.currentData()
+
+        self._inference_camera_id = cam_id
+        self._active_inference_camera_id = cam_id
+
+        self._settings_store.set_inference_camera_id(cam_id)
+
         self.dlc_camera_combo.update_shrink_width()
-        # Force redraw so bbox/pose overlays switch to the new tile immediately
+
+        # Force redraw so bbox/pose overlays switch to the new tile immediately.
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
 
@@ -1356,7 +1675,7 @@ class DLCLiveMainWindow(QMainWindow):
         offset, scale = (0, 0), (1.0, 1.0)
 
         # If this is the inference camera, apply pose overlays
-        if cam_id == self._inference_camera_id and self._last_pose and self._last_pose.pose is not None:
+        if cam_id == self._active_inference_camera_id and self._last_pose and self._last_pose.pose is not None:
             output = draw_pose(
                 output,
                 self._last_pose.pose,
@@ -1379,10 +1698,11 @@ class DLCLiveMainWindow(QMainWindow):
         """Handle frames from multiple cameras.
 
         Priority:
-        1. DLC processing (highest priority - enqueue immediately, only for DLC camera)
-        2. Recording (queued writes, non-blocking)
+            - DLC processing (highest priority - enqueue immediately, only for DLC camera)
         """
         self._multi_camera_frames = frame_data.frames
+        self._multi_camera_display_ids = frame_data.display_ids or {}
+        self._try_start_pending_recording()
         src_id = frame_data.source_camera_id
         if src_id:
             self._fps_tracker.note_frame(src_id)  # Track FPS
@@ -1392,24 +1712,29 @@ class DLCLiveMainWindow(QMainWindow):
             self._running_cams_ids = new_running
             self._refresh_dlc_camera_list_running()
 
-        # Determine DLC camera (first active camera)
-        selected_id = self._inference_camera_id
+        preferred_id = self._inference_camera_id
         available_ids = list(frame_data.frames.keys())
-        if selected_id in frame_data.frames:
-            dlc_cam_id = selected_id
+
+        if preferred_id in frame_data.frames:
+            dlc_cam_id = preferred_id
         else:
             dlc_cam_id = available_ids[0] if available_ids else ""
+
             if dlc_cam_id:
-                self._inference_camera_id = dlc_cam_id
-                self._set_dlc_combo_to_id(dlc_cam_id)
-                self.statusBar().showMessage(
-                    f"DLC inference camera changed to {self._label_for_cam_id(dlc_cam_id)}", 3000
-                )
-            else:  # No more cameras available
+                if self._active_inference_camera_id != dlc_cam_id:
+                    self._active_inference_camera_id = dlc_cam_id
+                    self._set_dlc_combo_to_id(dlc_cam_id)
+                    self.statusBar().showMessage(
+                        f"Using temporary DLC inference camera: {self._label_for_cam_id(dlc_cam_id)}",
+                        3000,
+                    )
+            else:
                 if self._dlc_active:
                     self._stop_inference(show_message=True)
                 self._display_dirty = True
                 return
+
+        self._active_inference_camera_id = dlc_cam_id
 
         # Check if this frame is from the DLC camera
         is_dlc_camera_frame = frame_data.source_camera_id == dlc_cam_id
@@ -1420,22 +1745,15 @@ class DLCLiveMainWindow(QMainWindow):
             self._raw_frame = frame
             self._dlc_tile_offset, self._dlc_tile_scale = compute_tile_info(dlc_cam_id, frame, frame_data.frames)
 
-        # PRIORITY 1: DLC processing - only enqueue when DLC camera frame arrives!
+        # PRIORITY: DLC processing - only enqueue when DLC camera frame arrives!
         if self._dlc_active and is_dlc_camera_frame and dlc_cam_id in frame_data.frames:
             frame = frame_data.frames[dlc_cam_id]
             timestamp = frame_data.timestamps.get(dlc_cam_id, time.time())
-            self._dlc.enqueue_frame(frame, timestamp)
+            with self._dlc_timing.measure("enqueue_frame"):
+                self._dlc.enqueue_frame(frame, timestamp)
 
-        # PRIORITY 2: Recording (queued, non-blocking)
-        if self._rec_manager.is_active and src_id in frame_data.frames:
-            frame = frame_data.frames[src_id]
-
-            if self.record_with_overlays_checkbox.isChecked():
-                # Draw overlays for recording
-                frame = self._render_overlays_for_recording(src_id, frame)
-
-            ts = frame_data.timestamps.get(src_id, time.time())
-            self._rec_manager.write_frame(src_id, frame, ts)
+            self._dlc_timing.note_frame()
+            self._dlc_timing.maybe_log()
 
     def _on_multi_frame_display_ready(self, frame_data: MultiFrameData) -> None:
         """Throttled UI/display path.
@@ -1443,6 +1761,7 @@ class DLCLiveMainWindow(QMainWindow):
         Called at GUI_MAX_DISPLAY_FPS, not at camera capture FPS for performance reasons.
         """
         self._multi_camera_frames = frame_data.frames
+        self._multi_camera_display_ids = frame_data.display_ids or {}
         self._display_dirty = True
 
     def _on_multi_camera_started(self) -> None:
@@ -1453,24 +1772,36 @@ class DLCLiveMainWindow(QMainWindow):
         self.statusBar().showMessage(f"Multi-camera preview started: {active_count} camera(s)", 5000)
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
+        self._update_dlc_controls_enabled()
 
     def _on_multi_camera_stopped(self) -> None:
         """Handle all cameras stopped event."""
         # Stop all multi-camera recorders
         self._stop_multi_camera_recording()
+        self._pending_recording_after_preview = False
 
         self.preview_button.setEnabled(True)
         self.stop_preview_button.setEnabled(False)
+
         self._current_frame = None
         self._multi_camera_frames.clear()
+        self._multi_camera_display_ids.clear()
+        self._running_cams_ids.clear()
+        self._display_dirty = False
+
         self.video_label.setPixmap(QPixmap())
         self.video_label.setText("Camera preview not started")
         self.statusBar().showMessage("Multi-camera preview stopped", 3000)
+
+        self._update_active_cameras_label()
+        self._refresh_dlc_camera_list()
         self._update_inference_buttons()
         self._update_camera_controls_enabled()
+        self._update_dlc_controls_enabled()
 
     def _on_multi_camera_error(self, camera_id: str, message: str) -> None:
         """Handle error from a camera in multi-camera mode."""
+        self._pending_recording_after_preview = False
         self._show_warning(f"Camera {camera_id} error: {message}\nRecording stopped.")
         self._refresh_dlc_camera_list_running()
         if self.dlc_camera_combo.count() <= 1:
@@ -1479,6 +1810,7 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _on_multi_camera_initialization_failed(self, failures: list) -> None:
         """Handle complete failure to initialize cameras."""
+        self._pending_recording_after_preview = False
         # Build error message with details for each failed camera
         error_lines = ["Failed to initialize camera(s):"]
         for camera_id, error_msg in failures:
@@ -1500,11 +1832,13 @@ class DLCLiveMainWindow(QMainWindow):
 
         session_name = self.session_name_edit.text().strip() if hasattr(self, "session_name_edit") else ""
         use_ts = self.use_timestamp_checkbox.isChecked() if hasattr(self, "use_timestamp_checkbox") else True
+        actual_fps_by_camera = self.multi_camera_controller.actual_fps_by_camera_id()
 
         run_dir = self._rec_manager.start_all(
             recording,
             active_cams,
             self._multi_camera_frames,
+            frame_rates=actual_fps_by_camera,
             session_name=session_name,
             use_timestamp=use_ts,
             all_or_nothing=False,
@@ -1512,6 +1846,12 @@ class DLCLiveMainWindow(QMainWindow):
         if run_dir is None:
             self._show_error("Failed to start recording.")
             return
+
+        self._processor_recording_context = self._build_processor_recording_context(run_dir)
+        self._processor_recording_started_notified = False
+        self._notify_processor_recording_started(self._processor_recording_context)
+        self.multi_camera_controller.set_recording_sink(self._rec_manager.write_frame)
+        self.multi_camera_controller.set_recording_frame_is_enabled(True)
 
         self._settings_store.set_session_name(session_name)
         self.start_record_button.setEnabled(False)
@@ -1522,10 +1862,209 @@ class DLCLiveMainWindow(QMainWindow):
     def _stop_multi_camera_recording(self) -> None:
         if not self._rec_manager.is_active:
             return
-        self._rec_manager.stop_all()
+
+        if getattr(self, "_recording_stopping", False):
+            return
+
+        self._recording_stopping = True
+
+        self.start_record_button.setEnabled(False)
+        self.stop_record_button.setEnabled(False)
+        self.statusBar().showMessage("Stopping multi-camera recording…", 3000)
+
+        # Stop frame emission immediately so no new frames enter recording pipeline.
+        try:
+            self.multi_camera_controller.set_recording_frame_is_enabled(False)
+            self.multi_camera_controller.set_recording_sink(None)
+        except Exception:
+            logger.exception("Failed to disable recording frame emission")
+
+        def worker():
+            total_wait_time = 0.0
+            try:
+                while not self._rec_manager.stop_all():
+                    logger.info("Retrying recorder stop...")
+                    time.sleep(RECORD_STOP_RETRY_INTERVAL)
+                    total_wait_time += RECORD_STOP_RETRY_INTERVAL
+                    if total_wait_time >= RECORD_STOP_RETRY_TIMEOUT:
+                        logger.error("Timeout while stopping recording after %.1f seconds", total_wait_time)
+                        raise RuntimeError("Could not stop recording within timeout period.")
+            except Exception as e:
+                logger.exception("Error while stopping recording: %s", e)
+                self._rec_stop_failed_async.emit(str(e))
+                return
+
+            self._recording_stopped_async.emit()
+
+        threading.Thread(
+            target=worker,
+            name="StopRecordingWorker",
+            daemon=True,
+        ).start()
+
+    def _get_dlc_processor_instance(self):
+        """Return the active custom DLC processor instance, if available."""
+        processor = getattr(self._dlc, "_processor", None)
+
+        if processor is not None:
+            return processor
+
+        # Fallback: if DLCLive owns it internally.
+        dlc_obj = getattr(self._dlc, "_dlc", None)
+        if dlc_obj is not None:
+            return getattr(dlc_obj, "processor", None)
+
+        return None
+
+    def _save_processor_data_if_available(self) -> None:
+        """Best-effort generic processor save.
+
+        The GUI intentionally does not pass a path here. This lets custom processors
+        use their own save_path / filename / internal policy.
+
+        Expected processor contract:
+            processor.save() -> int | bool | None
+
+        Return values are only logged; failure should not crash the GUI.
+        """
+        processor = self._get_dlc_processor_instance()
+
+        if processor is None:
+            logger.debug("Processor save skipped: no processor instance available.")
+            return
+
+        save = getattr(processor, "save", None)
+        if not callable(save):
+            logger.debug("Processor save skipped: processor has no callable save().")
+            return
+
+        try:
+            result = save()
+            logger.info("Processor save() completed with result: %r", result)
+        except Exception:
+            logger.exception("Processor save() failed.")
+
+    def _notify_processor_recording_started(self, context: dict) -> bool:
+        processor = self._get_dlc_processor_instance()
+        if processor is None:
+            return False
+
+        hook = getattr(processor, "on_recording_started", None)
+        if not callable(hook):
+            return False
+
+        try:
+            hook(context)
+            self._processor_recording_started_notified = True
+            logger.info("Notified processor recording started: %s", context)
+            return True
+        except Exception:
+            logger.exception("Processor on_recording_started hook failed")
+            return False
+
+    def _build_processor_recording_context(self, run_dir) -> dict:
+        run_dir = Path(run_dir) if run_dir is not None else None
+
+        file_context = {}
+        try:
+            file_context = self._rec_manager.get_recording_file_context()
+        except Exception:
+            logger.exception("Failed to get recording file context from RecordingManager")
+            file_context = {}
+
+        if run_dir is None:
+            run_dir = file_context.get("run_dir", None)
+        if run_dir is not None:
+            run_dir = Path(run_dir)
+
+        session_name = ""
+        if hasattr(self, "session_name_edit"):
+            session_name = self.session_name_edit.text().strip()
+
+        filename = ""
+        if hasattr(self, "filename_edit"):
+            filename = self.filename_edit.text().strip()
+
+        filename_stem = Path(filename or session_name or "recording").stem
+
+        ctx = {
+            "run_dir": run_dir,
+            "session_name": session_name,
+            "filename": filename,
+            "filename_stem": filename_stem,
+            "processor_base_path": run_dir / filename_stem if run_dir is not None else None,
+        }
+        ctx.update(file_context)
+        return ctx
+
+    def _final_processor_recording_context(self) -> dict:
+        cached = self._processor_recording_context
+
+        run_dir = None
+        if cached is not None:
+            run_dir = cached.get("run_dir")
+        if run_dir is None:
+            run_dir = getattr(self._rec_manager, "run_dir", None)
+
+        context = self._build_processor_recording_context(run_dir)
+        if cached is not None:
+            context.update(cached)
+
+        try:
+            final_file_context = self._rec_manager.get_recording_file_context()
+        except Exception:
+            logger.exception("Failed to get finalized recording file context")
+            final_file_context = {}
+
+        context.update(final_file_context)
+        return context
+
+    def _notify_processor_recording_stopped(self) -> None:
+        processor = self._get_dlc_processor_instance()
+        if processor is None:
+            return
+
+        hook = getattr(processor, "on_recording_stopped", None)
+        if not callable(hook):
+            return
+
+        try:
+            context = self._final_processor_recording_context()
+            hook(context)
+            logger.info("Notified processor recording stopped")
+        except Exception:
+            logger.exception("Processor on_recording_stopped hook failed")
+
+    def _finalize_processor_recording(self) -> None:
+        """Notify the processor and save its recording data."""
+        try:
+            self._notify_processor_recording_stopped()
+            self._save_processor_data_if_available()
+        finally:
+            self._processor_recording_context = None
+            self._processor_recording_started_notified = False
+
+    def _on_recording_stopped_async(self) -> None:
+        if self._processor_recording_context is not None:
+            self._finalize_processor_recording()
+
+        self._recording_stopping = False
         self.start_record_button.setEnabled(True)
         self.stop_record_button.setEnabled(False)
         self.statusBar().showMessage("Multi-camera recording stopped", 3000)
+        self._update_camera_controls_enabled()
+
+    def _on_recording_stop_failed_async(self, message: str) -> None:
+        self._recording_stopping = False
+
+        still_active = self._rec_manager.is_active
+        self.start_record_button.setEnabled(not still_active)
+        self.stop_record_button.setEnabled(still_active)
+
+        self.statusBar().showMessage(
+            f"Failed to stop recording: {message}",
+            10000,
+        )
         self._update_camera_controls_enabled()
 
     # ------------------------------------------------------------------
@@ -1597,6 +2136,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._raw_frame = None
         self._last_pose = None
         self._multi_camera_frames.clear()
+        self._multi_camera_display_ids.clear()
         self._fps_tracker.clear()
         self._last_display_time = 0.0
 
@@ -1631,8 +2171,9 @@ class DLCLiveMainWindow(QMainWindow):
         # Stop any active recording first
         self._stop_multi_camera_recording()
 
-        self.multi_camera_controller.stop(wait=True)
+        self._pending_recording_after_preview = False
         self._stop_inference(show_message=False)
+        self.multi_camera_controller.stop()
         self._fps_tracker.clear()
         self._last_display_time = 0.0
         if hasattr(self, "camera_stats_label"):
@@ -1642,34 +2183,76 @@ class DLCLiveMainWindow(QMainWindow):
     def _configure_dlc(self) -> bool:
         try:
             settings = self._dlc_settings_from_ui()
-        except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        except (
+            ValueError,
+            RuntimeError,
+            json.JSONDecodeError,
+        ) as exc:
             self._show_error(f"Invalid DLCLive settings: {exc}")
             return False
+
         if not settings.model_path:
             self._show_error("Please select a DLCLive model before starting inference.")
             return False
 
-        # Instantiate processor if selected
         processor = None
-        if self._processor_control_enabled():
-            selected_key = self.processor_combo.currentData()
-            if selected_key is not None and self._scanned_processors:
-                try:
-                    # For now, instantiate with no parameters
-                    processor = instantiate_from_scan(self._scanned_processors, selected_key)
-                    processor_name = self._scanned_processors[selected_key]["name"]
-                    self.statusBar().showMessage(f"Loaded processor: {processor_name}", 3000)
-                except Exception as e:
-                    error_msg = f"Failed to instantiate processor: {e}"
-                    self._show_error(error_msg)
-                    logger.error(error_msg)
-                    return False
-        else:
-            selected_key = self.processor_combo.currentData()
-            if selected_key is not None:
-                self.statusBar().showMessage(f"Processor selection ignored (control disabled): {selected_key}", 3000)
+        processor_spec = None
+        selected_key = self.processor_combo.currentData()
 
-        self._dlc.configure(settings, processor=processor)
+        self._settings_store.set_processor_key(selected_key)
+
+        if self._custom_processor_enabled():
+            try:
+                processor_info = self._scanned_processors[selected_key]
+                processor_class = processor_info["class"]
+                processor_name = processor_info.get(
+                    "name",
+                    processor_class.__name__,
+                )
+
+                if processor_builds_in_worker(processor_class):
+                    processor_spec = create_spec_from_scan(
+                        self._scanned_processors,
+                        selected_key,
+                    )
+
+                    log_processor_context(
+                        f"MainWindow._configure_dlc - SPEC: {processor_class.__name__}",
+                        logger,
+                    )
+                else:
+                    processor = instantiate_from_scan(
+                        self._scanned_processors,
+                        selected_key,
+                    )
+
+                    log_processor_context(
+                        f"MainWindow._configure_dlc - INSTANCE: {type(processor).__name__}",
+                        logger,
+                    )
+
+                self.statusBar().showMessage(
+                    f"Loaded processor: {processor_name}",
+                    3000,
+                )
+
+            except Exception as exc:
+                error_msg = f"Failed to configure processor: {exc}"
+                self._show_error(error_msg)
+                logger.exception(error_msg)
+                return False
+
+        elif selected_key is not None:
+            self.statusBar().showMessage(
+                f"Custom processor disabled: {selected_key}",
+                3000,
+            )
+
+        self._dlc.configure(
+            settings,
+            processor=processor,
+            processor_spec=processor_spec,
+        )
         self._model_path_store.save_if_valid(settings.model_path)
         return True
 
@@ -1681,24 +2264,28 @@ class DLCLiveMainWindow(QMainWindow):
     def _update_dlc_controls_enabled(self) -> None:
         """Enable/disable DLC settings based on inference state."""
         allow_changes = not self._dlc_active
-        processor_controls = allow_changes and self._processor_control_enabled()
 
         widgets = [
             self.model_path_edit,
             self.browse_model_button,
             self.dlc_camera_combo,
-            # self.additional_options_edit,
         ]
+
         processor_widgets = [
             self.processor_folder_edit,
             self.browse_processor_folder_button,
             self.refresh_processors_button,
             self.processor_combo,
         ]
+
         for widget in widgets:
             widget.setEnabled(allow_changes)
+
         for widget in processor_widgets:
-            widget.setEnabled(processor_controls)
+            widget.setEnabled(allow_changes)
+
+        if hasattr(self, "use_custom_proc_checkbox"):
+            self.use_custom_proc_checkbox.setEnabled(allow_changes)
 
     def _update_camera_controls_enabled(self) -> None:
         multi_cam_recording = self._rec_manager.is_active
@@ -1712,6 +2299,8 @@ class DLCLiveMainWindow(QMainWindow):
         recording_editable = not multi_cam_recording
         self.codec_combo.setEnabled(recording_editable)
         self.crf_spin.setEnabled(recording_editable)
+        if hasattr(self, "fast_encoding_checkbox"):
+            self.fast_encoding_checkbox.setEnabled(recording_editable)
 
         # Config cameras button should be available when not in preview/recording
         self.config_cameras_button.setEnabled(allow_changes)
@@ -1739,7 +2328,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._display_dirty = False
 
         # Create tiled frame on demand (moved from camera thread for performance)
-        tiled = create_tiled_frame(self._multi_camera_frames)
+        tiled = create_tiled_frame(self._multi_camera_frames, labels=self._multi_camera_display_ids)
         if tiled is not None:
             self._current_frame = tiled
             self._update_video_display(tiled)
@@ -1755,10 +2344,11 @@ class DLCLiveMainWindow(QMainWindow):
                 active_cams = self._config.multi_camera.get_active_cameras()
                 lines = []
                 for cam in active_cams:
-                    cam_id = get_camera_id(cam)  # e.g., "opencv:0" or "pylon:1"
+                    cam_id = get_camera_id(cam)
+                    display_id = get_display_id(cam)
                     fps = self._fps_tracker.fps(cam_id)
                     # Make a compact label: name [backend:index] @ fps
-                    label = f"{cam.name or cam_id} [{cam.backend}:{cam.index}]"
+                    label = f"{display_id} [{cam.backend}:{cam.index}]"
                     if fps > 0:
                         lines.append(f"{label} @ {fps:.1f} fps")
                     else:
@@ -1785,7 +2375,7 @@ class DLCLiveMainWindow(QMainWindow):
                 self.dlc_stats_label.setText("DLC processor idle")
 
         # Update processor status (connection and recording state)
-        if hasattr(self, "processor_status_label") and self._processor_control_enabled():
+        if hasattr(self, "processor_status_label") and self._custom_processor_enabled():
             self._update_processor_status()
 
         # --- Recorder stats ---
@@ -1799,24 +2389,24 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _update_processor_status(self) -> None:
         """Update processor connection and recording status, handle auto-recording."""
-        if not self._processor_control_enabled():
-            self.processor_status_label.setText("Processor control disabled")
+        if not self._custom_processor_enabled():
+            self.processor_status_label.setText("Disabled")
             return
 
         if not self._dlc_active or not self._dlc_initialized:
-            self.processor_status_label.setText("Processor: Not active")
+            self.processor_status_label.setText("Not active")
             return
 
         # Get processor instance from _dlc
         processor = self._dlc._processor
 
         if processor is None:
-            self.processor_status_label.setText("Processor: None loaded")
+            self.processor_status_label.setText("None loaded")
             return
 
         # Check if processor has the required attributes (socket-based processors)
         if not hasattr(processor, "conns") or not hasattr(processor, "_recording"):
-            self.processor_status_label.setText("Processor: No status info")
+            self.processor_status_label.setText("No status info")
             return
 
         # Get connection count and recording state
@@ -1829,7 +2419,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.processor_status_label.setText(f"Clients: {client_str} | Recording: {recording_str}")
 
         # Handle auto-recording based on processor's video recording flag
-        if hasattr(processor, "_vid_recording") and self.allow_processor_ctrl_checkbox.isChecked():
+        if hasattr(processor, "_vid_recording") and self.use_custom_proc_checkbox.isChecked():
             current_vid_recording = processor.video_recording
 
             # Check if video recording state changed
@@ -1887,10 +2477,24 @@ class DLCLiveMainWindow(QMainWindow):
         self._update_dlc_controls_enabled()
 
     def _stop_inference(self, show_message: bool = True) -> None:
+        if self._rec_manager.is_active:
+            answer = QMessageBox.question(
+                self,
+                "Stop inference while recording?",
+                "This will stop the currently running DLC-live custom processor, if any.\n"
+                "File saving will not be handled via the standard 'recording stopped' event hooks"
+                ", so data will only be saved if the processor handles saving on stop.\n\n"
+                "Unsaved processor data may be lost or not be paired with the recording.\n\n"
+                "Stop inference anyway?",
+            )
+            if answer != QMessageBox.Yes:
+                return
+
         was_active = self._dlc_active
         self._dlc_active = False
         self._dlc_initialized = False
-        self._dlc.reset()
+        # Does NOT invoke the normal rec-stop/save hooks. Persistence is processor-dependent.
+        self._dlc.reset(reset_processor_plugin=True)
         self._last_pose = None
         self._last_processor_vid_recording = False
         self._auto_record_session_name = None
@@ -1912,15 +2516,47 @@ class DLCLiveMainWindow(QMainWindow):
         """Start recording from all active cameras."""
         # Auto-start preview if not running
         if not self.multi_camera_controller.is_running():
+            active_cams = self._config.multi_camera.get_active_cameras()
+            if not active_cams:
+                self._show_error("No cameras configured. Use 'Configure Cameras...' to add cameras.")
+                return
+
+            self._pending_recording_after_preview = True
             self._start_preview()
             # Wait a moment for cameras to initialize before recording
             # The recording will start after preview is confirmed running
             self.statusBar().showMessage("Starting preview before recording...", 3000)
             # Use a single-shot timer to start recording after preview starts
-            QTimer.singleShot(500, self._start_multi_camera_recording)
+            # QTimer.singleShot(500, self._start_multi_camera_recording)
             return
 
         # Preview already running, start recording immediately
+        self._start_multi_camera_recording()
+
+    def _try_start_pending_recording(self) -> None:
+        if not self._pending_recording_after_preview:
+            return
+
+        if self._rec_manager.is_active:
+            self._pending_recording_after_preview = False
+            return
+
+        if not self.multi_camera_controller.is_running():
+            return
+
+        active_cams = self._config.multi_camera.get_active_cameras()
+        expected_ids = {get_camera_id(cam) for cam in active_cams}
+
+        if not expected_ids:
+            self._pending_recording_after_preview = False
+            return
+
+        available_ids = set(self._multi_camera_frames.keys())
+
+        if not expected_ids.issubset(available_ids):
+            return
+
+        self._pending_recording_after_preview = False
         self._start_multi_camera_recording()
 
     def _stop_recording(self) -> None:
@@ -1930,10 +2566,23 @@ class DLCLiveMainWindow(QMainWindow):
     def _on_pose_ready(self, result: PoseResult) -> None:
         if not self._dlc_active:
             return
-        self._last_pose = result
-        # logger.debug(f"Pose result: {result.pose}, Timestamp: {result.timestamp}")
-        if self._current_frame is not None:
-            self._display_frame(self._current_frame, force=True)
+
+        with self._dlc_timing.measure("DLC.pose_ready_callback"):
+            self._last_pose = result
+
+            # try:
+            #     latency_ms = (time.time() - float(result.timestamp)) * 1000.0
+            #      if logger.isEnabledFor(logging.DEBUG):
+            #          logger.debug("DLC pose latency camera_timestamp_to_gui=%.2f ms", latency_ms)
+            # except Exception:
+            #     pass
+
+            if self._current_frame is not None:
+                self._display_dirty = True
+                # with self._dlc_timing.measure("DLC.display_after_pose"):
+                # self._display_frame(self._current_frame, force=True)
+
+        self._dlc_timing.maybe_log()
 
     def _on_dlc_error(self, message: str) -> None:
         self._stop_inference(show_message=False)
@@ -1993,6 +2642,9 @@ class DLCLiveMainWindow(QMainWindow):
     def _on_dlc_initialised(self, success: bool) -> None:
         if success:
             self._dlc_initialized = True
+            if self._processor_recording_context is not None and not self._processor_recording_started_notified:
+                self._notify_processor_recording_started(self._processor_recording_context)
+
             # Update button to show running state
             self.start_inference_button.setText("DLCLive running!")
             self.start_inference_button.setStyleSheet("background-color: #4CAF50; color: white;")
@@ -2055,7 +2707,16 @@ class DLCLiveMainWindow(QMainWindow):
         if hasattr(self, "_camera_validation_timer") and self._camera_validation_timer.isActive():
             self._camera_validation_timer.stop()
         # Stop all multi-camera recorders
-        self._rec_manager.stop_all()
+        try:
+            self.multi_camera_controller.set_recording_frame_is_enabled(False)
+        except Exception:
+            logger.exception("Failed to disable recording frame emission during shutdown")
+
+        while not self._rec_manager.stop_all():
+            logger.info("Retrying recorder stop during shutdown...")
+            time.sleep(RECORD_STOP_RETRY_INTERVAL)
+        if self._processor_recording_context is not None:
+            self._finalize_processor_recording()
 
         # Close the camera dialog if open (ensures its worker thread is canceled)
         if getattr(self, "_cam_dialog", None) is not None and self._cam_dialog.isVisible():
@@ -2074,6 +2735,31 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Remember model path on exit
         self._model_path_store.save_if_valid(self.model_path_edit.text().strip())
+
+        # Remember processor folder on exit
+        if hasattr(self, "processor_folder_edit"):
+            self._settings_store.set_processor_folder(self.processor_folder_edit.text().strip())
+
+        # Remember user-preferred inference camera on exit.
+        if hasattr(self, "_inference_camera_id"):
+            self._settings_store.set_inference_camera_id(self._inference_camera_id)
+
+        # Remember selected processor on exit
+        if hasattr(self, "processor_combo"):
+            self._settings_store.set_processor_key(self.processor_combo.currentData())
+
+        # Remember processor-control checkbox state on exit
+        if hasattr(self, "use_custom_proc_checkbox"):
+            self._settings_store.set_processor_control_enabled(self._custom_processor_enabled())
+
+        if hasattr(self, "filename_edit"):
+            self._settings_store.set_rec_filename(self.filename_edit.text().strip())
+
+        # Flush QSettings best-effort
+        try:
+            self.settings.sync()
+        except Exception:
+            logger.exception("Failed to sync QSettings on close", exc_info=True)
 
         # Close the window
         super().closeEvent(event)

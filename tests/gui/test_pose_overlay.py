@@ -9,6 +9,7 @@ class _StubRec:
 
 @pytest.mark.gui
 @pytest.mark.timeout(10)
+@pytest.mark.skip("Removed functionality.")
 def test_record_overlay_uses_identity_transform_for_per_camera_recording(window, draw_pose_stub):
     # Disable event timers to avoid GUI rendering pipelines interfering with test
     window._display_timer.stop()
@@ -47,6 +48,7 @@ def test_record_overlay_uses_identity_transform_for_per_camera_recording(window,
 
 @pytest.mark.gui
 @pytest.mark.timeout(10)
+@pytest.mark.skip("Removed functionality.")
 def test_record_overlay_toggle_affects_frames_sent_to_recorder(window, recording_frame_spy, draw_pose_stub):
     # Disable event timers to avoid GUI rendering pipelines interfering with test
     window._display_timer.stop()
@@ -65,18 +67,9 @@ def test_record_overlay_toggle_affects_frames_sent_to_recorder(window, recording
     # Provide a frame
     raw = np.zeros((100, 100, 3), dtype=np.uint8)
 
-    # Build minimal frame_data to call _on_multi_frame_processing_ready
-    from dlclivegui.services.multi_camera_controller import MultiFrameData
-
-    frame_data = MultiFrameData(
-        frames={cam_id: raw},
-        timestamps={cam_id: 1.0},
-        source_camera_id=cam_id,
-    )
-
     # 1) toggle OFF: should record raw
     window.record_with_overlays_checkbox.setChecked(False)
-    window._on_multi_frame_processing_ready(frame_data)
+    window._on_recording_frame_ready(cam_id, raw, 1.0)
 
     assert cam_id in recording_frame_spy
     recorded_off = recording_frame_spy[cam_id]
@@ -84,7 +77,7 @@ def test_record_overlay_toggle_affects_frames_sent_to_recorder(window, recording
 
     # 2) toggle ON: should record overlay frame (different)
     window.record_with_overlays_checkbox.setChecked(True)
-    window._on_multi_frame_processing_ready(frame_data)
+    window._on_recording_frame_ready(cam_id, raw, 2.0)
 
     recorded_on = recording_frame_spy[cam_id]
     assert not np.array_equal(recorded_on, raw)

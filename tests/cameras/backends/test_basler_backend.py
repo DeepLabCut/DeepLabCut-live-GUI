@@ -3,13 +3,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from dlclivegui.cameras.base import CapturedFrame
+from dlclivegui.utils.timestamps import FrameTimestampMetadata
+
 # ---------------------------------------------------------------------
 # Core lifecycle
 # ---------------------------------------------------------------------
 
 
-def test_basler_open_starts_grabbing_and_read_returns_frame(patch_basler_sdk, basler_settings_factory):
-    import dlclivegui.cameras.backends.basler_backend as bb
+def test_basler_open_starts_grabbing_and_read_returns_frame(patched_basler_sdk, basler_settings_factory):
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory()
     be = bb.BaslerCameraBackend(settings)
@@ -21,7 +24,8 @@ def test_basler_open_starts_grabbing_and_read_returns_frame(patch_basler_sdk, ba
     assert be._camera.IsGrabbing()
     assert be._converter is not None
 
-    frame, ts = be.read()
+    payload = be.read()
+    frame, ts = payload.frame, payload.software_timestamp
     assert isinstance(ts, float)
     assert isinstance(frame, np.ndarray)
     assert frame.shape == (10, 10, 3)
@@ -32,10 +36,10 @@ def test_basler_open_starts_grabbing_and_read_returns_frame(patch_basler_sdk, ba
 
 
 def test_basler_fast_start_does_not_start_grabbing_and_read_raises(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(properties={"basler": {"fast_start": True}})
     be = bb.BaslerCameraBackend(settings)
@@ -53,8 +57,8 @@ def test_basler_fast_start_does_not_start_grabbing_and_read_raises(
     be.close()
 
 
-def test_basler_close_is_idempotent(patch_basler_sdk, basler_settings_factory):
-    import dlclivegui.cameras.backends.basler_backend as bb
+def test_basler_close_is_idempotent(patched_basler_sdk, basler_settings_factory):
+    bb = patched_basler_sdk
 
     be = bb.BaslerCameraBackend(basler_settings_factory())
     be.open()
@@ -62,8 +66,8 @@ def test_basler_close_is_idempotent(patch_basler_sdk, basler_settings_factory):
     be.close()
 
 
-def test_basler_stop_before_open_and_after_close_is_safe(patch_basler_sdk, basler_settings_factory):
-    import dlclivegui.cameras.backends.basler_backend as bb
+def test_basler_stop_before_open_and_after_close_is_safe(patched_basler_sdk, basler_settings_factory):
+    bb = patched_basler_sdk
 
     be = bb.BaslerCameraBackend(basler_settings_factory())
 
@@ -79,8 +83,8 @@ def test_basler_stop_before_open_and_after_close_is_safe(patch_basler_sdk, basle
     be.stop()
 
 
-def test_basler_read_before_open_raises_runtimeerror(patch_basler_sdk, basler_settings_factory):
-    import dlclivegui.cameras.backends.basler_backend as bb
+def test_basler_read_before_open_raises_runtimeerror(patched_basler_sdk, basler_settings_factory):
+    bb = patched_basler_sdk
 
     be = bb.BaslerCameraBackend(basler_settings_factory())
 
@@ -94,9 +98,9 @@ def test_basler_read_before_open_raises_runtimeerror(patch_basler_sdk, basler_se
 
 
 def test_basler_discover_devices_returns_serial_identity_and_label(
-    patch_basler_sdk,
+    patched_basler_sdk,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     cams = bb.BaslerCameraBackend.discover_devices(max_devices=10)
 
@@ -107,8 +111,8 @@ def test_basler_discover_devices_returns_serial_identity_and_label(
     assert cams[0].path
 
 
-def test_basler_quick_ping_true_for_existing_false_for_missing(patch_basler_sdk):
-    import dlclivegui.cameras.backends.basler_backend as bb
+def test_basler_quick_ping_true_for_existing_false_for_missing(patched_basler_sdk):
+    bb = patched_basler_sdk
 
     assert bb.BaslerCameraBackend.quick_ping(0) is True
     assert bb.BaslerCameraBackend.quick_ping(1) is True
@@ -116,10 +120,10 @@ def test_basler_quick_ping_true_for_existing_false_for_missing(patch_basler_sdk)
 
 
 def test_basler_rebind_settings_uses_serial_device_id(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(
         index=0,
@@ -135,10 +139,10 @@ def test_basler_rebind_settings_uses_serial_device_id(
 
 
 def test_basler_open_selects_device_id_and_persists_identity(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(
         index=0,
@@ -155,8 +159,8 @@ def test_basler_open_selects_device_id_and_persists_identity(
     be.close()
 
 
-def test_basler_open_index_out_of_range_raises(patch_basler_sdk, basler_settings_factory):
-    import dlclivegui.cameras.backends.basler_backend as bb
+def test_basler_open_index_out_of_range_raises(patched_basler_sdk, basler_settings_factory):
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(index=99)
     be = bb.BaslerCameraBackend(settings)
@@ -171,10 +175,10 @@ def test_basler_open_index_out_of_range_raises(patch_basler_sdk, basler_settings
 
 
 def test_basler_resolution_auto_does_not_modify_dimensions(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(width=0, height=0)
     be = bb.BaslerCameraBackend(settings)
@@ -189,10 +193,10 @@ def test_basler_resolution_auto_does_not_modify_dimensions(
 
 
 def test_basler_resolution_request_snaps_to_increment(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(width=641, height=481)
     be = bb.BaslerCameraBackend(settings)
@@ -207,10 +211,10 @@ def test_basler_resolution_request_snaps_to_increment(
 
 
 def test_basler_exposure_gain_fps_are_applied_when_nonzero(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(exposure=20000, gain=2.5, fps=50.0)
     be = bb.BaslerCameraBackend(settings)
@@ -232,21 +236,22 @@ def test_basler_exposure_gain_fps_are_applied_when_nonzero(
 # ---------------------------------------------------------------------
 
 
-def test_basler_static_capabilities_advertises_hardware_trigger_best_effort(
-    patch_basler_sdk,
+def test_basler_static_capabilities_advertises_hardware_trigger_best_effort_and_mono(
+    patched_basler_sdk,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
     from dlclivegui.cameras.base import SupportLevel
 
     caps = bb.BaslerCameraBackend.static_capabilities()
     assert caps["hardware_trigger"] == SupportLevel.BEST_EFFORT
+    assert caps["preserve_mono"] == SupportLevel.SUPPORTED
 
 
 def test_basler_default_trigger_is_off_and_free_runs(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory()
     be = bb.BaslerCameraBackend(settings)
@@ -256,17 +261,18 @@ def test_basler_default_trigger_is_off_and_free_runs(
     assert be._camera.TriggerMode.GetValue() == "Off"
     assert be.waits_for_hardware_trigger is False
 
-    frame, _ = be.read()
+    payload = be.read()
+    frame = payload.frame
     assert frame.shape == (10, 10, 3)
 
     be.close()
 
 
 def test_basler_follower_auto_selects_line1_and_times_out_waiting_for_trigger(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(
         properties={
@@ -306,10 +312,10 @@ def test_basler_follower_auto_selects_line1_and_times_out_waiting_for_trigger(
 
 
 def test_basler_follower_strict_invalid_source_raises(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(
         properties={
@@ -332,10 +338,10 @@ def test_basler_follower_strict_invalid_source_raises(
 
 
 def test_basler_follower_non_strict_invalid_source_disables_trigger(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(
         properties={
@@ -355,17 +361,18 @@ def test_basler_follower_non_strict_invalid_source_disables_trigger(
     assert be._camera.TriggerMode.GetValue() == "Off"
     assert be.waits_for_hardware_trigger is False
 
-    frame, _ = be.read()
+    payload = be.read()
+    frame = payload.frame
     assert frame.shape == (10, 10, 3)
 
     be.close()
 
 
 def test_basler_master_configures_generic_line_output_and_restores_on_close(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(
         properties={
@@ -398,10 +405,10 @@ def test_basler_master_configures_generic_line_output_and_restores_on_close(
 
 @pytest.mark.xfail(reason="Software trigger support is not implemented yet.")
 def test_basler_software_trigger_requires_trigger_once_before_read(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(
         properties={
@@ -429,17 +436,17 @@ def test_basler_software_trigger_requires_trigger_once_before_read(
     be.trigger_once()
     assert be._camera.software_trigger_calls == 1
 
-    frame, _ = be.read()
+    frame = be.read().frame
     assert frame.shape == (10, 10, 3)
 
     be.close()
 
 
 def test_basler_close_turns_input_trigger_off(
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     settings = basler_settings_factory(
         properties={
@@ -466,10 +473,10 @@ def test_basler_close_turns_input_trigger_off(
 
 def test_basler_hardware_trigger_maps_pylon_timeout_to_timeout_error(
     monkeypatch,
-    patch_basler_sdk,
+    patched_basler_sdk,
     basler_settings_factory,
 ):
-    import dlclivegui.cameras.backends.basler_backend as bb
+    bb = patched_basler_sdk
 
     class FakePylonTimeout(Exception):
         pass
@@ -505,3 +512,90 @@ def test_basler_hardware_trigger_maps_pylon_timeout_to_timeout_error(
 
     finally:
         backend.close()
+
+
+class TestBaslerFrameTimestamps:
+    @pytest.mark.unit
+    def test_read_returns_captured_frame_with_hardware_timestamp_metadata(
+        self,
+        patched_basler_sdk,
+        basler_settings_factory,
+    ):
+        bb = patched_basler_sdk
+
+        settings = basler_settings_factory()
+        be = bb.BaslerCameraBackend(settings)
+        be.open()
+
+        captured = be.read()
+
+        assert isinstance(captured, CapturedFrame)
+        assert captured.frame is not None
+        assert isinstance(captured.software_timestamp, float)
+
+        meta = captured.timestamp_metadata
+        assert isinstance(meta, FrameTimestampMetadata)
+
+        assert meta.backend == "basler"
+        assert meta.source == "grab_result.GetTimeStamp"
+        assert meta.kind == "camera_clock"
+        assert meta.raw_unit == "ticks"
+        assert meta.raw_value == 123456789
+        assert meta.tick_frequency_hz == pytest.approx(1_000_000_000.0)
+        assert meta.seconds == pytest.approx(0.123456789)
+        assert meta.default_reported == "seconds"
+
+        source_dict = meta.to_source_dict()
+        assert source_dict["backend"] == "basler"
+        assert source_dict["source"] == "grab_result.GetTimeStamp"
+
+        frame_dict = meta.to_frame_dict()
+        assert frame_dict["seconds"] == pytest.approx(0.123456789)
+        assert frame_dict["raw_value"] == 123456789
+
+        be.close()
+
+    @pytest.mark.unit
+    def test_make_timestamp_metadata_returns_none_for_zero_ticks(
+        self,
+        patched_basler_sdk,
+        basler_settings_factory,
+    ):
+        bb = patched_basler_sdk
+        backend = bb.BaslerCameraBackend(basler_settings_factory())
+
+        class GrabResult:
+            @staticmethod
+            def GetTimeStamp():
+                return 0
+
+        metadata = backend._make_timestamp_metadata(GrabResult())
+
+        assert metadata is None
+
+    import pytest
+
+    @pytest.mark.parametrize("frequency", [None, 0.0, -1.0])
+    def test_make_timestamp_metadata_uses_raw_ticks_for_invalid_frequency(
+        self,
+        patched_basler_sdk,
+        basler_settings_factory,
+        frequency,
+    ):
+        bb = patched_basler_sdk
+        backend = bb.BaslerCameraBackend(basler_settings_factory())
+        backend._timestamp_tick_frequency_hz = frequency
+        backend._timestamp_tick_frequency_source = None
+
+        class GrabResult:
+            @staticmethod
+            def GetTimeStamp():
+                return 12_345
+
+        metadata = backend._make_timestamp_metadata(GrabResult())
+
+        assert metadata is not None
+        assert metadata.default_reported == "raw_value"
+        assert metadata.seconds is None
+        assert metadata.raw_value == 12_345
+        assert metadata.tick_frequency_hz == frequency
