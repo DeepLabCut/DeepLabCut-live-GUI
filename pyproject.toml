@@ -21,7 +21,6 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-# version = "2.0.0rc1"
 dynamic = [ "version" ]
 dependencies = [
   "cv2-enumerate-cameras",
