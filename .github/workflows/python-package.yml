@@ -130,6 +130,7 @@ jobs:
         with:
           # For a manual run, we want to check out the commit at the provided tag
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          fetch-depth: 0
 
       # Use a single, modern Python for the canonical release build
       - name: Set up Python (release build)
