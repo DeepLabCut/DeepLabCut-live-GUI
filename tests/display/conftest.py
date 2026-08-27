@@ -1,10 +1,26 @@
+# tests/display/conftest.py
+from __future__ import annotations
+
+from collections.abc import Callable
+
 import numpy as np
 import pytest
 
 
 @pytest.fixture
-def test_frame(h, w, c=3, value=0, dtype=np.uint8):
-    """Helper to create test frames with predictable content."""
-    if c == 1:
-        return (np.ones((h, w), dtype=dtype) * value).astype(dtype)
-    return (np.ones((h, w, c), dtype=dtype) * value).astype(dtype)
+def test_frame() -> Callable[..., np.ndarray]:
+    """Return a factory for creating predictable test frames."""
+
+    def make_frame(
+        height: int,
+        width: int,
+        channels: int = 3,
+        value: int | float = 0,
+        dtype: np.dtype = np.uint8,
+    ) -> np.ndarray:
+        if not isinstance(dtype, np.dtype):
+            dtype = np.dtype(dtype)
+        shape = (height, width) if channels == 1 else (height, width, channels)
+        return np.full(shape, value, dtype=dtype)
+
+    return make_frame

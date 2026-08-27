@@ -295,3 +295,65 @@ def test_draw_skeleton_reports_keypoint_count_mismatch(
     )
 
     assert result.code == (SkeletonRenderCode.KEYPOINT_COUNT_MISMATCH)
+
+
+def test_draw_skeleton_requires_gradient_colors(
+    resolved_skeleton: ResolvedSkeleton,
+) -> None:
+    frame = np.zeros((50, 50, 3), dtype=np.uint8)
+    pose = np.array(
+        [
+            [10.0, 10.0, 0.9],
+            [40.0, 40.0, 0.9],
+        ],
+        dtype=np.float32,
+    )
+    style = SkeletonStyle(
+        color_mode=SkeletonColorMode.GRADIENT_KEYPOINTS,
+    )
+
+    result = draw_skeleton(
+        frame,
+        pose,
+        resolved_skeleton,
+        style,
+        p_cutoff=0.5,
+        keypoint_colors=None,
+    )
+
+    assert result.code == (SkeletonRenderCode.COLOR_COUNT_MISMATCH)
+
+
+def test_draw_skeleton_renders_gradient(
+    resolved_skeleton: ResolvedSkeleton,
+) -> None:
+    frame = np.zeros((50, 50, 3), dtype=np.uint8)
+    pose = np.array(
+        [
+            [10.0, 25.0, 0.9],
+            [40.0, 25.0, 0.9],
+        ],
+        dtype=np.float32,
+    )
+    style = SkeletonStyle(
+        color_mode=SkeletonColorMode.GRADIENT_KEYPOINTS,
+        thickness=2,
+        gradient_steps=8,
+        scale_with_zoom=False,
+    )
+
+    result = draw_skeleton(
+        frame,
+        pose,
+        resolved_skeleton,
+        style,
+        p_cutoff=0.5,
+        keypoint_colors=(
+            (255, 0, 0),
+            (0, 0, 255),
+        ),
+    )
+
+    assert result.code == SkeletonRenderCode.RENDERED
+    assert result.edges_drawn == 1
+    assert np.any(frame != 0)
