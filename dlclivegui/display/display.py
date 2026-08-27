@@ -215,6 +215,27 @@ def draw_keypoints(overlay, p_cutoff, sx, ox, sy, oy, radius, cmap, keypoints: n
             cv2.drawMarker(overlay, (xs, ys), bgr, marker, radius * 2, 2)
 
 
+def keypoint_colors_bgr(
+    colormap: str,
+    count: int,
+) -> tuple[tuple[int, int, int], ...]:
+    """Return the display color assigned to each keypoint."""
+    if count < 0:
+        raise ValueError(f"Keypoint count must be non-negative; received {count}.")
+
+    cmap = plt.get_cmap(colormap)
+    denominator = max(count - 1, 1)
+
+    return tuple(
+        (
+            round(cmap(index / denominator)[2] * 255),
+            round(cmap(index / denominator)[1] * 255),
+            round(cmap(index / denominator)[0] * 255),
+        )
+        for index in range(count)
+    )
+
+
 def draw_pose(
     frame: np.ndarray,
     pose: np.ndarray,
