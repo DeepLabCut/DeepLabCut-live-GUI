@@ -1,13 +1,10 @@
-"""Dialog for selecting or downloading POET weights."""
+"""Dialog for downloading the default POET weights."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QDialog,
-    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -16,6 +13,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from dlclivegui.gui.misc.eliding_label import ElidingPathLabel
 from dlclivegui.services.inference.models.poet.weights import (
     POET_WEIGHTS_FILENAME,
     POET_WEIGHTS_URL,
@@ -25,94 +23,77 @@ from dlclivegui.services.inference.models.poet.weights import (
 
 
 class PoetWeightsDialog(QDialog):
-    """Select existing POET weights or download the default checkpoint."""
+    """Download the default POET checkpoint and return its path."""
 
-    weights_selected = Signal(str)
+    weights_downloaded = Signal(str)
 
-    def __init__(
-        self,
-        parent=None,
-        *,
-        initial_path: str = "",
-    ) -> None:
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("POET weights")
+        self.setWindowTitle("Download POET weights")
         self.setModal(False)
+        self.setMinimumWidth(480)
 
-        self._selected_path = initial_path
+        self._destination = poet_default_weights_dir() / POET_WEIGHTS_FILENAME
         self._download_thread: QThread | None = None
         self._download_worker: WeightsDownloadWorker | None = None
+        self._completed_path: str | None = None
 
-        self.path_label = QLabel(initial_path or "No weights selected")
-        self.path_label.setWordWrap(True)
+        description = QLabel(
+            "Download the default POET checkpoint. When the download "
+            "finishes, the model will be selected automatically and "
+            "this window will close."
+        )
+        description.setWordWrap(True)
+
+        destination_title = QLabel("Destination:")
+
+        self.path_label = ElidingPathLabel(str(self._destination))
+        self.path_label.setToolTip(f"Click to copy:\n{self._destination}")
+
+        self.status_label = QLabel("Ready to download.")
+        self.status_label.setWordWrap(True)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
 
-        self.browse_button = QPushButton("Select existing weights...")
-        self.download_button = QPushButton("Download default weights")
-        self.use_button = QPushButton("Use selected weights")
-        self.use_button.setEnabled(self._is_valid_weights_path(initial_path))
+        self.download_button = QPushButton("Download weights")
+        self.close_button = QPushButton("Close")
 
         button_row = QHBoxLayout()
-        button_row.addWidget(self.browse_button)
+        button_row.addStretch(1)
+        button_row.addWidget(self.close_button)
         button_row.addWidget(self.download_button)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(description)
+        layout.addSpacing(6)
+        layout.addWidget(destination_title)
         layout.addWidget(self.path_label)
+        layout.addSpacing(6)
+        layout.addWidget(self.status_label)
         layout.addWidget(self.progress_bar)
         layout.addLayout(button_row)
-        layout.addWidget(self.use_button)
 
-        self.browse_button.clicked.connect(self._browse)
         self.download_button.clicked.connect(self._download)
-        self.use_button.clicked.connect(self._use_selected)
-
-    @staticmethod
-    def _is_valid_weights_path(
-        path: str,
-    ) -> bool:
-        candidate = Path(path).expanduser()
-
-        return candidate.is_file() and candidate.suffix.lower() in {
-            ".pt",
-            ".pth",
-        }
-
-    @Slot()
-    def _browse(self) -> None:
-        start_path = (
-            self._selected_path if self._is_valid_weights_path(self._selected_path) else str(poet_default_weights_dir())
-        )
-
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select POET weights",
-            start_path,
-            "POET weights (*.pt *.pth)",
-        )
-
-        if path:
-            self._set_selected_path(path)
+        self.close_button.clicked.connect(self.reject)
 
     @Slot()
     def _download(self) -> None:
         if self._download_thread is not None:
             return
 
-        destination = poet_default_weights_dir() / POET_WEIGHTS_FILENAME
-
         thread = QThread(self)
         worker = WeightsDownloadWorker(
             POET_WEIGHTS_URL,
-            destination,
+            self._destination,
         )
         worker.moveToThread(thread)
 
         thread.started.connect(worker.run)
-        worker.progress.connect(self.progress_bar.setValue)
+
+        worker.progress.connect(self._update_progress)
         worker.finished.connect(self._download_finished)
         worker.error.connect(self._download_failed)
 
@@ -125,28 +106,41 @@ class PoetWeightsDialog(QDialog):
 
         self._download_thread = thread
         self._download_worker = worker
+        self._completed_path = None
 
-        self.progress_bar.setVisible(True)
+        self.status_label.setText("Downloading POET weights...")
         self.progress_bar.setValue(0)
-        self.browse_button.setEnabled(False)
+
         self.download_button.setEnabled(False)
-        self.use_button.setEnabled(False)
+        self.close_button.setEnabled(False)
 
         thread.start()
+
+    @Slot(int)
+    def _update_progress(
+        self,
+        value: int,
+    ) -> None:
+        self.progress_bar.setValue(value)
+        self.status_label.setText(f"Downloading POET weights... {value}%")
 
     @Slot(str)
     def _download_finished(
         self,
         path: str,
     ) -> None:
+        self._completed_path = path
         self.progress_bar.setValue(100)
-        self._set_selected_path(path)
+        self.status_label.setText("Download complete. Returning to the main window...")
 
     @Slot(str)
     def _download_failed(
         self,
         message: str,
     ) -> None:
+        self._completed_path = None
+        self.status_label.setText("Download failed.")
+
         QMessageBox.critical(
             self,
             "POET weights download failed",
@@ -158,22 +152,19 @@ class PoetWeightsDialog(QDialog):
         self._download_thread = None
         self._download_worker = None
 
-        self.browse_button.setEnabled(True)
-        self.download_button.setEnabled(True)
-        self.use_button.setEnabled(self._is_valid_weights_path(self._selected_path))
+        completed_path = self._completed_path
+        self._completed_path = None
 
-    def _set_selected_path(
-        self,
-        path: str,
-    ) -> None:
-        self._selected_path = path
-        self.path_label.setText(path)
-        self.use_button.setEnabled(self._is_valid_weights_path(path))
-
-    @Slot()
-    def _use_selected(self) -> None:
-        if not self._is_valid_weights_path(self._selected_path):
+        if completed_path is not None:
+            self.weights_downloaded.emit(completed_path)
+            self.accept()
             return
 
-        self.weights_selected.emit(self._selected_path)
-        self.accept()
+        self.download_button.setEnabled(True)
+        self.close_button.setEnabled(True)
+
+    def reject(self) -> None:
+        if self._download_thread is not None:
+            return
+
+        super().reject()
