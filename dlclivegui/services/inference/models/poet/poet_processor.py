@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import numpy as np
-import torch
 
 from dlclivegui.services.inference.base import (
     PoseBackend,
@@ -16,9 +17,43 @@ from dlclivegui.services.inference.base import (
     PoseSource,
 )
 
-from .skeleton import POET_KEYPOINT_NAMES, POET_SKELETON_EDGES, POET_SKELETON_ID
+from .skeleton import (
+    POET_KEYPOINT_NAMES,
+    POET_SKELETON_EDGES,
+    POET_SKELETON_ID,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _require_torch() -> ModuleType:
+    """Import PyTorch when POET inference is actually requested."""
+    try:
+        torch = importlib.import_module("torch")
+    except ImportError as exc:
+        raise RuntimeError(
+            "POET requires PyTorch. Install the POET optional dependencies before using this backend."
+        ) from exc
+
+    required_attributes = (
+        "Tensor",
+        "autocast",
+        "cuda",
+        "device",
+        "from_numpy",
+        "inference_mode",
+        "load",
+        "tensor",
+    )
+    missing = [name for name in required_attributes if not hasattr(torch, name)]
+
+    if missing:
+        raise RuntimeError(
+            "The installed 'torch' module is not a complete PyTorch "
+            f"installation. Missing attributes: {', '.join(missing)}."
+        )
+
+    return torch
 
 
 class POETBackend(PoseBackend):
@@ -47,15 +82,15 @@ class POETBackend(PoseBackend):
 
         self._model: Any | None = None
         self._postprocessor: Any | None = None
-        self._device: torch.device | None = None
-
-        self._mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-        self._std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        self._device: Any | None = None
+        self._mean: Any | None = None
+        self._std: Any | None = None
 
     @staticmethod
     def _resolve_torch_device(
         device: str | None,
-    ) -> torch.device:
+    ) -> Any:
+        torch = _require_torch()
         requested = device.strip().lower() if device else "auto"
 
         if requested in {"auto", "best"}:
@@ -80,6 +115,11 @@ class POETBackend(PoseBackend):
         self,
         init_frame: np.ndarray,
     ) -> None:
+        torch = _require_torch()
+
+        self._mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        self._std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
         (
             self._model,
             self._postprocessor,
@@ -87,26 +127,30 @@ class POETBackend(PoseBackend):
         ) = self._build_model()
 
         # Warm up without emitting a result. PoseProcessor emits the
-        # initial frame's result after init_inference() returns.
+        # initial frame result after init_inference() returns.
         self.get_pose(init_frame)
 
     def _build_model(
         self,
-    ) -> tuple[Any, Any, torch.device]:
+    ) -> tuple[Any, Any, Any]:
+        torch = _require_torch()
+
         try:
             from poet_live import POET, PostProcess
-            from poet_live.models.backbone import Backbone, Joiner
+            from poet_live.models.backbone import (
+                Backbone,
+                Joiner,
+            )
             from poet_live.models.position_encoding import (
                 PositionEmbeddingSine,
             )
             from poet_live.models.transformer import Transformer
         except ImportError as exc:
             raise RuntimeError(
-                "POET is not installed. Install the POET dependencies before using this pose backend."
+                "POET is not installed. Install the POET optional dependencies before using this backend."
             ) from exc
 
         device = self._resolve_torch_device(self._requested_device)
-
         hidden_dimension = 256
 
         backbone = Backbone(
@@ -151,12 +195,14 @@ class POETBackend(PoseBackend):
         model.to(device).eval()
         postprocessor = PostProcess().to(device)
 
+        if self._mean is None or self._std is None:
+            raise RuntimeError("POET normalization tensors are not initialized.")
+
         self._mean = self._mean.to(device)
         self._std = self._std.to(device)
 
         return model, postprocessor, device
 
-    @torch.no_grad()
     def get_pose(
         self,
         frame: np.ndarray,
@@ -164,18 +210,30 @@ class POETBackend(PoseBackend):
     ) -> np.ndarray | None:
         del frame_time
 
+        torch = _require_torch()
+
+        with torch.inference_mode():
+            return self._infer(frame, torch)
+
+    def _infer(
+        self,
+        frame: np.ndarray,
+        torch: ModuleType,
+    ) -> np.ndarray | None:
         model = self._model
         postprocessor = self._postprocessor
         device = self._device
+        mean = self._mean
+        std = self._std
 
-        if model is None or postprocessor is None or device is None:
+        if model is None or postprocessor is None or device is None or mean is None or std is None:
             raise RuntimeError("POET backend is not initialized.")
 
         rgb = frame[..., ::-1].copy()
         height, width = rgb.shape[:2]
 
         image = torch.from_numpy(rgb).to(device).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-        image = (image - self._mean) / self._std
+        image = (image - mean) / std
 
         use_amp = self._use_amp and device.type == "cuda"
 
@@ -243,3 +301,5 @@ class POETBackend(PoseBackend):
         self._model = None
         self._postprocessor = None
         self._device = None
+        self._mean = None
+        self._std = None
