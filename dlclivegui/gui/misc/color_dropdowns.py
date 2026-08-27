@@ -16,7 +16,15 @@ from typing import TypeVar
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QIcon,
+    QImage,
+    QLinearGradient,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QSizePolicy,
@@ -216,6 +224,221 @@ def get_bbox_bgr_from_combo(combo: QComboBox, *, fallback: BGR | None = None) ->
     if enum_item is None:
         return fallback
     return getattr(enum_item, "value", fallback)
+
+
+# -----------------------------------------------------------------------------
+# Skeleton color combo helpers
+# -----------------------------------------------------------------------------
+
+
+def make_gradient_swatch_icon(
+    *,
+    width: int = 40,
+    height: int = 16,
+    border: int = 1,
+) -> QIcon:
+    """Create a swatch representing keypoint-gradient skeleton coloring."""
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    try:
+        painter.fillRect(
+            0,
+            0,
+            width,
+            height,
+            Qt.GlobalColor.black,
+        )
+        painter.fillRect(
+            border,
+            border,
+            width - 2 * border,
+            height - 2 * border,
+            Qt.GlobalColor.white,
+        )
+
+        gradient = QLinearGradient(
+            border + 1,
+            0,
+            width - border - 1,
+            0,
+        )
+        gradient.setColorAt(
+            0.0,
+            QColor(0, 140, 255),
+        )
+        gradient.setColorAt(
+            1.0,
+            QColor(255, 80, 0),
+        )
+
+        painter.fillRect(
+            border + 1,
+            border + 1,
+            width - 2 * (border + 1),
+            height - 2 * (border + 1),
+            QBrush(gradient),
+        )
+    finally:
+        painter.end()
+
+    return QIcon(pixmap)
+
+
+def populate_skeleton_color_combo(
+    combo: QComboBox,
+    colors_enum: Iterable[TEnum],
+    *,
+    current_mode: str = "solid",
+    current_color: BGR | None = None,
+    include_icons: bool = True,
+    gradient_label: str = "Gradient (from keypoints)",
+) -> None:
+    """Populate a combo with gradient mode and solid BGR colors."""
+    combo.blockSignals(True)
+    try:
+        combo.clear()
+
+        gradient_data = {
+            "mode": "gradient_keypoints",
+            "color": None,
+        }
+
+        if include_icons:
+            combo.addItem(
+                make_gradient_swatch_icon(),
+                gradient_label,
+                gradient_data,
+            )
+        else:
+            combo.addItem(
+                gradient_label,
+                gradient_data,
+            )
+
+        for enum_item in colors_enum:
+            color: BGR = tuple(enum_item.value)
+            label = getattr(
+                enum_item,
+                "name",
+                str(enum_item),
+            ).title()
+            data = {
+                "mode": "solid",
+                "color": color,
+            }
+
+            if include_icons:
+                combo.addItem(
+                    make_bgr_swatch_icon(color),
+                    label,
+                    data,
+                )
+            else:
+                combo.addItem(
+                    label,
+                    data,
+                )
+
+        set_skeleton_combo_from_style(
+            combo,
+            mode=current_mode,
+            color=current_color,
+        )
+    finally:
+        combo.blockSignals(False)
+
+
+def make_skeleton_color_combo(
+    colors_enum: Iterable[TEnum],
+    *,
+    current_mode: str = "solid",
+    current_color: BGR | None = (0, 255, 255),
+    include_icons: bool = True,
+    tooltip: str = ("Select skeleton line color or keypoint gradient"),
+    sizing: ComboSizing | None = None,
+) -> QComboBox:
+    """Create and populate a skeleton-color combo box."""
+    combo = ShrinkCurrentWidePopupComboBox(sizing=sizing) if sizing is not None else QComboBox()
+    combo.setToolTip(tooltip)
+
+    populate_skeleton_color_combo(
+        combo,
+        colors_enum,
+        current_mode=current_mode,
+        current_color=current_color,
+        include_icons=include_icons,
+    )
+
+    if isinstance(
+        combo,
+        ShrinkCurrentWidePopupComboBox,
+    ):
+        combo.update_shrink_width()
+
+    return combo
+
+
+def get_skeleton_style_from_combo(
+    combo: QComboBox,
+    *,
+    fallback_mode: str = "solid",
+    fallback_color: BGR | None = None,
+) -> tuple[str, BGR | None]:
+    """Return the selected skeleton mode and optional solid color."""
+    data = combo.currentData()
+
+    if not isinstance(data, dict):
+        return fallback_mode, fallback_color
+
+    mode = data.get("mode")
+    if mode not in {
+        "solid",
+        "gradient_keypoints",
+    }:
+        mode = fallback_mode
+
+    color = data.get(
+        "color",
+        fallback_color,
+    )
+    if color is not None:
+        color = tuple(color)
+
+    return mode, color
+
+
+def set_skeleton_combo_from_style(
+    combo: QComboBox,
+    *,
+    mode: str,
+    color: BGR | None,
+) -> None:
+    """Select the combo item matching a skeleton style."""
+    for index in range(combo.count()):
+        data = combo.itemData(index)
+
+        if not isinstance(data, dict) or data.get("mode") != mode:
+            continue
+
+        if mode == "gradient_keypoints":
+            combo.setCurrentIndex(index)
+            return
+
+        item_color = data.get("color")
+
+        if color is not None and item_color is not None and tuple(item_color) == tuple(color):
+            combo.setCurrentIndex(index)
+            return
+
+    if mode == "solid":
+        for index in range(combo.count()):
+            data = combo.itemData(index)
+
+            if isinstance(data, dict) and data.get("mode") == "solid":
+                combo.setCurrentIndex(index)
+                return
 
 
 # -----------------------------------------------------------------------------

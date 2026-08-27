@@ -510,7 +510,7 @@ class SkeletonStyle(BaseModel):
     visible: bool = False
     color_mode: SkeletonColorMode = SkeletonColorMode.SOLID
     color_bgr: BGR = (0, 255, 255)  # default if SOLID
-    thickness: int = Field(defalt=2, ge=1, le=20)  # base thickness in pixels
+    thickness: int = Field(default=2, ge=1, le=20)  # base thickness in pixels
     gradient_steps: int = Field(default=16, ge=2, le=128)  # segments per edge when gradient
     scale_with_zoom: bool = True  # scale thickness with (sx, sy)
 
@@ -521,15 +521,23 @@ class SkeletonStyle(BaseModel):
 
 
 class VisualizationSettings(BaseModel):
-    p_cutoff: float = Field(default=0.6, ge=0.0, le=1.0)
+    p_cutoff: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+    )
     colormap: str = "hot"
-    bbox_color: tuple[int, int, int] = (0, 0, 255)
+    bbox_color: BGR = (0, 0, 255)
 
-    def get_bbox_color_bgr(self) -> tuple[int, int, int]:
-        """Get bounding box color in BGR format"""
+    show_pose: bool = True
+    show_skeleton: bool = False
+    skeleton_style: SkeletonStyle = Field(default_factory=SkeletonStyle)
+
+    def get_bbox_color_bgr(self) -> BGR:
         if isinstance(self.bbox_color, (list, tuple)) and len(self.bbox_color) == 3:
-            return tuple(int(c) for c in self.bbox_color)
-        return (0, 0, 255)  # default red
+            return tuple(int(value) for value in self.bbox_color)
+
+        return (0, 0, 255)
 
 
 class RecordingSettings(BaseModel):
