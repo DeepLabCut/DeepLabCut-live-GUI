@@ -9,23 +9,14 @@ from typing import Any
 import numpy as np
 import torch
 
-from dlclivegui.services.dlc_processor import (
+from dlclivegui.services.inference.base import (
+    PoseBackend,
     PoseBackends,
     PosePacket,
     PoseSource,
 )
-from dlclivegui.services.inference.base import PoseBackend
 
 from .skeleton import POET_KEYPOINT_NAMES, POET_SKELETON_EDGES
-
-try:
-    from poet_live import POET, PostProcess
-    from poet_live.models.backbone import Backbone, Joiner
-    from poet_live.models.position_encoding import PositionEmbeddingSine
-    from poet_live.models.transformer import Transformer
-except ImportError as exc:
-    raise ImportError("POET imports failed. Ensure the POET package and its dependencies are installed.") from exc
-
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +93,20 @@ class POETBackend(PoseBackend):
     def _build_model(
         self,
     ) -> tuple[Any, Any, torch.device]:
+        try:
+            from poet_live import POET, PostProcess
+            from poet_live.models.backbone import Backbone, Joiner
+            from poet_live.models.position_encoding import (
+                PositionEmbeddingSine,
+            )
+            from poet_live.models.transformer import Transformer
+        except ImportError as exc:
+            raise RuntimeError(
+                "POET is not installed. Install the POET dependencies before using this pose backend."
+            ) from exc
+
         device = self._resolve_torch_device(self._requested_device)
+
         hidden_dimension = 256
 
         backbone = Backbone(

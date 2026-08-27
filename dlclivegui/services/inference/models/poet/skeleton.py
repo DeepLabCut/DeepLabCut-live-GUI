@@ -1,10 +1,6 @@
-# dlclivegui/services/inference/models/poet/skeleton.py
-from __future__ import annotations
+"""POET COCO-17 keypoint and skeleton metadata."""
 
-from dlclivegui.display.skeleton import (
-    SkeletonDefinition,
-    SkeletonEdge,
-)
+from __future__ import annotations
 
 POET_KEYPOINT_NAMES = (
     "nose",
@@ -27,27 +23,26 @@ POET_KEYPOINT_NAMES = (
 )
 
 
-POET_SKELETON = SkeletonDefinition(
-    identifier="poet.coco17",
-    display_name="POET COCO-17",
-    edges=(
-        SkeletonEdge("left_ear", "left_eye"),
-        SkeletonEdge("right_ear", "right_eye"),
-        SkeletonEdge("left_eye", "nose"),
-        SkeletonEdge("nose", "right_eye"),
-        SkeletonEdge("left_shoulder", "right_shoulder"),
-        SkeletonEdge("left_shoulder", "left_elbow"),
-        SkeletonEdge("right_shoulder", "right_elbow"),
-        SkeletonEdge("nose", "left_shoulder"),
-        SkeletonEdge("nose", "right_shoulder"),
-        SkeletonEdge("left_shoulder", "left_hip"),
-        SkeletonEdge("right_shoulder", "right_hip"),
-        SkeletonEdge("left_elbow", "left_wrist"),
-        SkeletonEdge("right_elbow", "right_wrist"),
-        SkeletonEdge("left_hip", "right_hip"),
-        SkeletonEdge("left_hip", "left_knee"),
-        SkeletonEdge("right_hip", "right_knee"),
-        SkeletonEdge("left_knee", "left_ankle"),
-        SkeletonEdge("right_knee", "right_ankle"),
-    ),
+POET_SKELETON_ID = "poet.coco17"
+
+
+POET_SKELETON_EDGES = (
+    ("left_ear", "left_eye"),
+    ("right_ear", "right_eye"),
+    ("left_eye", "nose"),
+    ("nose", "right_eye"),
+    ("left_shoulder", "right_shoulder"),
+    ("left_shoulder", "left_elbow"),
+    ("right_shoulder", "right_elbow"),
+    ("nose", "left_shoulder"),
+    ("nose", "right_shoulder"),
+    ("left_shoulder", "left_hip"),
+    ("right_shoulder", "right_hip"),
+    ("left_elbow", "left_wrist"),
+    ("right_elbow", "right_wrist"),
+    ("left_hip", "right_hip"),
+    ("left_hip", "left_knee"),
+    ("right_hip", "right_knee"),
+    ("left_knee", "left_ankle"),
+    ("right_knee", "right_ankle"),
 )

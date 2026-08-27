@@ -11,8 +11,9 @@ from dlclivegui.config import ModelType
 logger = logging.getLogger(__name__)
 
 
-class PoseBackends(Enum):
-    DLC_LIVE = auto()
+class PoseBackends(str, Enum):
+    DLC_LIVE = "DLC_LIVE"
+    POET = "POET"
 
 
 class WorkerState(Enum):

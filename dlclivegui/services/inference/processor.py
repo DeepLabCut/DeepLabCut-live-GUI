@@ -7,11 +7,11 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
-from qtpy.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal
 
-from dlclivegui.config import ENABLE_MODELS_PROFILING
+from dlclivegui.config import MODEL_INFERENCE_PROFILING_ENABLED
 
-from .base import PoseResult, ProcessorStats
+from .base import PoseBackend, PoseResult, ProcessorStats
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,8 @@ class PoseProcessor(QObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self._backend_factory: Callable[[], Any] | None = None
-        self._backend: Any | None = None
+        self._backend_factory: Callable[[], PoseBackend] | None = None
+        self._backend: PoseBackend | None = None
 
         self._queue: queue.Queue[Any] | None = None
         self._worker_thread: threading.Thread | None = None
@@ -48,14 +48,15 @@ class PoseProcessor(QObject):
         self._total_process_times: deque[float] = deque(maxlen=60)
         self._stats_lock = threading.Lock()
 
-    def configure(self, backend_factory: Callable[[], Any]) -> None:
+    def configure(self, backend_factory: Callable[[], PoseBackend]) -> None:
         self._backend_factory = backend_factory
 
     def is_configured(self) -> bool:
         return self._backend_factory is not None
 
     def reset(self) -> None:
-        self._stop_worker()
+        if not self._stop_worker():
+            raise RuntimeError("Failed to stop worker thread")
         self._backend = None
         with self._stats_lock:
             self._frames_enqueued = 0
@@ -137,17 +138,17 @@ class PoseProcessor(QObject):
         )
         self._worker_thread.start()
 
-    def _stop_worker(self) -> None:
+    def _stop_worker(self) -> bool:
         worker = self._worker_thread
         if worker is None:
-            return
+            return True
 
         self._stop_event.set()
         worker.join(timeout=2.0)
 
         if worker.is_alive():
             logger.warning("Pose worker did not stop within the timeout.")
-            return
+            return False
 
         self._worker_thread = None
         self._queue = None
@@ -160,6 +161,7 @@ class PoseProcessor(QObject):
                 backend.close()
             except Exception:
                 logger.exception("Failed to close pose backend.")
+        return True
 
     def _process_frame(
         self,
@@ -202,7 +204,7 @@ class PoseProcessor(QObject):
             self._latencies.append(latency)
             self._processing_times.append(finished)
 
-            if ENABLE_MODELS_PROFILING:
+            if MODEL_INFERENCE_PROFILING_ENABLED:
                 self._queue_wait_times.append(queue_wait_time)
                 self._inference_times.append(inference_time)
                 self._signal_emit_times.append(signal_time)
@@ -227,6 +229,18 @@ class PoseProcessor(QObject):
             logger.exception("Failed to initialize pose backend", exc_info=exc)
             self.error.emit(str(exc))
             self.initialized.emit(False)
+
+            backend = self._backend
+            self._backend = None
+
+            if backend is not None:
+                try:
+                    backend.close()
+                except Exception as exc:
+                    logger.exception("Failed to close backend", exc_info=exc)
+
+            self._queue = None
+            self._worker_thread = None
             return
 
         while True:

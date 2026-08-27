@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 import urllib.request
@@ -7,13 +8,16 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-
-def poet_default_weights_dir() -> Path:
-    return Path(tempfile.gettempdir()) / "dlclivegui" / "poet"
+logger = logging.getLogger(__name__)
 
 
 POET_WEIGHTS_URL = "https://zenodo.org/records/7972042/files/poet_ckpt.pth?download=1"
 POET_WEIGHTS_FILENAME = "poet_resnet50.pth"
+
+
+def poet_default_weights_dir() -> Path:
+    # TODO: move to an app cache rather than a temporary directory
+    return Path(tempfile.gettempdir()) / "dlclivegui" / "poet"
 
 
 class WeightsDownloadWorker(QObject):
@@ -50,14 +54,14 @@ class WeightsDownloadWorker(QObject):
                     if total > 0:
                         self.progress.emit(int(done * 100 / total))
 
-            final_path = self.dest.parent / POET_WEIGHTS_FILENAME
-            os.replace(tmp, final_path)
+            os.replace(tmp, self.dest)
             self.progress.emit(100)
-            self.finished.emit(str(final_path))
+            self.finished.emit(str(self.dest))
 
         except Exception as e:
-            try:
-                tmp.unlink(missing_ok=True)
-            except Exception:
-                pass
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    logger.exception("Failed to remove partial POET weights.")
             self.error.emit(str(e))

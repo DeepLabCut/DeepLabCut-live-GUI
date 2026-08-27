@@ -42,7 +42,7 @@ DLC_DO_LOG_TIMING: bool = False
 DEBUG_TRIGGER_LOGS = False
 ### Extra logs for DLC lifecycle (model loading, etc)
 DLC_LIFECYCLE_EXTRA_LOGS: bool = False
-ENABLE_MODELS_PROFILING: bool = False
+MODEL_INFERENCE_PROFILING_ENABLED: bool = False
 # MAIN_WINDOW_DO_LOG_TIMING: bool = False
 #### Backends
 BASLER_DO_LOG_TIMING: bool = False
