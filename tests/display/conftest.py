@@ -12,15 +12,15 @@ def test_frame() -> Callable[..., np.ndarray]:
     """Return a factory for creating predictable test frames."""
 
     def make_frame(
-        height: int,
-        width: int,
-        channels: int = 3,
+        h: int,
+        w: int,
+        c: int = 3,
         value: int | float = 0,
         dtype: np.dtype = np.uint8,
     ) -> np.ndarray:
         if not isinstance(dtype, np.dtype):
             dtype = np.dtype(dtype)
-        shape = (height, width) if channels == 1 else (height, width, channels)
+        shape = (h, w) if c == 1 else (h, w, c)
         return np.full(shape, value, dtype=dtype)
 
     return make_frame

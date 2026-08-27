@@ -189,6 +189,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._p_cutoff = 0.6
         self._colormap = "hot"
         self._bbox_color = (0, 0, 255)  # BGR: red
+        self._skeleton_style = SkeletonStyle()
         self._overlay_renderer = OverlayRenderer()
 
         # Multi-camera state
@@ -989,6 +990,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._p_cutoff = viz.p_cutoff
         self._colormap = viz.colormap
         self._bbox_color = viz.get_bbox_color_bgr()
+        self._skeleton_style = viz.skeleton_style.model_copy(deep=True)
 
         self.show_predictions_checkbox.blockSignals(True)
         try:
@@ -1145,13 +1147,16 @@ class DLCLiveMainWindow(QMainWindow):
     def _visualization_settings_from_ui(
         self,
     ) -> VisualizationSettings:
+        skeleton_style = self._skeleton_style_from_ui()
+        self._skeleton_style = skeleton_style
+
         return VisualizationSettings(
             p_cutoff=self._p_cutoff,
             colormap=self._colormap,
             bbox_color=self._bbox_color,
             show_pose=self.show_predictions_checkbox.isChecked(),
             show_skeleton=self.show_skeleton_checkbox.isChecked(),
-            skeleton_style=self._skeleton_style_from_ui(),
+            skeleton_style=skeleton_style,
         )
 
     def _overlay_settings_from_ui(
@@ -1190,14 +1195,12 @@ class DLCLiveMainWindow(QMainWindow):
 
         color_bgr = tuple(color) if color is not None else (0, 255, 255)
 
-        current_style = self._config.visualization.skeleton_style
-
         return SkeletonStyle(
             color_mode=SkeletonColorMode(mode),
             color_bgr=color_bgr,
             thickness=self.skeleton_thickness_spin.value(),
-            gradient_steps=current_style.gradient_steps,
-            scale_with_zoom=current_style.scale_with_zoom,
+            gradient_steps=self._skeleton_style.gradient_steps,
+            scale_with_zoom=self._skeleton_style.scale_with_zoom,
         )
 
     def _suggest_config_dialog_path(self) -> str:
