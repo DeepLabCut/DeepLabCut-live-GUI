@@ -15,9 +15,7 @@ POET_WEIGHTS_FILENAME = "poet_resnet50.pth"
 
 
 def poet_default_weights_dir() -> Path:
-    # TODO: move to an app cache rather than a temporary directory
-    # return Path(tempfile.gettempdir()) / "dlclivegui" / "poet"
-    return Path.cwd() / "TEMP_WEIGHTS/poet"
+    return Path.home() / ".cache/dlclivegui/poet"
 
 
 class WeightsDownloadWorker(QObject):
