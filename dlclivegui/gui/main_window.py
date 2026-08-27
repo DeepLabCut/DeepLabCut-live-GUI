@@ -66,6 +66,7 @@ from dlclivegui.config import (
 )
 
 from ..display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
+from ..display.skeleton import ResolvedSkeleton, SkeletonResolutionError, resolve_packet_skeleton
 from ..processors.processor_utils import (
     create_spec_from_scan,
     default_processors_dir,
@@ -181,6 +182,17 @@ class DLCLiveMainWindow(QMainWindow):
         self._p_cutoff = 0.6
         self._colormap = "hot"
         self._bbox_color = (0, 0, 255)  # BGR: red
+        ## Skeleton
+        self._resolved_skeleton: ResolvedSkeleton | None = None
+        self._resolved_skeleton_signature: (
+            tuple[
+                str | None,
+                tuple[str, ...],
+                tuple[tuple[str, str], ...],
+            ]
+            | None
+        ) = None
+        self._last_skeleton_warning: str | None = None
 
         # Multi-camera state
         self._multi_camera_mode = False
@@ -2300,6 +2312,42 @@ class DLCLiveMainWindow(QMainWindow):
         if hasattr(self, "load_config_action"):
             self.load_config_action.setEnabled(allow_changes)
 
+    def _refresh_resolved_skeleton(
+        self,
+        result: PoseResult,
+    ) -> None:
+        packet = result.packet
+
+        if packet is None:
+            self._resolved_skeleton = None
+            self._resolved_skeleton_signature = None
+            return
+
+        signature = (
+            packet.skeleton_id,
+            tuple(packet.keypoint_names or ()),
+            tuple(packet.skeleton_edges or ()),
+        )
+
+        if signature == self._resolved_skeleton_signature:
+            return
+
+        self._resolved_skeleton_signature = signature
+
+        try:
+            self._resolved_skeleton = resolve_packet_skeleton(packet)
+            self._last_skeleton_warning = None
+        except SkeletonResolutionError as exc:
+            self._resolved_skeleton = None
+
+            message = str(exc)
+            if message != self._last_skeleton_warning:
+                self._last_skeleton_warning = message
+                logger.warning(
+                    "Skeleton could not be resolved: %s",
+                    message,
+                )
+
     def _display_frame(self, frame: np.ndarray, *, force: bool = False) -> None:
         if frame is None:
             return
@@ -2560,18 +2608,10 @@ class DLCLiveMainWindow(QMainWindow):
 
         with self._dlc_timing.measure("DLC.pose_ready_callback"):
             self._last_pose = result
-
-            # try:
-            #     latency_ms = (time.time() - float(result.timestamp)) * 1000.0
-            #      if logger.isEnabledFor(logging.DEBUG):
-            #          logger.debug("DLC pose latency camera_timestamp_to_gui=%.2f ms", latency_ms)
-            # except Exception:
-            #     pass
+            self._refresh_resolved_skeleton(result)
 
             if self._current_frame is not None:
                 self._display_dirty = True
-                # with self._dlc_timing.measure("DLC.display_after_pose"):
-                # self._display_frame(self._current_frame, force=True)
 
         self._dlc_timing.maybe_log()
 

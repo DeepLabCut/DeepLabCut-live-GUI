@@ -614,8 +614,10 @@ class DLCLiveProcessor(QObject):
         pose_packet = PosePacket(
             schema_version=0,
             keypoints=pose_arr,
-            keypoint_names=None,
+            keypoint_names=list(self._keypoint_names) if self._keypoint_names is not None else None,
             individual_ids=None,
+            skeleton_id=self._skeleton_id,
+            skeleton_edges=self._skeleton_edges,
             source=PoseSource(backend=PoseBackends.DLC_LIVE, model_type=self._settings.model_type),
             raw=pose_arr,
         )
@@ -805,6 +807,8 @@ class DLCLiveProcessor(QObject):
             with self._worker_timing.measure("DLC.init_inference"):
                 self._dlc.init_inference(init_frame)
                 log_processor_context("DLCLive init_inference completed", logger)
+
+            self._load_pose_metadata_from_dlc_config()
 
             self._debug_log_dlc_runner_device()
             self._worker_timing.note_frame()
