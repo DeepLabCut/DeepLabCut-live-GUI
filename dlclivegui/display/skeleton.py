@@ -1,6 +1,6 @@
 """Skeleton definition, validation, and drawing utilities."""
 
-# dlclivegui/utils/skeleton.py
+# dlclivegui/display/skeleton.py
 from __future__ import annotations
 
 import json
@@ -43,9 +43,73 @@ class SkeletonRenderStatus:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SkeletonEdge:
+    start: str
+    end: str
+
+
+@dataclass(frozen=True, slots=True)
+class SkeletonDefinition:
+    identifier: str
+    display_name: str
+    edges: tuple[SkeletonEdge, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSkeleton:
+    definition: SkeletonDefinition
+    keypoint_names: tuple[str, ...]
+    edges: tuple[tuple[int, int], ...]
+
+
+def resolve_skeleton(
+    definition: SkeletonDefinition,
+    keypoint_names: list[str] | tuple[str, ...],
+) -> ResolvedSkeleton:
+    names = tuple(keypoint_names)
+
+    if not names:
+        raise SkeletonResolutionError("Cannot resolve a skeleton without keypoint names.")
+
+    if len(set(names)) != len(names):
+        raise SkeletonResolutionError("Cannot resolve a skeleton against duplicate keypoint names.")
+
+    name_to_index = {name: index for index, name in enumerate(names)}
+
+    resolved_edges: list[tuple[int, int]] = []
+    missing_names: set[str] = set()
+
+    for edge in definition.edges:
+        start_index = name_to_index.get(edge.start)
+        end_index = name_to_index.get(edge.end)
+
+        if start_index is None:
+            missing_names.add(edge.start)
+        if end_index is None:
+            missing_names.add(edge.end)
+
+        if start_index is not None and end_index is not None:
+            resolved_edges.append((start_index, end_index))
+
+    if missing_names:
+        missing = ", ".join(sorted(missing_names))
+        raise SkeletonResolutionError(f"Skeleton keypoints are absent from the pose output: {missing}.")
+
+    return ResolvedSkeleton(
+        definition=definition,
+        keypoint_names=names,
+        edges=tuple(resolved_edges),
+    )
+
+
 # ############ #
 #  Exceptions  #
 # ############ #
+
+
+class SkeletonResolutionError(ValueError):
+    """Raised when a skeleton cannot be aligned with pose keypoints."""
 
 
 class SkeletonError(ValueError):
@@ -217,8 +281,8 @@ class Skeleton:
         self.edges = model.edges
 
         self.style = SkeletonStyle(
-            mode=model.style.mode,
-            color=model.style.color,
+            color_mode=model.style.mode,
+            color_bgr=model.style.color,
             thickness=model.style.thickness,
             gradient_steps=model.style.gradient_steps,
             scale_with_zoom=model.style.scale_with_zoom,
@@ -295,7 +359,7 @@ class Skeleton:
         th = st.effective_thickness(sx, sy)
 
         # if gradient mode, require keypoint_colors aligned with keypoint order
-        if st.mode == SkeletonColorMode.GRADIENT_KEYPOINTS:
+        if st.color_mode == SkeletonColorMode.GRADIENT_KEYPOINTS:
             if keypoint_colors is None or len(keypoint_colors) != len(self.keypoints):
                 return SkeletonRenderStatus(
                     SkeletonRenderCode.KEYPOINT_COUNT_MISMATCH,
@@ -313,13 +377,13 @@ class Skeleton:
             p1 = (int(xi * sx + ox), int(yi * sy + oy))
             p2 = (int(xj * sx + ox), int(yj * sy + oy))
 
-            if st.mode == SkeletonColorMode.GRADIENT_KEYPOINTS:
+            if st.color_mode == SkeletonColorMode.GRADIENT_KEYPOINTS:
                 c1 = keypoint_colors[i]
                 c2 = keypoint_colors[j]
                 self._draw_gradient_edge(overlay, p1, p2, c1, c2, th, st.gradient_steps)
             else:
                 # SOLID: priority edge_colors > override > style.color > default_color
-                color = self.edge_colors.get((i, j), color_override or st.color or self.default_color)
+                color = self.edge_colors.get((i, j), color_override or st.color_bgr or self.default_color)
                 cv2.line(overlay, p1, p2, color, th, lineType=cv2.LINE_AA)
 
         return SkeletonRenderStatus(SkeletonRenderCode.OK, "")
