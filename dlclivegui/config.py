@@ -507,10 +507,11 @@ class SkeletonColorMode(str, Enum):
 
 
 class SkeletonStyle(BaseModel):
-    mode: SkeletonColorMode = SkeletonColorMode.SOLID
-    color: BGR = (0, 255, 255)  # default if SOLID
-    thickness: int = 2  # base thickness in pixels
-    gradient_steps: int = 16  # segments per edge when gradient
+    visible: bool = False
+    color_mode: SkeletonColorMode = SkeletonColorMode.SOLID
+    color_bgr: BGR = (0, 255, 255)  # default if SOLID
+    thickness: int = Field(defalt=2, ge=1, le=20)  # base thickness in pixels
+    gradient_steps: int = Field(default=16, ge=2, le=128)  # segments per edge when gradient
     scale_with_zoom: bool = True  # scale thickness with (sx, sy)
 
     def effective_thickness(self, sx: float, sy: float) -> int:
