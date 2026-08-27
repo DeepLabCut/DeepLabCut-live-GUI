@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -17,7 +16,8 @@ POET_WEIGHTS_FILENAME = "poet_resnet50.pth"
 
 def poet_default_weights_dir() -> Path:
     # TODO: move to an app cache rather than a temporary directory
-    return Path(tempfile.gettempdir()) / "dlclivegui" / "poet"
+    # return Path(tempfile.gettempdir()) / "dlclivegui" / "poet"
+    return Path.cwd() / "TEMP_WEIGHTS/poet"
 
 
 class WeightsDownloadWorker(QObject):

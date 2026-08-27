@@ -9,7 +9,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl, Signal
@@ -95,6 +95,7 @@ from .misc import color_dropdowns as color_ui
 from .misc import layouts as lyts
 from .misc.drag_spinbox import ScrubSpinBox
 from .misc.eliding_label import ElidingPathLabel
+from .misc.weights_dialog import PoetWeightsDialog
 from .qt_display.utils import frame_to_pixmap
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 
@@ -192,6 +193,7 @@ class DLCLiveMainWindow(QMainWindow):
         # UI elements
         self._current_style: AppStyle = AppStyle.DARK
         self._cam_dialog: CameraConfigDialog | None = None
+        self._poet_weights_dialog: PoetWeightsDialog | None = None
 
         # Visualization settings (will be updated from config)
         self._p_cutoff = 0.6
@@ -218,6 +220,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._preview_pixmap = QPixmap(LOGO_ALPHA)
         self._setup_ui()
         self._connect_signals()
+        self._restore_pose_backend()
         self._apply_config(self._config, restore_local_prefs=True)
         self._refresh_processors()  # Scan and populate processor dropdown
         self._update_inference_buttons()
@@ -428,6 +431,59 @@ class DLCLiveMainWindow(QMainWindow):
 
         stats_widget.setLayout(stats_layout)
 
+    def _action_manage_poet_weights(self) -> None:
+        if self._poet_weights_dialog is None:
+            dialog = PoetWeightsDialog(
+                self,
+                initial_path=(self._get_last_poet_weights_path()),
+            )
+            dialog.weights_selected.connect(self._on_poet_weights_selected)
+            dialog.finished.connect(self._clear_poet_weights_dialog)
+
+            self._poet_weights_dialog = dialog
+
+        self._poet_weights_dialog.show()
+        self._poet_weights_dialog.raise_()
+        self._poet_weights_dialog.activateWindow()
+
+    def _on_poet_weights_selected(
+        self,
+        path: str,
+    ) -> None:
+        self._set_last_poet_weights_path(path)
+        self._set_backend("poet")
+        self.model_path_edit.setText(path)
+
+        self.statusBar().showMessage(
+            f"POET weights selected: {path}",
+            5000,
+        )
+
+    def _clear_poet_weights_dialog(
+        self,
+        _result: int,
+    ) -> None:
+        self._poet_weights_dialog = None
+
+    def _set_last_poet_weights_path(
+        self,
+        path: str,
+    ) -> None:
+        self.settings.setValue(
+            "poet/weights_path",
+            path,
+        )
+
+    def _get_last_poet_weights_path(self) -> str:
+        return (
+            self.settings.value(
+                "poet/weights_path",
+                "",
+                type=str,
+            )
+            or ""
+        )
+
     def _build_menus(self) -> None:
         # File menu
         file_menu = self.menuBar().addMenu("&File")
@@ -497,6 +553,14 @@ class DLCLiveMainWindow(QMainWindow):
         self._backend_action_group.setExclusive(True)
         self._backend_action_group.addAction(self.action_backend_dlc)
         self._backend_action_group.addAction(self.action_backend_poet)
+        # -------------------------
+        models_menu.addSeparator()
+        self.action_manage_poet_weights = QAction(
+            "Manage POET weights...",
+            self,
+        )
+        self.action_manage_poet_weights.triggered.connect(self._action_manage_poet_weights)
+        models_menu.addAction(self.action_manage_poet_weights)
 
         backend_menu.addAction(self.action_backend_dlc)
         backend_menu.addAction(self.action_backend_poet)
@@ -1015,7 +1079,10 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Set DLC settings from config
         dlc = config.dlc
-        resolved_model_path = self._model_path_store.resolve(dlc.model_path)
+        if self._backend_name == "poet":
+            resolved_model_path = self._get_last_poet_weights_path()
+        else:
+            resolved_model_path = self._model_path_store.resolve(dlc.model_path)
         self.model_path_edit.setText(resolved_model_path)
 
         # self.additional_options_edit.setPlainText(json.dumps(dlc.additional_options, indent=2))
@@ -1439,7 +1506,10 @@ class DLCLiveMainWindow(QMainWindow):
 
         selected_path = str(file_path)
         self.model_path_edit.setText(selected_path)
-        self._model_path_store.save_if_valid(selected_path)
+        if self._backend_name == "poet":
+            self._set_last_poet_weights_path(selected_path)
+        else:
+            self._model_path_store.save_if_valid(selected_path)
 
     def _action_browse_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Select output directory", str(Path.home()))
@@ -2143,18 +2213,40 @@ class DLCLiveMainWindow(QMainWindow):
 
         return processor
 
+    def _remember_current_backend_path(self) -> None:
+        path = self.model_path_edit.text().strip()
+
+        if not path:
+            return
+
+        if self._backend_name == "poet":
+            self._set_last_poet_weights_path(path)
+        else:
+            self._model_path_store.save_if_valid(path)
+
+    def _restore_current_backend_path(self) -> None:
+        if self._backend_name == "poet":
+            path = self._get_last_poet_weights_path()
+        else:
+            path = self._model_path_store.resolve(self._config.dlc.model_path)
+
+        self.model_path_edit.setText(path)
+
     def _set_backend(
         self,
         name: str,
     ) -> None:
-        if name not in {"dlc", "poet"}:
-            raise ValueError(f"Unsupported pose backend: {name!r}.")
 
-        backend: PoseBackendName = name
+        normalized_name = name.strip().lower()
+        if normalized_name not in {"dlc", "poet"}:
+            raise ValueError(f"Unsupported pose backend: {normalized_name!r}.")
+
+        backend = cast(PoseBackendName, normalized_name)
 
         if backend == self._backend_name:
             self._sync_backend_actions()
             self._update_backend_ui()
+            self._restore_current_backend_path()
             return
 
         if self._dlc_active:
@@ -2162,11 +2254,10 @@ class DLCLiveMainWindow(QMainWindow):
             self._sync_backend_actions()
             return
 
+        self._remember_current_backend_path()
         self._disconnect_pose_processor_signals()
 
         self._backend_name = backend
-
-        # Construct the processor lazily before connecting its signals.
         self._get_pose_processor(backend)
 
         self._last_pose = None
@@ -2175,6 +2266,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._connect_pose_processor_signals()
         self._sync_backend_actions()
         self._update_backend_ui()
+        self._restore_current_backend_path()
 
         self.settings.setValue(
             "app/backend",
@@ -2185,6 +2277,22 @@ class DLCLiveMainWindow(QMainWindow):
             f"Pose backend set to {self._backend_display_name()}",
             3000,
         )
+
+    def _restore_pose_backend(self) -> None:
+        saved_backend = self.settings.value(
+            "app/backend",
+            "dlc",
+            type=str,
+        )
+
+        if saved_backend not in {"dlc", "poet"}:
+            logger.warning(
+                "Ignoring unsupported saved pose backend: %r",
+                saved_backend,
+            )
+            saved_backend = "dlc"
+
+        self._set_backend(saved_backend)
 
     def _backend_display_name(self) -> str:
         if self._backend_name == "poet":
@@ -2659,6 +2767,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         self.action_backend_dlc.setEnabled(allow_changes)
         self.action_backend_poet.setEnabled(allow_changes)
+        self.action_manage_poet_weights.setEnabled(allow_changes)
 
     def _update_camera_controls_enabled(self) -> None:
         multi_cam_recording = self._rec_manager.is_active
@@ -3138,7 +3247,11 @@ class DLCLiveMainWindow(QMainWindow):
             self._display_timer.stop()
 
         # Remember model path on exit
-        self._model_path_store.save_if_valid(self.model_path_edit.text().strip())
+        current_model_path = self.model_path_edit.text().strip()
+        if self._backend_name == "poet":
+            self._set_last_poet_weights_path(current_model_path)
+        else:
+            self._model_path_store.save_if_valid(current_model_path)
 
         # Remember processor folder on exit
         if hasattr(self, "processor_folder_edit"):
