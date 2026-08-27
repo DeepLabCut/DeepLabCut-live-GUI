@@ -42,3 +42,24 @@ class PoseResult:
     pose: np.ndarray | None
     timestamp: float
     packet: PosePacket | None = None
+
+
+@dataclass
+class ProcessorStats:
+    """Statistics for DLC processor performance."""
+
+    frames_enqueued: int = 0
+    frames_processed: int = 0
+    frames_dropped: int = 0
+    queue_size: int = 0
+    processing_fps: float = 0.0
+    average_latency: float = 0.0
+    last_latency: float = 0.0
+    # Profiling metrics
+    avg_queue_wait: float = 0.0
+    avg_inference_time: float = 0.0
+    avg_signal_emit_time: float = 0.0
+    avg_total_process_time: float = 0.0
+    # Separated timing for GPU vs socket processor
+    avg_gpu_inference_time: float = 0.0  # Pure model inference
+    avg_processor_overhead: float = 0.0  # Socket processor overhead

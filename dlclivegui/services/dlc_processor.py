@@ -9,7 +9,6 @@ import threading
 import time
 from collections import deque
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -27,7 +26,7 @@ from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum 
 from dlclivegui.utils.stats import WorkerTimingStats
 from dlclivegui.utils.utils import format_thread_stack
 
-from .inference.base import PoseBackends, PosePacket, PoseResult, PoseSource, WorkerState
+from .inference.base import PoseBackends, PosePacket, PoseResult, PoseSource, ProcessorStats, WorkerState
 
 logger = logging.getLogger(__name__)
 STOP_WORKER_TIMEOUT = 10.0  # # seconds to wait in STOPPING state before scheduling background reaping
@@ -91,27 +90,6 @@ def validate_pose_array(
         raise ValueError(f"{source_backend} returned an invalid pose output format: contains non-finite values")
 
     return arr
-
-
-@dataclass
-class ProcessorStats:
-    """Statistics for DLC processor performance."""
-
-    frames_enqueued: int = 0
-    frames_processed: int = 0
-    frames_dropped: int = 0
-    queue_size: int = 0
-    processing_fps: float = 0.0
-    average_latency: float = 0.0
-    last_latency: float = 0.0
-    # Profiling metrics
-    avg_queue_wait: float = 0.0
-    avg_inference_time: float = 0.0
-    avg_signal_emit_time: float = 0.0
-    avg_total_process_time: float = 0.0
-    # Separated timing for GPU vs socket processor
-    avg_gpu_inference_time: float = 0.0  # Pure model inference
-    avg_processor_overhead: float = 0.0  # Socket processor overhead
 
 
 class DLCLiveProcessor(QObject):

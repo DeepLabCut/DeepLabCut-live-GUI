@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from dlclivegui.services.dlc_processor import ProcessorStats
+    from dlclivegui.services.inference.base import ProcessorStats
 
 
 @dataclass

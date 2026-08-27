@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
+from typing import Protocol
 
 import cv2
 import numpy as np
@@ -85,11 +86,6 @@ def resolve_skeleton(
     )
 
 
-# ###################### #
-#  Skeleton I/O          #
-# ###################### #
-
-
 def skeleton_definition_from_metadata(
     *,
     identifier: str,
@@ -123,6 +119,39 @@ def skeleton_definition_from_metadata(
         identifier=identifier,
         display_name=display_name,
         edges=tuple(skeleton_edges),
+    )
+
+
+# ###################### #
+#  Skeleton I/O          #
+# ###################### #
+
+
+class SkeletonPacket(Protocol):
+    keypoint_names: list[str] | None
+    skeleton_id: str | None
+    skeleton_edges: tuple[tuple[str, str], ...] | None
+
+
+def resolve_packet_skeleton(
+    packet: SkeletonPacket,
+) -> ResolvedSkeleton | None:
+    """Resolve skeleton metadata supplied by a pose packet."""
+    if not packet.keypoint_names:
+        return None
+
+    if not packet.skeleton_id or not packet.skeleton_edges:
+        return None
+
+    definition = skeleton_definition_from_metadata(
+        identifier=packet.skeleton_id,
+        display_name=packet.skeleton_id,
+        edges=packet.skeleton_edges,
+    )
+
+    return resolve_skeleton(
+        definition,
+        packet.keypoint_names,
     )
 
 
