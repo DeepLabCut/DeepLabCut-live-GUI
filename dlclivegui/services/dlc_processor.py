@@ -658,6 +658,11 @@ class DLCLiveProcessor(QObject):
 
     def _load_pose_metadata_from_dlc_config(self) -> None:
         """Extract name-based pose metadata from the initialized DLC config."""
+
+        self._keypoint_names = None
+        self._skeleton_id = None
+        self._skeleton_edges = None
+
         dlc = self._dlc
         if dlc is None:
             raise RuntimeError("DLCLive instance is not initialized.")

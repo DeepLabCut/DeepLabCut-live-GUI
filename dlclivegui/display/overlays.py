@@ -56,8 +56,8 @@ class SkeletonOverlaySettings:
 @dataclass(frozen=True, slots=True)
 class OverlaySettings:
     pose: PoseOverlaySettings
-    skeleton: SkeletonOverlaySettings
     bounding_box: BoundingBoxOverlaySettings
+    skeleton: SkeletonOverlaySettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +67,7 @@ class OverlayRenderResult:
 
 
 class OverlayRenderer:
-    """Compose overlays and cache packet-derived skeleton resolution."""
+    """Render overlays and cache packet-derived skeleton resolution."""
 
     def __init__(self) -> None:
         self._skeleton_signature: object | None = None
@@ -85,38 +85,65 @@ class OverlayRenderer:
         *,
         pose: np.ndarray | None,
         packet: PosePacketLike | None,
-        settings: OverlaySettings,
+        overlay_settings: OverlaySettings,
         offset: tuple[int, int] = (0, 0),
         scale: tuple[float, float] = (1.0, 1.0),
     ) -> OverlayRenderResult:
         output = frame.copy()
         warning: str | None = None
 
-        if settings.pose.visible and pose is not None:
+        if overlay_settings.pose.visible and pose is not None:
             output = draw_pose(
                 output,
                 pose,
-                p_cutoff=settings.pose.p_cutoff,
-                colormap=settings.pose.colormap,
+                p_cutoff=overlay_settings.pose.p_cutoff,
+                colormap=overlay_settings.pose.colormap,
                 offset=offset,
                 scale=scale,
             )
 
-        if settings.skeleton.visible and pose is not None:
-            warning = self._draw_packet_skeleton(
-                output,
-                pose=pose,
-                packet=packet,
-                settings=settings,
-                offset=offset,
-                scale=scale,
-            )
+        if overlay_settings.skeleton.visible and pose is not None:
+            try:
+                resolved = self._resolve_packet_skeleton(packet)
+            except SkeletonResolutionError as exc:
+                warning = self._new_warning(str(exc))
+            else:
+                if resolved is None:
+                    warning = self._new_warning("Skeleton metadata is unavailable for this pose output.")
+                else:
+                    style = overlay_settings.skeleton.style
+                    colors = None
 
-        if settings.bounding_box.visible:
+                    if style.color_mode == SkeletonColorMode.GRADIENT_KEYPOINTS:
+                        colors = keypoint_colors_bgr(
+                            overlay_settings.pose.colormap,
+                            len(resolved.keypoint_names),
+                        )
+
+                    result = draw_skeleton(
+                        output,
+                        pose,
+                        resolved,
+                        style,
+                        p_cutoff=overlay_settings.pose.p_cutoff,
+                        offset=offset,
+                        scale=scale,
+                        keypoint_colors=colors,
+                    )
+
+                    if result.code in {
+                        SkeletonRenderCode.RENDERED,
+                        SkeletonRenderCode.NO_POSE,
+                    }:
+                        self._last_warning = None
+                    else:
+                        warning = self._new_warning(result.message)
+
+        if overlay_settings.bounding_box.visible:
             output = draw_bbox(
                 output,
-                settings.bounding_box.coordinates,
-                color_bgr=settings.bounding_box.color_bgr,
+                overlay_settings.bounding_box.coordinates,
+                color_bgr=overlay_settings.bounding_box.color_bgr,
                 offset=offset,
                 scale=scale,
             )
@@ -126,61 +153,13 @@ class OverlayRenderer:
             warning=warning,
         )
 
-    def _draw_packet_skeleton(
-        self,
-        frame: np.ndarray,
-        *,
-        pose: np.ndarray,
-        packet: PosePacketLike | None,
-        settings: OverlaySettings,
-        offset: tuple[int, int],
-        scale: tuple[float, float],
-    ) -> str | None:
-        try:
-            resolved = self._resolve_packet(packet)
-        except SkeletonResolutionError as exc:
-            return self._deduplicate_warning(str(exc))
-
-        if resolved is None:
-            return self._deduplicate_warning("Skeleton metadata is unavailable for this pose output.")
-
-        style = settings.skeleton.style
-        keypoint_colors = None
-
-        if style.color_mode == SkeletonColorMode.GRADIENT_KEYPOINTS:
-            keypoint_colors = tuple(
-                keypoint_colors_bgr(
-                    settings.pose.colormap,
-                    len(resolved.keypoint_names),
-                )
-            )
-
-        result = draw_skeleton(
-            frame,
-            pose,
-            resolved,
-            style,
-            p_cutoff=settings.pose.p_cutoff,
-            offset=offset,
-            scale=scale,
-            keypoint_colors=keypoint_colors,
-        )
-
-        if result.code in {
-            SkeletonRenderCode.RENDERED,
-            SkeletonRenderCode.NO_POSE,
-        }:
-            self._last_warning = None
-            return None
-
-        return self._deduplicate_warning(result.message)
-
-    def _resolve_packet(
+    def _resolve_packet_skeleton(
         self,
         packet: PosePacketLike | None,
     ) -> ResolvedSkeleton | None:
         if packet is None:
-            self._clear_skeleton_cache()
+            self._skeleton_signature = None
+            self._resolved_skeleton = None
             return None
 
         signature = (
@@ -192,21 +171,13 @@ class OverlayRenderer:
         if signature == self._skeleton_signature:
             return self._resolved_skeleton
 
-        try:
-            resolved = resolve_packet_skeleton(packet)
-        except SkeletonResolutionError:
-            self._clear_skeleton_cache()
-            raise
+        resolved = resolve_packet_skeleton(packet)
 
         self._skeleton_signature = signature
         self._resolved_skeleton = resolved
         return resolved
 
-    def _clear_skeleton_cache(self) -> None:
-        self._skeleton_signature = None
-        self._resolved_skeleton = None
-
-    def _deduplicate_warning(
+    def _new_warning(
         self,
         message: str,
     ) -> str | None:

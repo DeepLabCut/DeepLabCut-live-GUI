@@ -60,12 +60,19 @@ from dlclivegui.config import (
     DLCProcessorSettings,
     MultiCameraSettings,
     RecordingSettings,
+    SkeletonColorMode,
+    SkeletonStyle,
     VisualizationSettings,
 )
 
-from ..display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
-from ..display.overlays import BoundingBoxOverlaySettings, OverlaySettings, PoseOverlaySettings, render_overlays
-from ..display.skeleton import ResolvedSkeleton, SkeletonResolutionError, resolve_packet_skeleton
+from ..display import BBoxColors, compute_tile_info, create_tiled_frame
+from ..display.overlays import (
+    BoundingBoxOverlaySettings,
+    OverlayRenderer,
+    OverlaySettings,
+    PoseOverlaySettings,
+    SkeletonOverlaySettings,
+)
 from ..processors.processor_utils import (
     create_spec_from_scan,
     default_processors_dir,
@@ -182,17 +189,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._p_cutoff = 0.6
         self._colormap = "hot"
         self._bbox_color = (0, 0, 255)  # BGR: red
-        ## Skeleton
-        self._resolved_skeleton: ResolvedSkeleton | None = None
-        self._resolved_skeleton_signature: (
-            tuple[
-                str | None,
-                tuple[str, ...],
-                tuple[tuple[str, str], ...],
-            ]
-            | None
-        ) = None
-        self._last_skeleton_warning: str | None = None
+        self._overlay_renderer = OverlayRenderer()
 
         # Multi-camera state
         self._multi_camera_mode = False
@@ -812,6 +809,46 @@ class DLCLiveMainWindow(QMainWindow):
         )
         form.addRow(bbox_settings)
 
+        # Skeleton overlay
+        self.show_skeleton_checkbox = QCheckBox("Display skeleton")
+        self.show_skeleton_checkbox.setChecked(False)
+        self.show_skeleton_checkbox.setToolTip(
+            "Display connections between keypoints when the pose output provides a compatible skeleton definition."
+        )
+
+        self.skeleton_color_combo = color_ui.make_skeleton_color_combo(  # FIXME
+            BBoxColors,
+            current_mode=SkeletonColorMode.SOLID.value,
+            current_color=(0, 255, 255),
+            include_icons=True,
+            tooltip=("Select a solid skeleton color or a gradient between endpoint keypoint colors."),
+            sizing=color_ui.ComboSizing(
+                min_width=80,
+                max_width=200,
+            ),
+        )
+
+        skeleton_settings = lyts.make_two_field_row(
+            "Skeleton:",
+            self.skeleton_color_combo,
+            None,
+            self.show_skeleton_checkbox,
+            key_width=120,
+            left_stretch=0,
+            right_stretch=0,
+        )
+        form.addRow(skeleton_settings)
+
+        self.skeleton_thickness_spin = QSpinBox()
+        self.skeleton_thickness_spin.setRange(1, 20)
+        self.skeleton_thickness_spin.setValue(2)
+        self.skeleton_thickness_spin.setToolTip("Skeleton line thickness.")
+
+        form.addRow(
+            "Skeleton thickness:",
+            self.skeleton_thickness_spin,
+        )
+
         bbox_layout = QHBoxLayout()
         self.bbox_x0_spin = ScrubSpinBox()
         self.bbox_x0_spin.setRange(0, 7680)
@@ -864,6 +901,10 @@ class DLCLiveMainWindow(QMainWindow):
         self.bbox_x1_spin.valueChanged.connect(self._on_bbox_changed)
         self.bbox_y1_spin.valueChanged.connect(self._on_bbox_changed)
         self.bbox_color_combo.currentIndexChanged.connect(self._on_bbox_color_changed)
+        ## Skeleton settings
+        self.show_skeleton_checkbox.stateChanged.connect(self._on_skeleton_display_changed)
+        self.skeleton_color_combo.currentIndexChanged.connect(self._on_skeleton_display_changed)
+        self.skeleton_thickness_spin.valueChanged.connect(self._on_skeleton_display_changed)
 
         # Multi-camera controller signals (used for both single and multi-camera modes)
         self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_processing_ready)
@@ -947,11 +988,54 @@ class DLCLiveMainWindow(QMainWindow):
         viz = config.visualization
         self._p_cutoff = viz.p_cutoff
         self._colormap = viz.colormap
-        if hasattr(self, "cmap_combo"):
-            color_ui.set_cmap_combo_from_name(self.cmap_combo, self._colormap, fallback="viridis")
         self._bbox_color = viz.get_bbox_color_bgr()
-        if hasattr(self, "bbox_color_combo"):
-            color_ui.set_bbox_combo_from_bgr(self.bbox_color_combo, self._bbox_color)
+
+        self.show_predictions_checkbox.blockSignals(True)
+        try:
+            self.show_predictions_checkbox.setChecked(bool(viz.show_pose))
+        finally:
+            self.show_predictions_checkbox.blockSignals(False)
+
+        self.show_skeleton_checkbox.blockSignals(True)
+        try:
+            self.show_skeleton_checkbox.setChecked(bool(viz.show_skeleton))
+        finally:
+            self.show_skeleton_checkbox.blockSignals(False)
+
+        self.cmap_combo.blockSignals(True)
+        try:
+            color_ui.set_cmap_combo_from_name(
+                self.cmap_combo,
+                self._colormap,
+                fallback="viridis",
+            )
+        finally:
+            self.cmap_combo.blockSignals(False)
+
+        self.bbox_color_combo.blockSignals(True)
+        try:
+            color_ui.set_bbox_combo_from_bgr(
+                self.bbox_color_combo,
+                self._bbox_color,
+            )
+        finally:
+            self.bbox_color_combo.blockSignals(False)
+
+        self.skeleton_color_combo.blockSignals(True)
+        try:
+            color_ui.set_skeleton_combo_from_style(
+                self.skeleton_color_combo,
+                mode=viz.skeleton_style.color_mode.value,
+                color=viz.skeleton_style.color_bgr,
+            )
+        finally:
+            self.skeleton_color_combo.blockSignals(False)
+
+        self.skeleton_thickness_spin.blockSignals(True)
+        try:
+            self.skeleton_thickness_spin.setValue(int(viz.skeleton_style.thickness))
+        finally:
+            self.skeleton_thickness_spin.blockSignals(False)
 
         # Processor
         ## Use custom processor checkbox state
@@ -1058,11 +1142,62 @@ class DLCLiveMainWindow(QMainWindow):
             y1=self.bbox_y1_spin.value(),
         )
 
-    def _visualization_settings_from_ui(self) -> VisualizationSettings:
+    def _visualization_settings_from_ui(
+        self,
+    ) -> VisualizationSettings:
         return VisualizationSettings(
             p_cutoff=self._p_cutoff,
             colormap=self._colormap,
             bbox_color=self._bbox_color,
+            show_pose=self.show_predictions_checkbox.isChecked(),
+            show_skeleton=self.show_skeleton_checkbox.isChecked(),
+            skeleton_style=self._skeleton_style_from_ui(),
+        )
+
+    def _overlay_settings_from_ui(
+        self,
+    ) -> OverlaySettings:
+        return OverlaySettings(
+            pose=PoseOverlaySettings(
+                visible=self.show_predictions_checkbox.isChecked(),
+                p_cutoff=self._p_cutoff,
+                colormap=self._colormap,
+            ),
+            skeleton=SkeletonOverlaySettings(
+                visible=self.show_skeleton_checkbox.isChecked(),
+                style=self._skeleton_style_from_ui(),
+            ),
+            bounding_box=BoundingBoxOverlaySettings(
+                visible=self._bbox_enabled,
+                coordinates=(
+                    self._bbox_x0,
+                    self._bbox_y0,
+                    self._bbox_x1,
+                    self._bbox_y1,
+                ),
+                color_bgr=self._bbox_color,
+            ),
+        )
+
+    def _skeleton_style_from_ui(
+        self,
+    ) -> SkeletonStyle:
+        mode, color = color_ui.get_skeleton_style_from_combo(
+            self.skeleton_color_combo,
+            fallback_mode=SkeletonColorMode.SOLID.value,
+            fallback_color=(0, 255, 255),
+        )
+
+        color_bgr = tuple(color) if color is not None else (0, 255, 255)
+
+        current_style = self._config.visualization.skeleton_style
+
+        return SkeletonStyle(
+            color_mode=SkeletonColorMode(mode),
+            color_bgr=color_bgr,
+            thickness=self.skeleton_thickness_spin.value(),
+            gradient_steps=current_style.gradient_steps,
+            scale_with_zoom=current_style.scale_with_zoom,
         )
 
     def _suggest_config_dialog_path(self) -> str:
@@ -1480,6 +1615,13 @@ class DLCLiveMainWindow(QMainWindow):
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
 
+    def _on_skeleton_display_changed(
+        self,
+        _value: int = 0,
+    ) -> None:
+        if self._current_frame is not None:
+            self._display_dirty = True
+
     def _on_bbox_color_changed(self, _index: int) -> None:
         bgr = color_ui.get_bbox_bgr_from_combo(self.bbox_color_combo, fallback=self._bbox_color)
         if bgr is None:
@@ -1680,31 +1822,6 @@ class DLCLiveMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # Multi-camera event handlers
-    def _render_overlays_for_recording(self, cam_id, frame):
-        # Copy so we don't affect GUI preview pipeline
-        output = frame.copy()
-        offset, scale = (0, 0), (1.0, 1.0)
-
-        # If this is the inference camera, apply pose overlays
-        if cam_id == self._active_inference_camera_id and self._last_pose and self._last_pose.pose is not None:
-            output = draw_pose(
-                output,
-                self._last_pose.pose,
-                p_cutoff=self._p_cutoff,
-                colormap=self._colormap,
-                offset=offset,
-                scale=scale,
-            )
-        if self._bbox_enabled:
-            output = draw_bbox(
-                frame=output,
-                bbox_xyxy=(self._bbox_x0, self._bbox_y0, self._bbox_x1, self._bbox_y1),
-                color_bgr=self._bbox_color,
-                offset=offset,
-                scale=scale,
-            )
-        return output
-
     def _on_multi_frame_processing_ready(self, frame_data: MultiFrameData) -> None:
         """Handle frames from multiple cameras.
 
@@ -2138,6 +2255,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._current_frame = None
         self._raw_frame = None
         self._last_pose = None
+        self._overlay_renderer.clear_runtime_state()
         self._multi_camera_frames.clear()
         self._multi_camera_display_ids.clear()
         self._fps_tracker.clear()
@@ -2312,42 +2430,6 @@ class DLCLiveMainWindow(QMainWindow):
         if hasattr(self, "load_config_action"):
             self.load_config_action.setEnabled(allow_changes)
 
-    def _refresh_resolved_skeleton(
-        self,
-        result: PoseResult,
-    ) -> None:
-        packet = result.packet
-
-        if packet is None:
-            self._resolved_skeleton = None
-            self._resolved_skeleton_signature = None
-            return
-
-        signature = (
-            packet.skeleton_id,
-            tuple(packet.keypoint_names or ()),
-            tuple(packet.skeleton_edges or ()),
-        )
-
-        if signature == self._resolved_skeleton_signature:
-            return
-
-        self._resolved_skeleton_signature = signature
-
-        try:
-            self._resolved_skeleton = resolve_packet_skeleton(packet)
-            self._last_skeleton_warning = None
-        except SkeletonResolutionError as exc:
-            self._resolved_skeleton = None
-
-            message = str(exc)
-            if message != self._last_skeleton_warning:
-                self._last_skeleton_warning = message
-                logger.warning(
-                    "Skeleton could not be resolved: %s",
-                    message,
-                )
-
     def _display_frame(self, frame: np.ndarray, *, force: bool = False) -> None:
         if frame is None:
             return
@@ -2502,6 +2584,7 @@ class DLCLiveMainWindow(QMainWindow):
             return
         self._dlc.reset()
         self._last_pose = None
+        self._overlay_renderer.clear_runtime_state()
         self._dlc_active = True
         self._dlc_initialized = False
 
@@ -2602,7 +2685,10 @@ class DLCLiveMainWindow(QMainWindow):
         """Stop recording from all cameras."""
         self._stop_multi_camera_recording()
 
-    def _on_pose_ready(self, result: PoseResult) -> None:
+    def _on_pose_ready(
+        self,
+        result: PoseResult,
+    ) -> None:
         if not self._dlc_active:
             return
 
@@ -2622,35 +2708,30 @@ class DLCLiveMainWindow(QMainWindow):
         self,
         frame: np.ndarray,
     ) -> None:
-        settings = OverlaySettings(
-            pose=PoseOverlaySettings(
-                visible=self.show_predictions_checkbox.isChecked(),
-                p_cutoff=self._p_cutoff,
-                colormap=self._colormap,
-            ),
-            bounding_box=BoundingBoxOverlaySettings(
-                visible=self._bbox_enabled,
-                coordinates=(
-                    self._bbox_x0,
-                    self._bbox_y0,
-                    self._bbox_x1,
-                    self._bbox_y1,
-                ),
-                color_bgr=self._bbox_color,
-            ),
-        )
+        pose_result = self._last_pose
 
-        display_frame = render_overlays(
+        render_result = self._overlay_renderer.render(
             frame,
-            pose=(self._last_pose.pose if self._last_pose is not None else None),
-            overlay_settings=settings,
+            pose=(pose_result.pose if pose_result is not None else None),
+            packet=(pose_result.packet if pose_result is not None else None),
+            overlay_settings=self._overlay_settings_from_ui(),
             offset=self._dlc_tile_offset,
             scale=self._dlc_tile_scale,
         )
 
+        if render_result.warning is not None:
+            logger.warning(
+                "Overlay rendering warning: %s",
+                render_result.warning,
+            )
+            self.statusBar().showMessage(
+                render_result.warning,
+                5000,
+            )
+
         self.video_label.setPixmap(
             frame_to_pixmap(
-                display_frame,
+                render_result.frame,
                 self.video_label.size(),
             )
         )
