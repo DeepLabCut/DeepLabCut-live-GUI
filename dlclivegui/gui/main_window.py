@@ -3159,16 +3159,16 @@ class DLCLiveMainWindow(QMainWindow):
                 self._notify_processor_recording_started(self._processor_recording_context)
 
             # Update button to show running state
-            self.start_inference_button.setText("DLCLive running!")
+            self.start_inference_button.setText(f"{self._backend_display_name()} running!")
             self.start_inference_button.setStyleSheet("background-color: #4CAF50; color: white;")
-            self.statusBar().showMessage("DLCLive initialized successfully", 3000)
+            self.statusBar().showMessage(f"{self._backend_display_name()} initialized successfully", 3000)
             return
 
         self._dlc_initialized = False
         # Reset button on failure
         self.start_inference_button.setText("Start pose inference")
         self.start_inference_button.setStyleSheet("")
-        self.statusBar().showMessage("DLCLive initialization failed", 5000)
+        self.statusBar().showMessage(f"{self._backend_display_name()} initialization failed", 5000)
         # Stop inference since initialization failed
         self._stop_inference(show_message=False)
 
