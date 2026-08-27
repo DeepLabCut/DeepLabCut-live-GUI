@@ -8,7 +8,7 @@ import numpy as np
 from dlclivegui.config import BGR
 
 from .display import draw_bbox, draw_pose
-from .skeleton import ResolvedSkeleton, SkeletonResolver, SkeletonStyle
+from .skeleton import ResolvedSkeleton, SkeletonStyle
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,34 +36,35 @@ class SkeletonOverlaySettings:
 class OverlaySettings:
     pose: PoseOverlaySettings
     bounding_box: BoundingBoxOverlaySettings
+    skeleton: SkeletonOverlaySettings
 
 
 def render_overlays(
     frame: np.ndarray,
     *,
     pose: np.ndarray | None,
-    settings: OverlaySettings,
+    overlay_settings: OverlaySettings,
     offset: tuple[int, int] = (0, 0),
     scale: tuple[float, float] = (1.0, 1.0),
 ) -> np.ndarray:
     """Return a frame containing the requested overlays."""
     output = frame.copy()
 
-    if settings.pose.visible and pose is not None:
+    if overlay_settings.pose.visible and pose is not None:
         output = draw_pose(
             output,
             pose,
-            p_cutoff=settings.pose.p_cutoff,
-            colormap=settings.pose.colormap,
+            p_cutoff=overlay_settings.pose.p_cutoff,
+            colormap=overlay_settings.pose.colormap,
             offset=offset,
             scale=scale,
         )
 
-    if settings.bounding_box.visible:
+    if overlay_settings.bounding_box.visible:
         output = draw_bbox(
             output,
-            settings.bounding_box.coordinates,
-            color_bgr=settings.bounding_box.color_bgr,
+            overlay_settings.bounding_box.coordinates,
+            color_bgr=overlay_settings.bounding_box.color_bgr,
             offset=offset,
             scale=scale,
         )
@@ -75,13 +76,3 @@ def render_overlays(
 class OverlayRenderResult:
     frame: np.ndarray
     warning: str | None = None
-
-
-class OverlayRenderer:
-    def __init__(self) -> None:
-        self._skeleton_resolver = SkeletonResolver()
-        self._last_warning: str | None = None
-
-    def clear_runtime_state(self) -> None:
-        self._skeleton_resolver.clear()
-        self._last_warning = None

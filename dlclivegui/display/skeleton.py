@@ -86,51 +86,6 @@ def resolve_skeleton(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class SkeletonMetadata:
-    identifier: str
-    keypoint_names: tuple[str, ...]
-    edges: tuple[tuple[str, str], ...]
-
-
-class SkeletonResolver:
-    """Caches skeleton resolution for stable pose metadata."""
-
-    def __init__(self) -> None:
-        self._metadata: SkeletonMetadata | None = None
-        self._resolved: ResolvedSkeleton | None = None
-
-    def resolve(
-        self,
-        metadata: SkeletonMetadata | None,
-    ) -> ResolvedSkeleton | None:
-        if metadata is None:
-            self.clear()
-            return None
-
-        if metadata == self._metadata:
-            return self._resolved
-
-        definition = SkeletonDefinition(
-            identifier=metadata.identifier,
-            display_name=metadata.identifier,
-            edges=tuple(SkeletonEdge(start, end) for start, end in metadata.edges),
-        )
-
-        resolved = resolve_skeleton(
-            definition,
-            metadata.keypoint_names,
-        )
-
-        self._metadata = metadata
-        self._resolved = resolved
-        return resolved
-
-    def clear(self) -> None:
-        self._metadata = None
-        self._resolved = None
-
-
 def skeleton_definition_from_metadata(
     *,
     identifier: str,

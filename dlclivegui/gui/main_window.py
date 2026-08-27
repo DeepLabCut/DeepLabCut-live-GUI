@@ -2608,7 +2608,6 @@ class DLCLiveMainWindow(QMainWindow):
 
         with self._dlc_timing.measure("DLC.pose_ready_callback"):
             self._last_pose = result
-            self._refresh_resolved_skeleton(result)
 
             if self._current_frame is not None:
                 self._display_dirty = True
@@ -2644,7 +2643,7 @@ class DLCLiveMainWindow(QMainWindow):
         display_frame = render_overlays(
             frame,
             pose=(self._last_pose.pose if self._last_pose is not None else None),
-            settings=settings,
+            overlay_settings=settings,
             offset=self._dlc_tile_offset,
             scale=self._dlc_tile_scale,
         )
