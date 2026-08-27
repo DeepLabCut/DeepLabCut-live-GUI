@@ -9,6 +9,7 @@ from dlclivegui.display import (  # noqa: E402
     draw_keypoints,
     draw_pose,
 )
+from dlclivegui.display.display import keypoint_colors_bgr
 
 pytestmark = pytest.mark.unit
 
@@ -302,3 +303,36 @@ def test_draw_pose_multi_animal_draws_distinct_markers():
     out = draw_pose(frame, pose, p_cutoff=0.9, colormap="viridis", offset=(0, 0), scale=(1.0, 1.0))
     assert out is not frame
     assert np.any(out != frame)
+
+
+def test_keypoint_colors_returns_requested_count() -> None:
+    colors = keypoint_colors_bgr("viridis", 5)
+
+    assert len(colors) == 5
+    assert all(len(color) == 3 for color in colors)
+    assert all(0 <= channel <= 255 for color in colors for channel in color)
+
+
+def test_keypoint_colors_zero_count_returns_empty_tuple() -> None:
+    assert keypoint_colors_bgr("viridis", 0) == ()
+
+
+def test_keypoint_colors_one_count_returns_one_color() -> None:
+    colors = keypoint_colors_bgr("viridis", 1)
+
+    assert len(colors) == 1
+
+
+def test_keypoint_colors_are_deterministic() -> None:
+    first = keypoint_colors_bgr("viridis", 4)
+    second = keypoint_colors_bgr("viridis", 4)
+
+    assert first == second
+
+
+def test_keypoint_colors_reject_negative_count() -> None:
+    with pytest.raises(
+        ValueError,
+        match="must be non-negative",
+    ):
+        keypoint_colors_bgr("viridis", -1)
