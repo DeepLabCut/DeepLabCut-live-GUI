@@ -507,7 +507,6 @@ class SkeletonColorMode(str, Enum):
 
 
 class SkeletonStyle(BaseModel):
-    visible: bool = False
     color_mode: SkeletonColorMode = SkeletonColorMode.SOLID
     color_bgr: BGR = (0, 255, 255)  # default if SOLID
     thickness: int = Field(default=2, ge=1, le=20)  # base thickness in pixels

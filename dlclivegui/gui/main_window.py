@@ -2618,6 +2618,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Does NOT invoke the normal rec-stop/save hooks. Persistence is processor-dependent.
         self._dlc.reset(reset_processor_plugin=True)
         self._last_pose = None
+        self._overlay_renderer.clear_runtime_state()
         self._last_processor_vid_recording = False
         self._auto_record_session_name = None
 
