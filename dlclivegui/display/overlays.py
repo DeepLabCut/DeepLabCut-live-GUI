@@ -8,7 +8,7 @@ import numpy as np
 from dlclivegui.config import BGR
 
 from .display import draw_bbox, draw_pose
-from .skeleton import ResolvedSkeleton, SkeletonStyle
+from .skeleton import ResolvedSkeleton, SkeletonResolver, SkeletonStyle
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,3 +69,19 @@ def render_overlays(
         )
 
     return output
+
+
+@dataclass(frozen=True, slots=True)
+class OverlayRenderResult:
+    frame: np.ndarray
+    warning: str | None = None
+
+
+class OverlayRenderer:
+    def __init__(self) -> None:
+        self._skeleton_resolver = SkeletonResolver()
+        self._last_warning: str | None = None
+
+    def clear_runtime_state(self) -> None:
+        self._skeleton_resolver.clear()
+        self._last_warning = None

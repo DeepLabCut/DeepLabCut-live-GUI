@@ -10,7 +10,6 @@ import threading
 import time
 from pathlib import Path
 
-import cv2
 import numpy as np
 from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
@@ -21,7 +20,6 @@ from PySide6.QtGui import (
     QDesktopServices,
     QFont,
     QIcon,
-    QImage,
     QPainter,
     QPixmap,
 )
@@ -66,6 +64,7 @@ from dlclivegui.config import (
 )
 
 from ..display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
+from ..display.overlays import BoundingBoxOverlaySettings, OverlaySettings, PoseOverlaySettings, render_overlays
 from ..display.skeleton import ResolvedSkeleton, SkeletonResolutionError, resolve_packet_skeleton
 from ..processors.processor_utils import (
     create_spec_from_scan,
@@ -87,6 +86,7 @@ from .misc import color_dropdowns as color_ui
 from .misc import layouts as lyts
 from .misc.drag_spinbox import ScrubSpinBox
 from .misc.eliding_label import ElidingPathLabel
+from .qt_display.utils import frame_to_pixmap
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 
 logger = logging.getLogger("DLCLiveGUI")
@@ -2619,40 +2619,42 @@ class DLCLiveMainWindow(QMainWindow):
         self._stop_inference(show_message=False)
         self._show_error(message)
 
-    def _update_video_display(self, frame: np.ndarray) -> None:
-        display_frame = frame
-
-        if self.show_predictions_checkbox.isChecked() and self._last_pose and self._last_pose.pose is not None:
-            display_frame = draw_pose(
-                frame,
-                self._last_pose.pose,
+    def _update_video_display(
+        self,
+        frame: np.ndarray,
+    ) -> None:
+        settings = OverlaySettings(
+            pose=PoseOverlaySettings(
+                visible=self.show_predictions_checkbox.isChecked(),
                 p_cutoff=self._p_cutoff,
                 colormap=self._colormap,
-                offset=self._dlc_tile_offset,
-                scale=self._dlc_tile_scale,
-            )
-
-        if self._bbox_enabled:
-            display_frame = draw_bbox(
-                display_frame,
-                (self._bbox_x0, self._bbox_y0, self._bbox_x1, self._bbox_y1),
+            ),
+            bounding_box=BoundingBoxOverlaySettings(
+                visible=self._bbox_enabled,
+                coordinates=(
+                    self._bbox_x0,
+                    self._bbox_y0,
+                    self._bbox_x1,
+                    self._bbox_y1,
+                ),
                 color_bgr=self._bbox_color,
-                offset=self._dlc_tile_offset,
-                scale=self._dlc_tile_scale,
-            )
-
-        rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
-
-        h, w, ch = rgb.shape
-        bytes_per_line = ch * w
-        image = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(image)
-
-        # Scale pixmap to fit label while preserving aspect ratio
-        scaled_pixmap = pixmap.scaled(
-            self.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            ),
         )
-        self.video_label.setPixmap(scaled_pixmap)
+
+        display_frame = render_overlays(
+            frame,
+            pose=(self._last_pose.pose if self._last_pose is not None else None),
+            settings=settings,
+            offset=self._dlc_tile_offset,
+            scale=self._dlc_tile_scale,
+        )
+
+        self.video_label.setPixmap(
+            frame_to_pixmap(
+                display_frame,
+                self.video_label.size(),
+            )
+        )
 
     def _on_show_predictions_changed(self, _state: int) -> None:
         if self._current_frame is not None:

@@ -1,4 +1,4 @@
-# dlclivegui/utils/display.py
+# dlclivegui/display/display.py
 from __future__ import annotations
 
 import enum
