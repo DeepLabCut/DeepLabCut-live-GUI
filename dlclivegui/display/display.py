@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import enum
+from dataclasses import dataclass
 
 import cv2
 import matplotlib.pyplot as plt
@@ -21,6 +22,25 @@ class BBoxColors(enum.Enum):
     @staticmethod
     def get_all_display_names() -> list[str]:
         return [color.name.capitalize() for color in BBoxColors]
+
+
+@dataclass(frozen=True, slots=True)
+class DisplayTransform:
+    offset: tuple[int, int] = (0, 0)
+    scale: tuple[float, float] = (1.0, 1.0)
+
+    def map_point(
+        self,
+        x: float,
+        y: float,
+    ) -> tuple[int, int]:
+        offset_x, offset_y = self.offset
+        scale_x, scale_y = self.scale
+
+        return (
+            round(x * scale_x + offset_x),
+            round(y * scale_y + offset_y),
+        )
 
 
 def color_to_rgb(color_name: str) -> tuple[int, int, int]:
