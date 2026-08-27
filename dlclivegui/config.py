@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from dlclivegui.utils.writegear_options import WriteGearOptions
 
 Rotation = Literal[0, 90, 180, 270]
+BGR = tuple[int, int, int]  # color format
 TileLayout = Literal["auto", "2x2", "1x4", "4x1"]
 Precision = Literal["FP32", "FP16"]
 ModelType = Literal["pytorch", "tensorflow"]
@@ -498,6 +499,24 @@ class BoundingBoxSettings(BaseModel):
         if self.enabled and not (self.x1 > self.x0 and self.y1 > self.y0):
             raise ValueError("Bounding box enabled but coordinates are invalid (x1>x0 and y1>y0 required).")
         return self
+
+
+class SkeletonColorMode(str, Enum):
+    SOLID = "solid"
+    GRADIENT_KEYPOINTS = "gradient_keypoints"  # use endpoint keypoint colors
+
+
+class SkeletonStyle(BaseModel):
+    mode: SkeletonColorMode = SkeletonColorMode.SOLID
+    color: BGR = (0, 255, 255)  # default if SOLID
+    thickness: int = 2  # base thickness in pixels
+    gradient_steps: int = 16  # segments per edge when gradient
+    scale_with_zoom: bool = True  # scale thickness with (sx, sy)
+
+    def effective_thickness(self, sx: float, sy: float) -> int:
+        if not self.scale_with_zoom:
+            return max(1, int(self.thickness))
+        return max(1, int(round(self.thickness * min(sx, sy))))
 
 
 class VisualizationSettings(BaseModel):
