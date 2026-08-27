@@ -433,11 +433,9 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _action_manage_poet_weights(self) -> None:
         if self._poet_weights_dialog is None:
-            dialog = PoetWeightsDialog(
-                self,
-                initial_path=(self._get_last_poet_weights_path()),
-            )
-            dialog.weights_selected.connect(self._on_poet_weights_selected)
+            dialog = PoetWeightsDialog(self)
+
+            dialog.weights_downloaded.connect(self._on_poet_weights_downloaded)
             dialog.finished.connect(self._clear_poet_weights_dialog)
 
             self._poet_weights_dialog = dialog
@@ -445,6 +443,19 @@ class DLCLiveMainWindow(QMainWindow):
         self._poet_weights_dialog.show()
         self._poet_weights_dialog.raise_()
         self._poet_weights_dialog.activateWindow()
+
+    def _on_poet_weights_downloaded(
+        self,
+        path: str,
+    ) -> None:
+        self._set_last_poet_weights_path(path)
+        self._set_backend("poet")
+        self.model_path_edit.setText(path)
+
+        self.statusBar().showMessage(
+            f"POET weights ready: {path}",
+            5000,
+        )
 
     def _on_poet_weights_selected(
         self,
@@ -910,6 +921,33 @@ class DLCLiveMainWindow(QMainWindow):
         )
         form.addRow(bbox_settings)
 
+        bbox_layout = QHBoxLayout()
+        self.bbox_x0_spin = ScrubSpinBox()
+        self.bbox_x0_spin.setRange(0, 7680)
+        self.bbox_x0_spin.setPrefix("x0:")
+        self.bbox_x0_spin.setValue(0)
+        bbox_layout.addWidget(self.bbox_x0_spin)
+
+        self.bbox_y0_spin = ScrubSpinBox()
+        self.bbox_y0_spin.setRange(0, 4320)
+        self.bbox_y0_spin.setPrefix("y0:")
+        self.bbox_y0_spin.setValue(0)
+        bbox_layout.addWidget(self.bbox_y0_spin)
+
+        self.bbox_x1_spin = ScrubSpinBox()
+        self.bbox_x1_spin.setRange(0, 7680)
+        self.bbox_x1_spin.setPrefix("x1:")
+        self.bbox_x1_spin.setValue(100)
+        bbox_layout.addWidget(self.bbox_x1_spin)
+
+        self.bbox_y1_spin = ScrubSpinBox()
+        self.bbox_y1_spin.setRange(0, 4320)
+        self.bbox_y1_spin.setPrefix("y1:")
+        self.bbox_y1_spin.setValue(100)
+        bbox_layout.addWidget(self.bbox_y1_spin)
+
+        form.addRow("Coordinates", bbox_layout)
+
         # Skeleton overlay
         self.show_skeleton_checkbox = QCheckBox("Display skeleton")
         self.show_skeleton_checkbox.setChecked(False)
@@ -949,33 +987,6 @@ class DLCLiveMainWindow(QMainWindow):
             "Skeleton thickness:",
             self.skeleton_thickness_spin,
         )
-
-        bbox_layout = QHBoxLayout()
-        self.bbox_x0_spin = ScrubSpinBox()
-        self.bbox_x0_spin.setRange(0, 7680)
-        self.bbox_x0_spin.setPrefix("x0:")
-        self.bbox_x0_spin.setValue(0)
-        bbox_layout.addWidget(self.bbox_x0_spin)
-
-        self.bbox_y0_spin = ScrubSpinBox()
-        self.bbox_y0_spin.setRange(0, 4320)
-        self.bbox_y0_spin.setPrefix("y0:")
-        self.bbox_y0_spin.setValue(0)
-        bbox_layout.addWidget(self.bbox_y0_spin)
-
-        self.bbox_x1_spin = ScrubSpinBox()
-        self.bbox_x1_spin.setRange(0, 7680)
-        self.bbox_x1_spin.setPrefix("x1:")
-        self.bbox_x1_spin.setValue(100)
-        bbox_layout.addWidget(self.bbox_x1_spin)
-
-        self.bbox_y1_spin = ScrubSpinBox()
-        self.bbox_y1_spin.setRange(0, 4320)
-        self.bbox_y1_spin.setPrefix("y1:")
-        self.bbox_y1_spin.setValue(100)
-        bbox_layout.addWidget(self.bbox_y1_spin)
-
-        form.addRow("Coordinates", bbox_layout)
 
         return group
 
