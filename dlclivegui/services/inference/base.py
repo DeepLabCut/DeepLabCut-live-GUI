@@ -1,3 +1,5 @@
+import logging
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
@@ -5,6 +7,8 @@ from typing import Any
 import numpy as np
 
 from dlclivegui.config import ModelType
+
+logger = logging.getLogger(__name__)
 
 
 class PoseBackends(Enum):
@@ -63,3 +67,33 @@ class ProcessorStats:
     # Separated timing for GPU vs socket processor
     avg_gpu_inference_time: float = 0.0  # Pure model inference
     avg_processor_overhead: float = 0.0  # Socket processor overhead
+
+
+class PoseBackend(ABC):
+    """Common interface for pose-estimation backends."""
+
+    @abstractmethod
+    def init_inference(
+        self,
+        init_frame: np.ndarray,
+    ) -> None:
+        """Initialize inference using the first input frame."""
+
+    @abstractmethod
+    def get_pose(
+        self,
+        frame: np.ndarray,
+        frame_time: float | None = None,
+    ) -> np.ndarray | None:
+        """Return pose data for one frame."""
+
+    @abstractmethod
+    def make_pose_packet(
+        self,
+        pose: np.ndarray | None,
+    ) -> PosePacket:
+        """Wrap pose data and backend metadata for consumers."""
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release backend resources."""
