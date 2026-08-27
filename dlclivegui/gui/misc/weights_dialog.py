@@ -163,8 +163,22 @@ class PoetWeightsDialog(QDialog):
         self.download_button.setEnabled(True)
         self.close_button.setEnabled(True)
 
+    def request_stop(self) -> None:
+        thread = self._download_thread
+        if thread is not None:
+            thread.requestInterruption()
+
     def reject(self) -> None:
         if self._download_thread is not None:
             return
 
         super().reject()
+
+    def closeEvent(self, event) -> None:
+        if self._download_thread is not None:
+            self.request_stop()
+            self.status_label.setText("Cancelling download...")
+            event.ignore()
+            return
+
+        super().closeEvent(event)

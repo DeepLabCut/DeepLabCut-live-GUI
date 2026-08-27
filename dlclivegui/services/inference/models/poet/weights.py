@@ -5,7 +5,7 @@ import os
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -29,37 +29,58 @@ class WeightsDownloadWorker(QObject):
         self.dest = dest
 
     def run(self) -> None:
+        tmp = None
+
         try:
-            self.dest.parent.mkdir(parents=True, exist_ok=True)
+            self.dest.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
             if self.dest.is_file():
                 self.progress.emit(100)
                 self.finished.emit(str(self.dest))
                 return
-            tmp = self.dest.with_suffix(self.dest.suffix + ".part")
 
-            req = urllib.request.Request(self.url, headers={"User-Agent": "DLCLiveGUI"})
-            with urllib.request.urlopen(req) as resp, open(tmp, "wb") as f:
-                total = resp.length or 0
-                done = 0
-                chunk = 1024 * 256
+            tmp = self.dest.with_suffix(self.dest.suffix + ".part")
+            request = urllib.request.Request(
+                self.url,
+                headers={"User-Agent": "DLCLiveGUI"},
+            )
+            with (
+                urllib.request.urlopen(
+                    request,
+                    timeout=30,
+                ) as response,
+                tmp.open("wb") as output,
+            ):
+                total = response.length or 0
+                downloaded = 0
+                chunk_size = 256 * 1024
 
                 while True:
-                    buf = resp.read(chunk)
-                    if not buf:
+                    if QThread.currentThread().isInterruptionRequested():
+                        raise RuntimeError("POET weights download was cancelled.")
+
+                    chunk = response.read(chunk_size)
+                    if not chunk:
                         break
-                    f.write(buf)
-                    done += len(buf)
+
+                    output.write(chunk)
+                    downloaded += len(chunk)
+
                     if total > 0:
-                        self.progress.emit(int(done * 100 / total))
+                        self.progress.emit(int(downloaded * 100 / total))
 
             os.replace(tmp, self.dest)
             self.progress.emit(100)
             self.finished.emit(str(self.dest))
 
-        except Exception as e:
+        except Exception as exc:
             if tmp is not None:
                 try:
                     tmp.unlink(missing_ok=True)
                 except OSError:
                     logger.exception("Failed to remove partial POET weights.")
-            self.error.emit(str(e))
+
+            self.error.emit(str(exc))
