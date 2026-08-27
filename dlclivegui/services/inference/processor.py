@@ -4,16 +4,18 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from dlclivegui.config import MODEL_INFERENCE_PROFILING_ENABLED
+from dlclivegui.services.dlc_processor import DLCLiveProcessor
 
 from .base import PoseBackend, PoseResult, ProcessorStats
 
 logger = logging.getLogger(__name__)
+PoseBackendName = Literal["dlc", "poet"]
 
 
 class PoseProcessor(QObject):
@@ -282,3 +284,16 @@ class PoseProcessor(QObject):
                     pass
 
         logger.info("Pose worker thread exiting")
+
+
+def create_pose_processor(
+    backend: PoseBackendName,
+) -> DLCLiveProcessor | PoseProcessor:
+    """Create the processor service used for a pose backend."""
+    if backend == "dlc":
+        return DLCLiveProcessor()
+
+    if backend == "poet":
+        return PoseProcessor()
+
+    raise ValueError(f"Unsupported pose backend: {backend!r}.")

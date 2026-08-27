@@ -16,7 +16,7 @@ from dlclivegui.services.inference.base import (
     PoseSource,
 )
 
-from .skeleton import POET_KEYPOINT_NAMES, POET_SKELETON_EDGES
+from .skeleton import POET_KEYPOINT_NAMES, POET_SKELETON_EDGES, POET_SKELETON_ID
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,7 @@ class POETBackend(PoseBackend):
             keypoints=pose,
             keypoint_names=list(POET_KEYPOINT_NAMES),
             individual_ids=[f"person_{index}" for index in range(individual_count)],
-            skeleton_id="poet.coco17",
+            skeleton_id=POET_SKELETON_ID,
             skeleton_edges=POET_SKELETON_EDGES,
             source=PoseSource(
                 backend=PoseBackends.POET,
