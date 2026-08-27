@@ -1,56 +1,36 @@
-"""Skeleton definition, validation, and drawing utilities."""
+"""Skeleton topology resolution and rendering utilities."""
 
-# dlclivegui/display/skeleton.py
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from enum import Enum, auto
-from pathlib import Path
 
 import cv2
 import numpy as np
-import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from dlclivegui.config import BGR, SkeletonColorMode, SkeletonStyle
 
-
-# ############### #
-#  Status & code  #
-# ############### #
-class SkeletonRenderCode(Enum):
-    OK = auto()
-    POSE_SHAPE_INVALID = auto()
-    KEYPOINT_COUNT_MISMATCH = auto()
+# ####################### #
+#  Skeleton definitions  #
+# ####################### #
 
 
-@dataclass(frozen=True)
-class SkeletonRenderStatus:
-    code: SkeletonRenderCode
-    message: str = ""
-
-    @property
-    def rendered(self) -> bool:
-        return self.code == SkeletonRenderCode.OK
-
-    @property
-    def should_disable(self) -> bool:
-        # GUI can switch off skeleton drawing if True
-        return self.code in {
-            SkeletonRenderCode.POSE_SHAPE_INVALID,
-            SkeletonRenderCode.KEYPOINT_COUNT_MISMATCH,
-        }
+class SkeletonResolutionError(ValueError):
+    """Raised when a skeleton cannot be aligned with pose keypoints."""
 
 
 @dataclass(frozen=True, slots=True)
 class SkeletonEdge:
+    """An edge expressed using semantic keypoint names."""
+
     start: str
     end: str
 
 
 @dataclass(frozen=True, slots=True)
 class SkeletonDefinition:
+    """Immutable, backend-independent skeleton topology."""
+
     identifier: str
     display_name: str
     edges: tuple[SkeletonEdge, ...]
@@ -58,6 +38,8 @@ class SkeletonDefinition:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedSkeleton:
+    """Skeleton topology resolved against a specific keypoint order."""
+
     definition: SkeletonDefinition
     keypoint_names: tuple[str, ...]
     edges: tuple[tuple[int, int], ...]
@@ -67,6 +49,7 @@ def resolve_skeleton(
     definition: SkeletonDefinition,
     keypoint_names: list[str] | tuple[str, ...],
 ) -> ResolvedSkeleton:
+    """Resolve named skeleton edges against an ordered keypoint list."""
     names = tuple(keypoint_names)
 
     if not names:
@@ -76,7 +59,6 @@ def resolve_skeleton(
         raise SkeletonResolutionError("Cannot resolve a skeleton against duplicate keypoint names.")
 
     name_to_index = {name: index for index, name in enumerate(names)}
-
     resolved_edges: list[tuple[int, int]] = []
     missing_names: set[str] = set()
 
@@ -103,329 +85,246 @@ def resolve_skeleton(
     )
 
 
-# ############ #
-#  Exceptions  #
-# ############ #
+# ###################### #
+#  Skeleton I/O          #
+# ###################### #
 
 
-class SkeletonResolutionError(ValueError):
-    """Raised when a skeleton cannot be aligned with pose keypoints."""
-
-
-class SkeletonError(ValueError):
-    """Raised when a skeleton definition is invalid."""
-
-
-class SkeletonLoadError(Exception):
-    """High-level skeleton loading error (safe for GUI display)."""
-
-
-class SkeletonValidationError(SkeletonLoadError):
-    """Schema or semantic validation error."""
-
-
-# ################## #
-#  Skeleton display  #
-# ################## #
-
-
-class SkeletonStyleModel(BaseModel):
-    mode: SkeletonColorMode = SkeletonColorMode.SOLID
-    color: BGR = (0, 255, 255)  # default if SOLID
-    thickness: int = Field(2, ge=1, description="Base thickness in pixels")
-    gradient_steps: int = Field(16, ge=2, description="Segments per edge when gradient")
-    scale_with_zoom: bool = True
-
-    @field_validator("thickness")
-    @classmethod
-    def _thickness_positive(cls, v):
-        if v < 1:
-            raise ValueError("Thickness must be at least 1 pixel")
-        return v
-
-    @field_validator("gradient_steps")
-    @classmethod
-    def _steps_positive(cls, v):
-        if v < 2:
-            raise ValueError("gradient_steps must be >= 2")
-        return v
-
-
-# ############# #
-#  Skeleton IO  #
-# ############# #
-class SkeletonModel(BaseModel):
-    """Validated skeleton definition (IO + schema)."""
-
-    name: str | None = None
-
-    keypoints: list[str] = Field(..., min_length=1, description="Ordered list of keypoint names")
-
-    edges: list[tuple[int, int]] = Field(
-        default_factory=list,
-        description="List of (i, j) keypoint index pairs",
-    )
-
-    style: SkeletonStyleModel = Field(default_factory=SkeletonStyleModel)
-    default_color: BGR = (0, 255, 255)  # used if style.color is None or in SOLID mode
-    edge_colors: dict[tuple[int, int], BGR] = Field(default_factory=dict)
-
-    schema_version: int = 1
-
-    @field_validator("keypoints")
-    @classmethod
-    def validate_unique_keypoints(cls, v):
-        if len(set(v)) != len(v):
-            raise ValueError("Duplicate keypoint names detected")
-        return v
-
-    @field_validator("edges")
-    @classmethod
-    def validate_edges(cls, edges, info):
-        keypoints = info.data.get("keypoints", [])
-        n = len(keypoints)
-
-        for i, j in edges:
-            if i == j:
-                raise ValueError(f"Self-loop detected in edge ({i}, {j})")
-            if not (0 <= i < n and 0 <= j < n):
-                raise ValueError(f"Edge ({i}, {j}) out of range for {n} keypoints")
-        return edges
-
-
-def _load_raw_skeleton_data(path: Path) -> dict:
-    if not path.exists():
-        raise SkeletonLoadError(f"Skeleton file not found: {path}")
-
-    if path.suffix in {".yaml", ".yml"}:
-        return yaml.safe_load(path.read_text())
-
-    if path.suffix == ".json":
-        return json.loads(path.read_text())
-
-    raise SkeletonLoadError(f"Unsupported file type: {path.suffix}")
-
-
-def _format_pydantic_error(err: ValidationError) -> str:
-    lines = ["Invalid skeleton definition:"]
-    for e in err.errors():
-        loc = " → ".join(map(str, e["loc"]))
-        msg = e["msg"]
-        lines.append(f"• {loc}: {msg}")
-    return "\n".join(lines)
-
-
-def load_skeleton(path: Path) -> Skeleton:
-    try:
-        data = _load_raw_skeleton_data(path)
-        model = SkeletonModel.model_validate(data)
-        return Skeleton(model)
-
-    except ValidationError as e:
-        raise SkeletonValidationError(_format_pydantic_error(e)) from None
-
-    except Exception as e:
-        raise SkeletonLoadError(str(e)) from None
-
-
-def save_skeleton(path: Path, model: SkeletonModel) -> None:
-    data = model.model_dump()
-
-    if path.suffix in {".yaml", ".yml"}:
-        path.write_text(yaml.safe_dump(data, sort_keys=False))
-    elif path.suffix == ".json":
-        path.write_text(json.dumps(data, indent=2))
-    else:
-        raise SkeletonLoadError(f"Unsupported skeleton file type: {path.suffix}")
-
-
-def load_dlc_skeleton(config_path: Path) -> Skeleton | None:
-    if not config_path.exists():
-        raise SkeletonLoadError(f"DLC config not found: {config_path}")
-
-    cfg = yaml.safe_load(config_path.read_text())
-
-    bodyparts = cfg.get("bodyparts")
-    if not bodyparts:
-        return None  # No pose info
-
-    edges = []
-
-    # Newer DLC format
-    if "skeleton" in cfg:
-        for a, b in cfg["skeleton"]:
-            edges.append((bodyparts.index(a), bodyparts.index(b)))
-
-    # Older / alternative formats
-    elif "skeleton_edges" in cfg:
-        edges = [tuple(e) for e in cfg["skeleton_edges"]]
+def skeleton_definition_from_metadata(
+    *,
+    identifier: str,
+    display_name: str,
+    edges: tuple[tuple[str, str], ...],
+) -> SkeletonDefinition:
+    """Create a validated display topology from pose metadata."""
+    if not identifier.strip():
+        raise SkeletonResolutionError("Skeleton identifier cannot be empty.")
 
     if not edges:
-        return None
+        raise SkeletonResolutionError("Skeleton definition does not contain any edges.")
 
-    model = SkeletonModel(
-        name=cfg.get("Task", "DeepLabCut"),
-        keypoints=bodyparts,
-        edges=edges,
+    skeleton_edges: list[SkeletonEdge] = []
+
+    for start, end in edges:
+        if not start or not end:
+            raise SkeletonResolutionError("Skeleton edge names cannot be empty.")
+
+        if start == end:
+            raise SkeletonResolutionError(f"Skeleton contains a self-loop at {start!r}.")
+
+        skeleton_edges.append(
+            SkeletonEdge(
+                start=start,
+                end=end,
+            )
+        )
+
+    return SkeletonDefinition(
+        identifier=identifier,
+        display_name=display_name,
+        edges=tuple(skeleton_edges),
     )
 
-    return Skeleton(model)
+
+# ###################### #
+#  Rendering outcomes   #
+# ###################### #
 
 
-class Skeleton:
-    """Runtime skeleton optimized for drawing."""
+class SkeletonRenderCode(Enum):
+    RENDERED = auto()
+    NO_POSE = auto()
+    INVALID_POSE = auto()
+    KEYPOINT_COUNT_MISMATCH = auto()
+    COLOR_COUNT_MISMATCH = auto()
 
-    def __init__(self, model: SkeletonModel):
-        self.name = model.name
-        self.keypoints = model.keypoints
-        self.edges = model.edges
 
-        self.style = SkeletonStyle(
-            color_mode=model.style.mode,
-            color_bgr=model.style.color,
-            thickness=model.style.thickness,
-            gradient_steps=model.style.gradient_steps,
-            scale_with_zoom=model.style.scale_with_zoom,
+@dataclass(frozen=True, slots=True)
+class SkeletonRenderResult:
+    code: SkeletonRenderCode
+    edges_drawn: int = 0
+    message: str = ""
+
+    @property
+    def rendered(self) -> bool:
+        return self.code == SkeletonRenderCode.RENDERED
+
+
+# ###################### #
+#  Rendering utilities  #
+# ###################### #
+
+
+def _effective_thickness(
+    style: SkeletonStyle,
+    scale: tuple[float, float],
+) -> int:
+    scale_x, scale_y = scale
+    return style.effective_thickness(scale_x, scale_y)
+
+
+def _draw_gradient_edge(
+    frame: np.ndarray,
+    start: tuple[int, int],
+    end: tuple[int, int],
+    start_color: BGR,
+    end_color: BGR,
+    *,
+    thickness: int,
+    steps: int,
+) -> None:
+    start_x, start_y = start
+    end_x, end_y = end
+
+    for step in range(steps):
+        alpha_start = step / steps
+        alpha_end = (step + 1) / steps
+        color_alpha = (step + 0.5) / steps
+
+        segment_start = (
+            round(start_x + (end_x - start_x) * alpha_start),
+            round(start_y + (end_y - start_y) * alpha_start),
         )
-        self.default_color = model.default_color
-        self.edge_colors = model.edge_colors
+        segment_end = (
+            round(start_x + (end_x - start_x) * alpha_end),
+            round(start_y + (end_y - start_y) * alpha_end),
+        )
 
-    def check_pose_compat(self, pose: np.ndarray) -> SkeletonRenderStatus:
-        pose = np.asarray(pose)
+        color: BGR = tuple(
+            round(component_start + (component_end - component_start) * color_alpha)
+            for component_start, component_end in zip(
+                start_color,
+                end_color,
+                strict=True,
+            )
+        )
 
-        if pose.ndim != 2 or pose.shape[1] not in (2, 3):
-            return SkeletonRenderStatus(
-                SkeletonRenderCode.POSE_SHAPE_INVALID,
-                f"Pose must be (N,2) or (N,3); got shape={pose.shape}",
+        cv2.line(
+            frame,
+            segment_start,
+            segment_end,
+            color,
+            thickness,
+            lineType=cv2.LINE_AA,
+        )
+
+
+def draw_skeleton(
+    frame: np.ndarray,
+    poses: np.ndarray | None,
+    skeleton: ResolvedSkeleton,
+    style: SkeletonStyle,
+    *,
+    p_cutoff: float,
+    offset: tuple[int, int] = (0, 0),
+    scale: tuple[float, float] = (1.0, 1.0),
+    keypoint_colors: tuple[BGR, ...] | None = None,
+) -> SkeletonRenderResult:
+    """Draw a resolved skeleton over one or more poses.
+
+    Accepted pose shapes are:
+
+    - ``(K, 3)`` for one individual
+    - ``(N, K, 3)`` for multiple individuals
+
+    The function modifies ``frame`` in place and returns a structured result.
+    """
+    if poses is None:
+        return SkeletonRenderResult(
+            code=SkeletonRenderCode.NO_POSE,
+        )
+
+    pose_array = np.asarray(poses)
+
+    if pose_array.ndim == 2:
+        individuals = pose_array[np.newaxis, ...]
+    elif pose_array.ndim == 3:
+        individuals = pose_array
+    else:
+        return SkeletonRenderResult(
+            code=SkeletonRenderCode.INVALID_POSE,
+            message=(f"Skeleton poses must have shape (K, 3) or (N, K, 3); received {pose_array.shape!r}."),
+        )
+
+    if individuals.shape[-1] != 3:
+        return SkeletonRenderResult(
+            code=SkeletonRenderCode.INVALID_POSE,
+            message=(f"Skeleton poses must contain x, y, and likelihood; received {pose_array.shape!r}."),
+        )
+
+    expected_keypoints = len(skeleton.keypoint_names)
+    actual_keypoints = individuals.shape[1]
+
+    if actual_keypoints != expected_keypoints:
+        return SkeletonRenderResult(
+            code=SkeletonRenderCode.KEYPOINT_COUNT_MISMATCH,
+            message=(f"Skeleton expects {expected_keypoints} keypoints, but the pose contains {actual_keypoints}."),
+        )
+
+    uses_gradient = style.color_mode == SkeletonColorMode.GRADIENT_KEYPOINTS
+
+    if uses_gradient and (keypoint_colors is None or len(keypoint_colors) != expected_keypoints):
+        return SkeletonRenderResult(
+            code=SkeletonRenderCode.COLOR_COUNT_MISMATCH,
+            message=(f"Keypoint-gradient mode requires exactly {expected_keypoints} keypoint colors."),
+        )
+
+    offset_x, offset_y = offset
+    scale_x, scale_y = scale
+    thickness = _effective_thickness(style, scale)
+    edges_drawn = 0
+
+    for pose in individuals:
+        for start_index, end_index in skeleton.edges:
+            start_x, start_y, start_likelihood = pose[start_index]
+            end_x, end_y, end_likelihood = pose[end_index]
+
+            values = (
+                start_x,
+                start_y,
+                start_likelihood,
+                end_x,
+                end_y,
+                end_likelihood,
             )
 
-        expected = len(self.keypoints)
-        got = pose.shape[0]
-        if got != expected:
-            return SkeletonRenderStatus(
-                SkeletonRenderCode.KEYPOINT_COUNT_MISMATCH,
-                f"Skeleton expects {expected} keypoints, but pose has {got}.",
-            )
-
-        return SkeletonRenderStatus(SkeletonRenderCode.OK, "")
-
-    def _draw_gradient_edge(
-        self,
-        img: np.ndarray,
-        p1: tuple[int, int],
-        p2: tuple[int, int],
-        c1: BGR,
-        c2: BGR,
-        thickness: int,
-        steps: int,
-    ):
-        x1, y1 = p1
-        x2, y2 = p2
-
-        for s in range(steps):
-            a0 = s / steps
-            a1 = (s + 1) / steps
-            xs0 = int(x1 + (x2 - x1) * a0)
-            ys0 = int(y1 + (y2 - y1) * a0)
-            xs1 = int(x1 + (x2 - x1) * a1)
-            ys1 = int(y1 + (y2 - y1) * a1)
-
-            t = (s + 0.5) / steps
-            b = int(c1[0] + (c2[0] - c1[0]) * t)
-            g = int(c1[1] + (c2[1] - c1[1]) * t)
-            r = int(c1[2] + (c2[2] - c1[2]) * t)
-
-            cv2.line(img, (xs0, ys0), (xs1, ys1), (b, g, r), thickness, lineType=cv2.LINE_AA)
-
-    def draw(
-        self,
-        overlay: np.ndarray,
-        pose: np.ndarray,
-        p_cutoff: float,
-        offset: tuple[int, int],
-        scale: tuple[float, float],
-        *,
-        style: SkeletonStyle | None = None,
-        color_override: BGR | None = None,
-        keypoint_colors: list[BGR] | None = None,
-    ) -> SkeletonRenderStatus:
-        status = self.check_pose_compat(pose)
-        if not status.rendered:
-            return status
-
-        st = style or self.style
-        ox, oy = offset
-        sx, sy = scale
-        th = st.effective_thickness(sx, sy)
-
-        # if gradient mode, require keypoint_colors aligned with keypoint order
-        if st.color_mode == SkeletonColorMode.GRADIENT_KEYPOINTS:
-            if keypoint_colors is None or len(keypoint_colors) != len(self.keypoints):
-                return SkeletonRenderStatus(
-                    SkeletonRenderCode.KEYPOINT_COUNT_MISMATCH,
-                    f"Gradient mode requires keypoint_colors of length {len(self.keypoints)}.",
-                )
-
-        for i, j in self.edges:
-            xi, yi = pose[i][:2]
-            xj, yj = pose[j][:2]
-            ci = pose[i][2] if pose.shape[1] > 2 else 1.0
-            cj = pose[j][2] if pose.shape[1] > 2 else 1.0
-            if np.isnan(xi) or np.isnan(yi) or ci < p_cutoff or np.isnan(xj) or np.isnan(yj) or cj < p_cutoff:
+            if not np.isfinite(values).all() or start_likelihood < p_cutoff or end_likelihood < p_cutoff:
                 continue
 
-            p1 = (int(xi * sx + ox), int(yi * sy + oy))
-            p2 = (int(xj * sx + ox), int(yj * sy + oy))
+            start_point = (
+                round(start_x * scale_x + offset_x),
+                round(start_y * scale_y + offset_y),
+            )
+            end_point = (
+                round(end_x * scale_x + offset_x),
+                round(end_y * scale_y + offset_y),
+            )
 
-            if st.color_mode == SkeletonColorMode.GRADIENT_KEYPOINTS:
-                c1 = keypoint_colors[i]
-                c2 = keypoint_colors[j]
-                self._draw_gradient_edge(overlay, p1, p2, c1, c2, th, st.gradient_steps)
+            if uses_gradient:
+                assert keypoint_colors is not None
+
+                _draw_gradient_edge(
+                    frame,
+                    start_point,
+                    end_point,
+                    keypoint_colors[start_index],
+                    keypoint_colors[end_index],
+                    thickness=thickness,
+                    steps=style.gradient_steps,
+                )
             else:
-                # SOLID: priority edge_colors > override > style.color > default_color
-                color = self.edge_colors.get((i, j), color_override or st.color_bgr or self.default_color)
-                cv2.line(overlay, p1, p2, color, th, lineType=cv2.LINE_AA)
+                cv2.line(
+                    frame,
+                    start_point,
+                    end_point,
+                    style.color_bgr,
+                    thickness,
+                    lineType=cv2.LINE_AA,
+                )
 
-        return SkeletonRenderStatus(SkeletonRenderCode.OK, "")
+            edges_drawn += 1
 
-    def draw_many(
-        self,
-        overlay: np.ndarray,
-        poses: np.ndarray,
-        p_cutoff: float,
-        offset: tuple[int, int],
-        scale: tuple[float, float],
-        *,
-        style: SkeletonStyle | None = None,
-        color_override: BGR | None = None,
-        keypoint_colors: list[BGR] | None = None,
-    ) -> SkeletonRenderStatus:
-        poses = np.asarray(poses)
-        if poses.ndim != 3:
-            return SkeletonRenderStatus(
-                SkeletonRenderCode.POSE_SHAPE_INVALID,
-                f"Multi-pose must be (A,N,2/3); got shape={poses.shape}",
-            )
-
-        expected = len(self.keypoints)
-        if poses.shape[1] != expected:
-            return SkeletonRenderStatus(
-                SkeletonRenderCode.KEYPOINT_COUNT_MISMATCH,
-                f"Skeleton expects {expected} keypoints, but poses have N={poses.shape[1]}.",
-            )
-
-        for pose in poses:
-            st = self.draw(
-                overlay,
-                pose,
-                p_cutoff,
-                offset,
-                scale,
-                style=style,
-                color_override=color_override,
-                keypoint_colors=keypoint_colors,
-            )
-            if not st.rendered:
-                return st
-
-        return SkeletonRenderStatus(SkeletonRenderCode.OK, "")
+    return SkeletonRenderResult(
+        code=SkeletonRenderCode.RENDERED,
+        edges_drawn=edges_drawn,
+    )
