@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import logging
 from pathlib import Path
@@ -182,11 +183,13 @@ class POETBackend(PoseBackend):
             aux_loss=False,
         )
 
-        checkpoint = torch.load(
-            self._checkpoint_path,
-            map_location="cpu",
-            weights_only=False,
-        )
+        with torch.serialization.safe_globals([argparse.Namespace]):
+            checkpoint = torch.load(
+                self._checkpoint_path,
+                map_location="cpu",
+                # weights_only=False,
+                weights_only=True,
+            )
         model.load_state_dict(
             checkpoint["model"],
             strict=True,
