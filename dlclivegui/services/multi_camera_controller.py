@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import logging
-import time
 from dataclasses import dataclass
 from functools import partial
 from threading import Lock
@@ -182,22 +181,6 @@ class MultiCameraController(QObject):
         self._recording_frame_emission_enabled = bool(enabled)
         for worker in list(self._workers.values()):
             worker.set_recording_enabled(enabled)
-
-    def _should_emit_display_ready(self) -> bool:
-        """
-        Return True if enough time has passed since the last display_ready emission, based on GUI_MAX_DISPLAY_FPS.
-        """
-        if self._gui_display_max_fps <= 0:
-            return True
-
-        now = time.perf_counter()
-        min_interval = 1.0 / max(self._gui_display_max_fps, 1e-9)
-
-        if now - self._gui_display_last_emit < min_interval:
-            return False
-
-        self._gui_display_last_emit = now
-        return True
 
     def start(self, camera_settings: list[CameraSettings]) -> None:
         """Start multiple cameras."""
@@ -495,11 +478,6 @@ class MultiCameraController(QObject):
             if frame_data is not None:
                 with timing.measure("Multi.emit.frame_ready"):
                     self.frame_ready.emit(frame_data)
-
-                # GUI-only path: throttled display updates
-                if self._should_emit_display_ready():
-                    with timing.measure("Multi.emit.display_ready"):
-                        self.display_ready.emit(frame_data)
 
         timing.note_frame()
         timing.maybe_log()
