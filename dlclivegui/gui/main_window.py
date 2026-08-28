@@ -9,6 +9,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl, Signal
@@ -83,6 +84,7 @@ from ..processors.processor_utils import (
     scan_processor_package,
 )
 from ..services.dlc_processor import DLCLiveProcessor, PoseResult
+from ..services.inference.processor import PoseBackendName, PoseProcessor, create_pose_processor
 from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id, get_display_id
 from ..services.recording_manager import RecordingManager
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
@@ -93,10 +95,13 @@ from .misc import color_dropdowns as color_ui
 from .misc import layouts as lyts
 from .misc.drag_spinbox import ScrubSpinBox
 from .misc.eliding_label import ElidingPathLabel
+from .misc.weights_dialog import PoetWeightsDialog
 from .qt_display.utils import frame_to_pixmap
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
 
 logger = logging.getLogger("DLCLiveGUI")
+if TYPE_CHECKING:
+    from ..services.inference.models.poet.poet_processor import POETBackend
 
 
 class DLCLiveMainWindow(QMainWindow):
@@ -148,7 +153,11 @@ class DLCLiveMainWindow(QMainWindow):
 
         self._fps_tracker = FPSTracker()
         self._rec_manager = RecordingManager()
-        self._dlc = DLCLiveProcessor()
+        self._dlc = create_pose_processor("dlc")
+        self._pose_processors = {
+            "dlc": self._dlc,
+        }
+        self._backend_name: PoseBackendName = "dlc"
         self.multi_camera_controller = MultiCameraController()
         ### Time debug
         self._dlc_timing = WorkerTimingStats(
@@ -184,6 +193,7 @@ class DLCLiveMainWindow(QMainWindow):
         # UI elements
         self._current_style: AppStyle = AppStyle.DARK
         self._cam_dialog: CameraConfigDialog | None = None
+        self._poet_weights_dialog: PoetWeightsDialog | None = None
 
         # Visualization settings (will be updated from config)
         self._p_cutoff = 0.6
@@ -210,6 +220,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._preview_pixmap = QPixmap(LOGO_ALPHA)
         self._setup_ui()
         self._connect_signals()
+        self._restore_pose_backend()
         self._apply_config(self._config, restore_local_prefs=True)
         self._refresh_processors()  # Scan and populate processor dropdown
         self._update_inference_buttons()
@@ -372,7 +383,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
         self._build_menus()
-        QTimer.singleShot(0, self._show_logo_and_text)
+        self.show_logo_timer = QTimer.singleShot(0, self._show_logo_and_text)
 
     def _build_stats_layout(self, stats_widget: QWidget) -> QGridLayout:
         stats_layout = QGridLayout(stats_widget)
@@ -394,11 +405,11 @@ class DLCLiveMainWindow(QMainWindow):
         row += 1
 
         # DLC
-        title_dlc = QLabel("<b>DLC Processor:</b>")
+        title_dlc = QLabel("<b>Pose processor:</b>")
         title_dlc.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         stats_layout.addWidget(title_dlc, row, 0, alignment=Qt.AlignTop)
 
-        self.dlc_stats_label = QLabel("DLC processor idle")
+        self.dlc_stats_label = QLabel("Pose processor idle")
         self.dlc_stats_label.setWordWrap(True)
         self.dlc_stats_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         stats_layout.addWidget(self.dlc_stats_label, row, 1, alignment=Qt.AlignTop)
@@ -419,6 +430,70 @@ class DLCLiveMainWindow(QMainWindow):
         stats_layout.setColumnStretch(1, 1)
 
         stats_widget.setLayout(stats_layout)
+
+    def _action_manage_poet_weights(self) -> None:
+        if self._poet_weights_dialog is None:
+            dialog = PoetWeightsDialog(self)
+
+            dialog.weights_downloaded.connect(self._on_poet_weights_downloaded)
+            dialog.finished.connect(self._clear_poet_weights_dialog)
+
+            self._poet_weights_dialog = dialog
+
+        self._poet_weights_dialog.show()
+        self._poet_weights_dialog.raise_()
+        self._poet_weights_dialog.activateWindow()
+
+    def _on_poet_weights_downloaded(
+        self,
+        path: str,
+    ) -> None:
+        self._set_last_poet_weights_path(path)
+        self._set_backend("poet")
+        self.model_path_edit.setText(path)
+
+        self.statusBar().showMessage(
+            f"POET weights ready: {path}",
+            5000,
+        )
+
+    def _on_poet_weights_selected(
+        self,
+        path: str,
+    ) -> None:
+        self._set_last_poet_weights_path(path)
+        self._set_backend("poet")
+        self.model_path_edit.setText(path)
+
+        self.statusBar().showMessage(
+            f"POET weights selected: {path}",
+            5000,
+        )
+
+    def _clear_poet_weights_dialog(
+        self,
+        _result: int,
+    ) -> None:
+        self._poet_weights_dialog = None
+
+    def _set_last_poet_weights_path(
+        self,
+        path: str,
+    ) -> None:
+        self.settings.setValue(
+            "poet/weights_path",
+            path,
+        )
+
+    def _get_last_poet_weights_path(self) -> str:
+        return (
+            self.settings.value(
+                "poet/weights_path",
+                "",
+                type=str,
+            )
+            or ""
+        )
 
     def _build_menus(self) -> None:
         # File menu
@@ -470,6 +545,42 @@ class DLCLiveMainWindow(QMainWindow):
         self._apply_theme(self._current_style)
         self._init_theme_actions()
 
+        # Models menu and pose backend selection
+        models_menu = self.menuBar().addMenu("&Models")
+        backend_menu = models_menu.addMenu("Pose backend")
+
+        self.action_backend_dlc = QAction(
+            "DLCLive",
+            self,
+            checkable=True,
+        )
+        self.action_backend_poet = QAction(
+            "POET",
+            self,
+            checkable=True,
+        )
+
+        self._backend_action_group = QActionGroup(self)
+        self._backend_action_group.setExclusive(True)
+        self._backend_action_group.addAction(self.action_backend_dlc)
+        self._backend_action_group.addAction(self.action_backend_poet)
+        # -------------------------
+        models_menu.addSeparator()
+        self.action_manage_poet_weights = QAction(
+            "Manage POET weights...",
+            self,
+        )
+        self.action_manage_poet_weights.triggered.connect(self._action_manage_poet_weights)
+        models_menu.addAction(self.action_manage_poet_weights)
+
+        backend_menu.addAction(self.action_backend_dlc)
+        backend_menu.addAction(self.action_backend_poet)
+
+        self.action_backend_dlc.triggered.connect(lambda checked: checked and self._set_backend("dlc"))
+        self.action_backend_poet.triggered.connect(lambda checked: checked and self._set_backend("poet"))
+
+        self.action_backend_dlc.setChecked(True)
+
         # Help menu
         help_menu = self.menuBar().addMenu("&Help")
 
@@ -497,8 +608,8 @@ class DLCLiveMainWindow(QMainWindow):
         return group
 
     def _build_dlc_group(self) -> QGroupBox:
-        group = QGroupBox("DLCLive")
-        form = QFormLayout(group)
+        self.inference_group = QGroupBox("DLCLive")
+        form = QFormLayout(self.inference_group)
 
         path_layout = QHBoxLayout()
         self.model_path_edit = QLineEdit()
@@ -596,7 +707,7 @@ class DLCLiveMainWindow(QMainWindow):
         # self.show_predictions_checkbox.setChecked(True)
         # form.addRow(self.show_predictions_checkbox)
 
-        return group
+        return self.inference_group
 
     def _build_recording_group(self) -> QGroupBox:
         """Build recording controls group."""
@@ -810,6 +921,33 @@ class DLCLiveMainWindow(QMainWindow):
         )
         form.addRow(bbox_settings)
 
+        bbox_layout = QHBoxLayout()
+        self.bbox_x0_spin = ScrubSpinBox()
+        self.bbox_x0_spin.setRange(0, 7680)
+        self.bbox_x0_spin.setPrefix("x0:")
+        self.bbox_x0_spin.setValue(0)
+        bbox_layout.addWidget(self.bbox_x0_spin)
+
+        self.bbox_y0_spin = ScrubSpinBox()
+        self.bbox_y0_spin.setRange(0, 4320)
+        self.bbox_y0_spin.setPrefix("y0:")
+        self.bbox_y0_spin.setValue(0)
+        bbox_layout.addWidget(self.bbox_y0_spin)
+
+        self.bbox_x1_spin = ScrubSpinBox()
+        self.bbox_x1_spin.setRange(0, 7680)
+        self.bbox_x1_spin.setPrefix("x1:")
+        self.bbox_x1_spin.setValue(100)
+        bbox_layout.addWidget(self.bbox_x1_spin)
+
+        self.bbox_y1_spin = ScrubSpinBox()
+        self.bbox_y1_spin.setRange(0, 4320)
+        self.bbox_y1_spin.setPrefix("y1:")
+        self.bbox_y1_spin.setValue(100)
+        bbox_layout.addWidget(self.bbox_y1_spin)
+
+        form.addRow("Coordinates", bbox_layout)
+
         # Skeleton overlay
         self.show_skeleton_checkbox = QCheckBox("Display skeleton")
         self.show_skeleton_checkbox.setChecked(False)
@@ -850,36 +988,49 @@ class DLCLiveMainWindow(QMainWindow):
             self.skeleton_thickness_spin,
         )
 
-        bbox_layout = QHBoxLayout()
-        self.bbox_x0_spin = ScrubSpinBox()
-        self.bbox_x0_spin.setRange(0, 7680)
-        self.bbox_x0_spin.setPrefix("x0:")
-        self.bbox_x0_spin.setValue(0)
-        bbox_layout.addWidget(self.bbox_x0_spin)
-
-        self.bbox_y0_spin = ScrubSpinBox()
-        self.bbox_y0_spin.setRange(0, 4320)
-        self.bbox_y0_spin.setPrefix("y0:")
-        self.bbox_y0_spin.setValue(0)
-        bbox_layout.addWidget(self.bbox_y0_spin)
-
-        self.bbox_x1_spin = ScrubSpinBox()
-        self.bbox_x1_spin.setRange(0, 7680)
-        self.bbox_x1_spin.setPrefix("x1:")
-        self.bbox_x1_spin.setValue(100)
-        bbox_layout.addWidget(self.bbox_x1_spin)
-
-        self.bbox_y1_spin = ScrubSpinBox()
-        self.bbox_y1_spin.setRange(0, 4320)
-        self.bbox_y1_spin.setPrefix("y1:")
-        self.bbox_y1_spin.setValue(100)
-        bbox_layout.addWidget(self.bbox_y1_spin)
-
-        form.addRow("Coordinates", bbox_layout)
-
         return group
 
     # ------------------------------------------------------------------ signals
+    def _connect_pose_processor_signals(self) -> None:
+        processor = self._active_pose_processor
+
+        processor.pose_ready.connect(
+            self._on_pose_ready,
+            Qt.ConnectionType.UniqueConnection,
+        )
+        processor.error.connect(
+            self._on_pose_error,
+            Qt.ConnectionType.UniqueConnection,
+        )
+        processor.initialized.connect(
+            self._on_pose_processor_initialised,
+            Qt.ConnectionType.UniqueConnection,
+        )
+
+    def _disconnect_pose_processor_signals(self) -> None:
+        processor = self._active_pose_processor
+
+        connections = (
+            (
+                processor.pose_ready,
+                self._on_pose_ready,
+            ),
+            (
+                processor.error,
+                self._on_pose_error,
+            ),
+            (
+                processor.initialized,
+                self._on_pose_processor_initialised,
+            ),
+        )
+
+        for signal, slot in connections:
+            try:
+                signal.disconnect(slot)
+            except RuntimeError:
+                pass
+
     def _connect_signals(self) -> None:
         self.preview_button.clicked.connect(self._start_preview)
         self.stop_preview_button.clicked.connect(self._stop_preview)
@@ -915,9 +1066,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.multi_camera_controller.initialization_failed.connect(self._on_multi_camera_initialization_failed)
 
         # DLC processor signals
-        self._dlc.pose_ready.connect(self._on_pose_ready)
-        self._dlc.error.connect(self._on_dlc_error)
-        self._dlc.initialized.connect(self._on_dlc_initialised)
+        self._connect_pose_processor_signals()
         self.dlc_camera_combo.currentIndexChanged.connect(self._on_dlc_camera_changed)
         self.dlc_camera_combo.currentTextChanged.connect(self.dlc_camera_combo.update_shrink_width)
         self.processor_combo.currentIndexChanged.connect(self._on_processor_selection_changed)
@@ -941,7 +1090,10 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Set DLC settings from config
         dlc = config.dlc
-        resolved_model_path = self._model_path_store.resolve(dlc.model_path)
+        if self._backend_name == "poet":
+            resolved_model_path = self._get_last_poet_weights_path()
+        else:
+            resolved_model_path = self._model_path_store.resolve(dlc.model_path)
         self.model_path_edit.setText(resolved_model_path)
 
         # self.additional_options_edit.setPlainText(json.dumps(dlc.additional_options, indent=2))
@@ -1050,6 +1202,16 @@ class DLCLiveMainWindow(QMainWindow):
         # Update recording path preview
         self._update_recording_path_preview()
 
+    def _current_dlc_settings(
+        self,
+        *,
+        allow_empty_model_path: bool,
+    ) -> DLCProcessorSettings:
+        if self._backend_name == "dlc":
+            return self._dlc_settings_from_ui(allow_empty_model_path=allow_empty_model_path)
+
+        return self._config.dlc.model_copy(deep=True)
+
     def _current_config(self, *, allow_empty_model_path=False) -> ApplicationSettings:
         multi_camera = self._config.multi_camera
         active_cameras = multi_camera.get_active_cameras()
@@ -1066,7 +1228,7 @@ class DLCLiveMainWindow(QMainWindow):
         return ApplicationSettings(
             camera=camera,
             multi_camera=multi_camera,
-            dlc=self._dlc_settings_from_ui(allow_empty_model_path=allow_empty_model_path),
+            dlc=self._current_dlc_settings(allow_empty_model_path=allow_empty_model_path),
             recording=self._recording_settings_from_ui(),
             bbox=self._bbox_settings_from_ui(),
             visualization=self._visualization_settings_from_ui(),
@@ -1293,59 +1455,72 @@ class DLCLiveMainWindow(QMainWindow):
         return True
 
     def _action_browse_model(self) -> None:
-        # Prefer persisted last-used directory, then config.dlc.model_directory, then home
         start_dir = self._model_path_store.suggest_start_dir(self._config.dlc.model_directory)
         preselect = self._model_path_store.suggest_selected_file()
 
-        dlg = QFileDialog(self, "Select DLCLive model file")
-        dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
-        dlg.setNameFilters(
-            [
-                "Model files (*.pt *.pth)",
-                "PyTorch models (*.pt *.pth)",
-                "TensorFlow models (*.pb)",
-            ]
+        dialog = QFileDialog(
+            self,
+            ("Select DeepLabCut model" if self._backend_name == "dlc" else "Select POET weights"),
         )
-        dlg.setDirectory(start_dir)
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
 
-        # Preselect last used model if it exists (optional but nice)
+        if self._backend_name == "poet":
+            dialog.setNameFilter("POET weights (*.pt *.pth)")
+        else:
+            dialog.setNameFilters(
+                [
+                    "Model files (*.pt *.pth *.pb)",
+                    "PyTorch models (*.pt *.pth)",
+                    "TensorFlow models (*.pb)",
+                ]
+            )
+
+        dialog.setDirectory(start_dir)
+
         if preselect:
-            dlg.selectFile(preselect)
+            dialog.selectFile(preselect)
 
-        if dlg.exec():
-            selected = dlg.selectedFiles()
-            if not selected:
-                return
-            file_path = Path(selected[0]).expanduser()
-            if not file_path.exists():
-                QMessageBox.warning(self, "File not found", f"The selected file does not exist:\n{file_path}")
-                return
+        if not dialog.exec():
+            return
 
-            try:
-                if file_path.suffix == ".pb":
-                    # For TensorFlow, DLCLive expects a directory, so we pass the parent directory for validation
-                    model_check_path = file_path.parent
-                else:
-                    model_check_path = file_path
-                # Raise if the model backend cannot be determined (invalid file or unsupported extension)
-                DLCLiveProcessor.get_model_backend(str(model_check_path))
-            except FileNotFoundError as e:
-                QMessageBox.warning(self, "Model selection error", str(e))
-                return
-            except ValueError as e:
-                QMessageBox.warning(self, "Model selection error", str(e))
-                return
-            file_path = str(file_path)
-            self.model_path_edit.setText(file_path)
+        selected = dialog.selectedFiles()
+        if not selected:
+            return
 
-            # Persist model path + directory
-            self._model_path_store.save_if_valid(file_path)
+        file_path = Path(selected[0]).expanduser()
 
-            # Optional: update config so next startup uses this directory too
-            try:
-                self._config.dlc.model_directory = str(Path(file_path).parent)
-            except Exception:
-                pass
+        if not file_path.is_file():
+            QMessageBox.warning(
+                self,
+                "File not found",
+                f"The selected file does not exist:\n{file_path}",
+            )
+            return
+
+        try:
+            if self._backend_name == "poet":
+                if file_path.suffix.lower() not in {
+                    ".pt",
+                    ".pth",
+                }:
+                    raise ValueError("POET weights must use a .pt or .pth extension.")
+            else:
+                model_path = file_path.parent if file_path.suffix.lower() == ".pb" else file_path
+                DLCLiveProcessor.get_model_backend(str(model_path))
+        except (FileNotFoundError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                "Model selection error",
+                str(exc),
+            )
+            return
+
+        selected_path = str(file_path)
+        self.model_path_edit.setText(selected_path)
+        if self._backend_name == "poet":
+            self._set_last_poet_weights_path(selected_path)
+        else:
+            self._model_path_store.save_if_valid(selected_path)
 
     def _action_browse_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Select output directory", str(Path.home()))
@@ -1410,7 +1585,8 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _custom_processor_enabled(self) -> bool:
         return bool(
-            getattr(self, "use_custom_proc_checkbox", None)
+            self._backend_name == "dlc"
+            and getattr(self, "use_custom_proc_checkbox", None)
             and self.use_custom_proc_checkbox.isChecked()
             and self.processor_combo.currentData() is not None
         )
@@ -1882,7 +2058,7 @@ class DLCLiveMainWindow(QMainWindow):
             frame = frame_data.frames[dlc_cam_id]
             timestamp = frame_data.timestamps.get(dlc_cam_id, time.time())
             with self._dlc_timing.measure("enqueue_frame"):
-                self._dlc.enqueue_frame(frame, timestamp)
+                self._active_pose_processor.enqueue_frame(frame, timestamp)
 
             self._dlc_timing.note_frame()
             self._dlc_timing.maybe_log()
@@ -1970,9 +2146,14 @@ class DLCLiveMainWindow(QMainWindow):
             self._show_error("Failed to start recording.")
             return
 
-        self._processor_recording_context = self._build_processor_recording_context(run_dir)
-        self._processor_recording_started_notified = False
-        self._notify_processor_recording_started(self._processor_recording_context)
+        if self._backend_name == "dlc":
+            self._processor_recording_context = self._build_processor_recording_context(run_dir)
+            self._processor_recording_started_notified = False
+            self._notify_processor_recording_started(self._processor_recording_context)
+        else:
+            self._processor_recording_context = None
+            self._processor_recording_started_notified = False
+
         self.multi_camera_controller.set_recording_sink(self._rec_manager.write_frame)
         self.multi_camera_controller.set_recording_frame_is_enabled(True)
 
@@ -2025,7 +2206,140 @@ class DLCLiveMainWindow(QMainWindow):
             daemon=True,
         ).start()
 
-    def _get_dlc_processor_instance(self):
+    @property
+    def _active_pose_processor(
+        self,
+    ):
+        return self._get_pose_processor(self._backend_name)
+
+    def _get_pose_processor(
+        self,
+        backend: PoseBackendName,
+    ):
+        processor = self._pose_processors.get(backend)
+
+        if processor is None:
+            processor = create_pose_processor(backend)
+            self._pose_processors[backend] = processor
+
+        return processor
+
+    def _remember_current_backend_path(self) -> None:
+        path = self.model_path_edit.text().strip()
+
+        if not path:
+            return
+
+        if self._backend_name == "poet":
+            self._set_last_poet_weights_path(path)
+        else:
+            self._model_path_store.save_if_valid(path)
+
+    def _restore_current_backend_path(self) -> None:
+        if self._backend_name == "poet":
+            path = self._get_last_poet_weights_path()
+        else:
+            path = self._model_path_store.resolve(self._config.dlc.model_path)
+
+        self.model_path_edit.setText(path)
+
+    def _set_backend(
+        self,
+        name: str,
+    ) -> None:
+
+        normalized_name = name.strip().lower()
+        if normalized_name not in {"dlc", "poet"}:
+            raise ValueError(f"Unsupported pose backend: {normalized_name!r}.")
+
+        backend = cast(PoseBackendName, normalized_name)
+
+        if backend == self._backend_name:
+            self._sync_backend_actions()
+            self._update_backend_ui()
+            self._restore_current_backend_path()
+            return
+
+        if self._dlc_active:
+            self._show_warning("Stop pose inference before switching backends.")
+            self._sync_backend_actions()
+            return
+
+        self._remember_current_backend_path()
+        self._disconnect_pose_processor_signals()
+
+        self._backend_name = backend
+        self._get_pose_processor(backend)
+
+        self._last_pose = None
+        self._overlay_renderer.clear_runtime_state()
+
+        self._connect_pose_processor_signals()
+        self._sync_backend_actions()
+        self._update_backend_ui()
+        self._restore_current_backend_path()
+
+        self.settings.setValue(
+            "app/backend",
+            backend,
+        )
+
+        self.statusBar().showMessage(
+            f"Pose backend set to {self._backend_display_name()}",
+            3000,
+        )
+
+    def _restore_pose_backend(self) -> None:
+        saved_backend = self.settings.value(
+            "app/backend",
+            "dlc",
+            type=str,
+        )
+
+        if saved_backend not in {"dlc", "poet"}:
+            logger.warning(
+                "Ignoring unsupported saved pose backend: %r",
+                saved_backend,
+            )
+            saved_backend = "dlc"
+
+        self._set_backend(saved_backend)
+
+    def _backend_display_name(self) -> str:
+        if self._backend_name == "poet":
+            return "POET"
+
+        return "DLCLive"
+
+    def _sync_backend_actions(self) -> None:
+        self.action_backend_dlc.blockSignals(True)
+        self.action_backend_poet.blockSignals(True)
+
+        try:
+            self.action_backend_dlc.setChecked(self._backend_name == "dlc")
+            self.action_backend_poet.setChecked(self._backend_name == "poet")
+        finally:
+            self.action_backend_dlc.blockSignals(False)
+            self.action_backend_poet.blockSignals(False)
+
+    def _update_backend_ui(self) -> None:
+        is_dlc = self._backend_name == "dlc"
+
+        self.model_path_edit.setPlaceholderText("/path/to/exported/model" if is_dlc else "/path/to/poet_weights.pth")
+
+        for widget in (
+            self.processor_folder_edit,
+            self.browse_processor_folder_button,
+            self.refresh_processors_button,
+            self.processor_combo,
+            self.use_custom_proc_checkbox,
+        ):
+            widget.setVisible(is_dlc)
+
+        self.processor_toggle_row.setVisible(is_dlc and self.processor_combo.currentData() is not None)
+        self.inference_group.setTitle(self._backend_display_name())
+
+    def _get_dlc_custom_processor_instance(self):
         """Return the active custom DLC processor instance, if available."""
         processor = getattr(self._dlc, "_processor", None)
 
@@ -2050,7 +2364,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         Return values are only logged; failure should not crash the GUI.
         """
-        processor = self._get_dlc_processor_instance()
+        processor = self._get_dlc_custom_processor_instance()
 
         if processor is None:
             logger.debug("Processor save skipped: no processor instance available.")
@@ -2068,7 +2382,7 @@ class DLCLiveMainWindow(QMainWindow):
             logger.exception("Processor save() failed.")
 
     def _notify_processor_recording_started(self, context: dict) -> bool:
-        processor = self._get_dlc_processor_instance()
+        processor = self._get_dlc_custom_processor_instance()
         if processor is None:
             return False
 
@@ -2143,7 +2457,7 @@ class DLCLiveMainWindow(QMainWindow):
         return context
 
     def _notify_processor_recording_stopped(self) -> None:
-        processor = self._get_dlc_processor_instance()
+        processor = self._get_dlc_custom_processor_instance()
         if processor is None:
             return
 
@@ -2380,6 +2694,57 @@ class DLCLiveMainWindow(QMainWindow):
         self._model_path_store.save_if_valid(settings.model_path)
         return True
 
+    def _configure_poet(self) -> bool:
+        checkpoint_text = self.model_path_edit.text().strip()
+        checkpoint = Path(checkpoint_text).expanduser()
+
+        if not checkpoint_text:
+            self._show_error("Please select POET weights before starting inference.")
+            return False
+
+        if not checkpoint.is_file():
+            self._show_error(f"POET weights were not found:\n{checkpoint}")
+            return False
+
+        if checkpoint.suffix.lower() not in {
+            ".pt",
+            ".pth",
+        }:
+            self._show_error("POET weights must use a .pt or .pth extension.")
+            return False
+
+        device = self._config.dlc.device or "auto"
+        threshold = self._p_cutoff
+
+        def backend_factory() -> POETBackend:
+
+            from ..services.inference.models.poet.poet_processor import POETBackend
+
+            return POETBackend(
+                str(checkpoint),
+                device=device,
+                threshold=threshold,
+                use_amp=True,
+            )
+
+        processor = self._get_pose_processor("poet")
+
+        if not isinstance(processor, PoseProcessor):
+            raise RuntimeError("The POET processor does not support configuration.")
+
+        processor.configure(backend_factory)
+        return True
+
+    def _configure_pose_backend(self) -> bool:
+        if self._backend_name == "dlc":
+            return self._configure_dlc()
+
+        if self._backend_name == "poet":
+            return self._configure_poet()
+
+        self._show_error(f"Unsupported pose backend: {self._backend_name!r}.")
+        return False
+
     def _update_inference_buttons(self) -> None:
         preview_running = self.multi_camera_controller.is_running()
         self.start_inference_button.setEnabled(preview_running and not self._dlc_active)
@@ -2405,11 +2770,15 @@ class DLCLiveMainWindow(QMainWindow):
         for widget in widgets:
             widget.setEnabled(allow_changes)
 
+        dlc_controls_enabled = allow_changes and self._backend_name == "dlc"
         for widget in processor_widgets:
-            widget.setEnabled(allow_changes)
+            widget.setEnabled(dlc_controls_enabled)
 
-        if hasattr(self, "use_custom_proc_checkbox"):
-            self.use_custom_proc_checkbox.setEnabled(allow_changes)
+        self.use_custom_proc_checkbox.setEnabled(dlc_controls_enabled)
+
+        self.action_backend_dlc.setEnabled(allow_changes)
+        self.action_backend_poet.setEnabled(allow_changes)
+        self.action_manage_poet_weights.setEnabled(allow_changes)
 
     def _update_camera_controls_enabled(self) -> None:
         multi_cam_recording = self._rec_manager.is_active
@@ -2492,11 +2861,11 @@ class DLCLiveMainWindow(QMainWindow):
         # --- DLC processor stats ---
         if hasattr(self, "dlc_stats_label"):
             if self._dlc_active and self._dlc_initialized:
-                stats = self._dlc.get_stats()
+                stats = self._active_pose_processor.get_stats()
                 summary = format_dlc_stats(stats)
                 self.dlc_stats_label.setText(summary)
             else:
-                self.dlc_stats_label.setText("DLC processor idle")
+                self.dlc_stats_label.setText("Processor idle")
 
         # Update processor status (connection and recording state)
         if hasattr(self, "processor_status_label") and self._custom_processor_enabled():
@@ -2513,6 +2882,10 @@ class DLCLiveMainWindow(QMainWindow):
 
     def _update_processor_status(self) -> None:
         """Update processor connection and recording status, handle auto-recording."""
+        if self._backend_name != "dlc":
+            self.processor_status_label.setText("Unavailable for this backend")
+            return
+
         if not self._custom_processor_enabled():
             self.processor_status_label.setText("Disabled")
             return
@@ -2582,27 +2955,46 @@ class DLCLiveMainWindow(QMainWindow):
         if not self.multi_camera_controller.is_running():
             self._show_error("Start the camera preview before running pose inference.")
             return
-        if not self._configure_dlc():
+        if not self._configure_pose_backend():
             self._update_inference_buttons()
             return
-        self._dlc.reset()
+
+        self._active_pose_processor.reset()
         self._last_pose = None
         self._overlay_renderer.clear_runtime_state()
+
         self._dlc_active = True
         self._dlc_initialized = False
 
-        # Update button to show initializing state
-        self.start_inference_button.setText("Initializing DLCLive!")
+        backend_name = self._backend_display_name()
+
+        self.start_inference_button.setText(f"Initializing {backend_name}...")
         self.start_inference_button.setStyleSheet("background-color: #4A90E2; color: white;")
         self.start_inference_button.setEnabled(False)
         self.stop_inference_button.setEnabled(True)
 
-        self.statusBar().showMessage("Initializing DLCLive…", 3000)
+        self.statusBar().showMessage(
+            f"Initializing {backend_name}...",
+            3000,
+        )
         self._update_camera_controls_enabled()
         self._update_dlc_controls_enabled()
 
+    def _reset_active_pose_processor(
+        self,
+        *,
+        reset_processor_plugin: bool,
+    ) -> bool:
+        if self._backend_name == "dlc":
+            self._dlc.reset(
+                reset_processor_plugin=reset_processor_plugin,
+            )
+            return True
+
+        return self._active_pose_processor.reset()
+
     def _stop_inference(self, show_message: bool = True) -> None:
-        if self._rec_manager.is_active:
+        if self._rec_manager.is_active and self._backend_name == "dlc":
             answer = QMessageBox.question(
                 self,
                 "Stop inference while recording?",
@@ -2619,7 +3011,9 @@ class DLCLiveMainWindow(QMainWindow):
         self._dlc_active = False
         self._dlc_initialized = False
         # Does NOT invoke the normal rec-stop/save hooks. Persistence is processor-dependent.
-        self._dlc.reset(reset_processor_plugin=True)
+        stopped = self._reset_active_pose_processor(reset_processor_plugin=True)
+        if not stopped:
+            self.statusBar().showMessage("Stopping pose inference after model init completed...", 5000)
         self._last_pose = None
         self._overlay_renderer.clear_runtime_state()
         self._last_processor_vid_recording = False
@@ -2704,7 +3098,7 @@ class DLCLiveMainWindow(QMainWindow):
 
         self._dlc_timing.maybe_log()
 
-    def _on_dlc_error(self, message: str) -> None:
+    def _on_pose_error(self, message: str) -> None:
         self._stop_inference(show_message=False)
         self._show_error(message)
 
@@ -2756,24 +3150,29 @@ class DLCLiveMainWindow(QMainWindow):
         if self._current_frame is not None:
             self._display_frame(self._current_frame, force=True)
 
-    def _on_dlc_initialised(self, success: bool) -> None:
+    def _on_pose_processor_initialised(self, success: bool) -> None:
         if success:
             self._dlc_initialized = True
-            if self._processor_recording_context is not None and not self._processor_recording_started_notified:
+            if (
+                self._backend_name == "dlc"
+                and self._processor_recording_context is not None
+                and not self._processor_recording_started_notified
+            ):
                 self._notify_processor_recording_started(self._processor_recording_context)
 
             # Update button to show running state
-            self.start_inference_button.setText("DLCLive running!")
+            self.start_inference_button.setText(f"{self._backend_display_name()} running!")
             self.start_inference_button.setStyleSheet("background-color: #4CAF50; color: white;")
-            self.statusBar().showMessage("DLCLive initialized successfully", 3000)
-        else:
-            self._dlc_initialized = False
-            # Reset button on failure
-            self.start_inference_button.setText("Start pose inference")
-            self.start_inference_button.setStyleSheet("")
-            self.statusBar().showMessage("DLCLive initialization failed", 5000)
-            # Stop inference since initialization failed
-            self._stop_inference(show_message=False)
+            self.statusBar().showMessage(f"{self._backend_display_name()} initialized successfully", 3000)
+            return
+
+        self._dlc_initialized = False
+        # Reset button on failure
+        self.start_inference_button.setText("Start pose inference")
+        self.start_inference_button.setStyleSheet("")
+        self.statusBar().showMessage(f"{self._backend_display_name()} initialization failed", 5000)
+        # Stop inference since initialization failed
+        self._stop_inference(show_message=False)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -2817,6 +3216,16 @@ class DLCLiveMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # Qt overrides
+    def _shutdown_pose_processors(self) -> None:
+        for backend, processor in tuple(self._pose_processors.items()):
+            try:
+                processor.shutdown()
+            except Exception:
+                logger.exception(
+                    "Failed to shut down %s pose processor.",
+                    backend,
+                )
+
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour
         if self.multi_camera_controller.is_running():
             self.multi_camera_controller.stop(wait=True)
@@ -2843,7 +3252,7 @@ class DLCLiveMainWindow(QMainWindow):
                 pass
             self._cam_dialog = None
 
-        self._dlc.shutdown()
+        self._shutdown_pose_processors()
         if hasattr(self, "_metrics_timer"):
             self._metrics_timer.stop()
 
@@ -2851,7 +3260,11 @@ class DLCLiveMainWindow(QMainWindow):
             self._display_timer.stop()
 
         # Remember model path on exit
-        self._model_path_store.save_if_valid(self.model_path_edit.text().strip())
+        current_model_path = self.model_path_edit.text().strip()
+        if self._backend_name == "poet":
+            self._set_last_poet_weights_path(current_model_path)
+        else:
+            self._model_path_store.save_if_valid(current_model_path)
 
         # Remember processor folder on exit
         if hasattr(self, "processor_folder_edit"):

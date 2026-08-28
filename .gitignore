@@ -118,3 +118,4 @@ uv.lock
 profile*.svg
 scalene*.json
 scalene*.html
+/TEMP_WEIGHTS
