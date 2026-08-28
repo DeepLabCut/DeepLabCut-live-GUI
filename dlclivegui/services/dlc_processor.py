@@ -108,6 +108,10 @@ class DLCLiveProcessor(QObject):
         self._processor: Any | None = None
         self._processor_spec: ProcessorSpec | None = None
         self._processor_built_from_spec = False
+        # Keypoint/skeleton definitions
+        self._keypoint_names: tuple[str, ...] | None = None
+        self._skeleton_id: str | None = None
+        self._skeleton_edges: tuple[tuple[str, str], ...] | None = None
         # Worker thread and queue
         self._queue: queue.Queue[Any] | None = None
         self._worker_thread: threading.Thread | None = None
@@ -610,8 +614,10 @@ class DLCLiveProcessor(QObject):
         pose_packet = PosePacket(
             schema_version=0,
             keypoints=pose_arr,
-            keypoint_names=None,
+            keypoint_names=list(self._keypoint_names) if self._keypoint_names is not None else None,
             individual_ids=None,
+            skeleton_id=self._skeleton_id,
+            skeleton_edges=self._skeleton_edges,
             source=PoseSource(backend=PoseBackends.DLC_LIVE, model_type=self._settings.model_type),
             raw=pose_arr,
         )
@@ -649,6 +655,63 @@ class DLCLiveProcessor(QObject):
         self._worker_timing.note_frame()
         self._worker_timing.maybe_log()
         self.frame_processed.emit()
+
+    def _load_pose_metadata_from_dlc_config(self) -> None:
+        """Extract name-based pose metadata from the initialized DLC config."""
+
+        self._keypoint_names = None
+        self._skeleton_id = None
+        self._skeleton_edges = None
+
+        dlc = self._dlc
+        if dlc is None:
+            raise RuntimeError("DLCLive instance is not initialized.")
+
+        cfg = getattr(dlc, "cfg", None)
+        if not isinstance(cfg, dict):
+            logger.info("DLCLive did not expose dictionary configuration metadata.")
+            return
+
+        raw_bodyparts = cfg.get("bodyparts")
+        if not isinstance(raw_bodyparts, (list, tuple)):
+            logger.info("DLCLive configuration does not define bodyparts.")
+            return
+
+        keypoint_names = tuple(str(name) for name in raw_bodyparts)
+
+        if not keypoint_names:
+            return
+
+        if len(set(keypoint_names)) != len(keypoint_names):
+            raise RuntimeError("DLCLive configuration contains duplicate bodypart names.")
+
+        self._keypoint_names = keypoint_names
+
+        raw_edges = cfg.get("skeleton")
+        if not isinstance(raw_edges, (list, tuple)):
+            return
+
+        edges: list[tuple[str, str]] = []
+
+        for raw_edge in raw_edges:
+            if not isinstance(raw_edge, (list, tuple)) or len(raw_edge) != 2:
+                raise RuntimeError("DLCLive configuration contains an invalid skeleton edge.")
+
+            start = str(raw_edge[0])
+            end = str(raw_edge[1])
+
+            if start not in keypoint_names or end not in keypoint_names:
+                raise RuntimeError(f"DLCLive skeleton references an unknown bodypart: {start!r} -> {end!r}.")
+
+            edges.append((start, end))
+
+        if not edges:
+            return
+
+        task_name = str(cfg.get("Task", "model")).strip() or "model"
+
+        self._skeleton_id = f"deeplabcut.{task_name}"
+        self._skeleton_edges = tuple(edges)
 
     def _worker_loop(self, init_frame: np.ndarray, init_timestamp: float) -> None:
         try:
@@ -749,6 +812,8 @@ class DLCLiveProcessor(QObject):
             with self._worker_timing.measure("DLC.init_inference"):
                 self._dlc.init_inference(init_frame)
                 log_processor_context("DLCLive init_inference completed", logger)
+
+            self._load_pose_metadata_from_dlc_config()
 
             self._debug_log_dlc_runner_device()
             self._worker_timing.note_frame()

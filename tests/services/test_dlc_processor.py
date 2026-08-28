@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -10,9 +11,7 @@ from dlclivegui.config import DLCProcessorSettings
 
 # from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.processors.processor_utils import ProcessorSpec
-from dlclivegui.services.dlc_processor import (
-    DLCLiveProcessor,
-)
+from dlclivegui.services.dlc_processor import DLCLiveProcessor
 from dlclivegui.services.inference.base import (
     ProcessorStats,
     WorkerState,
@@ -385,3 +384,97 @@ def test_queue_accounting_clears_after_processed_frame(qtbot, monkeypatch_dlcliv
 
     finally:
         proc.reset()
+
+
+def test_load_pose_metadata_from_dlc_config() -> None:
+    processor = DLCLiveProcessor()
+    processor._dlc = SimpleNamespace(
+        cfg={
+            "Task": "mouse",
+            "bodyparts": [
+                "nose",
+                "shoulder",
+                "tail",
+            ],
+            "skeleton": [
+                ["nose", "shoulder"],
+                ["shoulder", "tail"],
+            ],
+        }
+    )
+
+    processor._load_pose_metadata_from_dlc_config()
+
+    assert processor._keypoint_names == (
+        "nose",
+        "shoulder",
+        "tail",
+    )
+    assert processor._skeleton_id == "deeplabcut.mouse"
+    assert processor._skeleton_edges == (
+        ("nose", "shoulder"),
+        ("shoulder", "tail"),
+    )
+
+
+def test_metadata_loader_clears_stale_metadata() -> None:
+    processor = DLCLiveProcessor()
+    processor._keypoint_names = ("stale",)
+    processor._skeleton_id = "stale"
+    processor._skeleton_edges = (("stale", "other"),)
+    processor._dlc = SimpleNamespace(cfg={})
+
+    processor._load_pose_metadata_from_dlc_config()
+
+    assert processor._keypoint_names is None
+    assert processor._skeleton_id is None
+    assert processor._skeleton_edges is None
+
+
+def test_metadata_loader_allows_bodyparts_without_skeleton() -> None:
+    processor = DLCLiveProcessor()
+    processor._dlc = SimpleNamespace(
+        cfg={
+            "bodyparts": ["nose", "tail"],
+        }
+    )
+
+    processor._load_pose_metadata_from_dlc_config()
+
+    assert processor._keypoint_names == (
+        "nose",
+        "tail",
+    )
+    assert processor._skeleton_id is None
+    assert processor._skeleton_edges is None
+
+
+def test_metadata_loader_rejects_duplicate_bodyparts() -> None:
+    processor = DLCLiveProcessor()
+    processor._dlc = SimpleNamespace(
+        cfg={
+            "bodyparts": ["nose", "nose"],
+        }
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="duplicate",
+    ):
+        processor._load_pose_metadata_from_dlc_config()
+
+
+def test_metadata_loader_rejects_unknown_skeleton_endpoint() -> None:
+    processor = DLCLiveProcessor()
+    processor._dlc = SimpleNamespace(
+        cfg={
+            "bodyparts": ["nose", "tail"],
+            "skeleton": [["nose", "shoulder"]],
+        }
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="unknown bodypart",
+    ):
+        processor._load_pose_metadata_from_dlc_config()
