@@ -210,10 +210,15 @@ class POETBackend(PoseBackend):
     ) -> np.ndarray | None:
         del frame_time
 
+        frame = np.asarray(frame)
+        if frame.ndim != 3 or frame.shape[2] != 3:
+            # FIXME @C-Achard 2026/08/28 - optionally convert here as well
+            raise ValueError(f"Incorrect frame format, expected 3-channel BGR, got {frame.shape!r}")
+
         torch = _require_torch()
 
         with torch.inference_mode():
-            return self._infer(frame, torch)
+            return self._infer(np.ascontiguousarray(frame), torch)
 
     def _infer(
         self,

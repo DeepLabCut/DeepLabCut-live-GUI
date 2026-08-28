@@ -2984,14 +2984,14 @@ class DLCLiveMainWindow(QMainWindow):
         self,
         *,
         reset_processor_plugin: bool,
-    ) -> None:
+    ) -> bool:
         if self._backend_name == "dlc":
             self._dlc.reset(
                 reset_processor_plugin=reset_processor_plugin,
             )
-            return
+            return True
 
-        self._active_pose_processor.reset()
+        return self._active_pose_processor.reset()
 
     def _stop_inference(self, show_message: bool = True) -> None:
         if self._rec_manager.is_active and self._backend_name == "dlc":
@@ -3011,7 +3011,9 @@ class DLCLiveMainWindow(QMainWindow):
         self._dlc_active = False
         self._dlc_initialized = False
         # Does NOT invoke the normal rec-stop/save hooks. Persistence is processor-dependent.
-        self._reset_active_pose_processor(reset_processor_plugin=True)
+        stopped = self._reset_active_pose_processor(reset_processor_plugin=True)
+        if not stopped:
+            self.statusBar().showMessage("Stopping pose inference after model init completed...", 5000)
         self._last_pose = None
         self._overlay_renderer.clear_runtime_state()
         self._last_processor_vid_recording = False

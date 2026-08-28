@@ -56,10 +56,12 @@ class PoseProcessor(QObject):
     def is_configured(self) -> bool:
         return self._backend_factory is not None
 
-    def reset(self) -> None:
+    def reset(self) -> bool:
         if not self._stop_worker():
-            raise RuntimeError("Failed to stop worker thread")
+            return False
+
         self._backend = None
+
         with self._stats_lock:
             self._frames_enqueued = 0
             self._frames_processed = 0
@@ -71,8 +73,10 @@ class PoseProcessor(QObject):
             self._signal_emit_times.clear()
             self._total_process_times.clear()
 
-    def shutdown(self) -> None:
-        self.reset()
+        return True
+
+    def shutdown(self) -> bool:
+        return self.reset()
 
     def enqueue_frame(self, frame: np.ndarray, timestamp: float) -> None:
         if self._worker_thread is None:
@@ -214,83 +218,96 @@ class PoseProcessor(QObject):
 
         self.frame_processed.emit()
 
-    def _worker_loop(self, init_frame: np.ndarray, init_timestamp: float) -> None:
+    def _worker_loop(
+        self,
+        init_frame: np.ndarray,
+        init_timestamp: float,
+    ) -> None:
         try:
             if self._backend_factory is None:
                 raise RuntimeError("No backend configured.")
+
             self._backend = self._backend_factory()
 
+            if self._stop_event.is_set():
+                return
+
             self._backend.init_inference(init_frame)
+
+            if self._stop_event.is_set():
+                return
+
             self.initialized.emit(True)
 
-            self._process_frame(init_frame, init_timestamp, time.perf_counter(), queue_wait_time=0.0)
+            self._process_frame(
+                init_frame,
+                init_timestamp,
+                time.perf_counter(),
+                queue_wait_time=0.0,
+            )
+
             with self._stats_lock:
                 self._frames_enqueued += 1
 
-        except Exception as exc:
-            logger.exception("Failed to initialize pose backend", exc_info=exc)
-            self.error.emit(str(exc))
-            self.initialized.emit(False)
+            while not self._stop_event.is_set():
+                queue_ref = self._queue
+                if queue_ref is None:
+                    break
 
+                try:
+                    frame, timestamp, enqueued_at = queue_ref.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+
+                queue_wait_time = max(
+                    0.0,
+                    time.perf_counter() - enqueued_at,
+                )
+
+                try:
+                    self._process_frame(
+                        frame,
+                        timestamp,
+                        enqueued_at,
+                        queue_wait_time=queue_wait_time,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Pose inference failed",
+                        exc_info=exc,
+                    )
+                    self.error.emit(str(exc))
+                finally:
+                    try:
+                        queue_ref.task_done()
+                    except ValueError:
+                        pass
+
+        except Exception as exc:
+            if not self._stop_event.is_set():
+                logger.exception(
+                    "Failed to initialize pose backend",
+                    exc_info=exc,
+                )
+                self.error.emit(str(exc))
+                self.initialized.emit(False)
+
+        finally:
             backend = self._backend
             self._backend = None
 
             if backend is not None:
                 try:
                     backend.close()
-                except Exception as exc:
-                    logger.exception("Failed to close backend", exc_info=exc)
+                except Exception:
+                    logger.exception("Failed to close pose backend.")
 
             self._queue = None
-            self._worker_thread = None
-            return
 
-        while True:
-            if self._stop_event.is_set():
-                if self._queue is not None:
-                    try:
-                        frame, ts, enq = self._queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    else:
-                        try:
-                            self._process_frame(frame, ts, enq, queue_wait_time=0.0)
-                        except Exception as exc:
-                            logger.exception("Pose inference failed", exc_info=exc)
-                            self.error.emit(str(exc))
-                        finally:
-                            try:
-                                self._queue.task_done()
-                            except ValueError:
-                                pass
-                        continue
+            if self._worker_thread is threading.current_thread():
+                self._worker_thread = None
 
-            try:
-                frame, ts, enq = self._queue.get(
-                    timeout=0.05,
-                )
-            except queue.Empty:
-                break
-            else:
-                queue_wait_time = max(0.0, time.perf_counter() - enq)
-
-            try:
-                self._process_frame(
-                    frame,
-                    ts,
-                    enq,
-                    queue_wait_time=queue_wait_time,
-                )
-            except Exception as exc:
-                logger.exception("Pose inference failed", exc_info=exc)
-                self.error.emit(str(exc))
-            finally:
-                try:
-                    self._queue.task_done()
-                except ValueError:
-                    pass
-
-        logger.info("Pose worker thread exiting")
+            logger.info("Pose worker thread exiting")
 
 
 def create_pose_processor(
