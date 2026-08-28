@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from dlclivegui.utils.display import (  # noqa: E402
+from dlclivegui.display import (  # noqa: E402
     compute_tile_info,
     compute_tiling_geometry,
     create_tiled_frame,

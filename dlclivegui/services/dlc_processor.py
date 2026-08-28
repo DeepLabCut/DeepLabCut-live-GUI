@@ -9,14 +9,12 @@ import threading
 import time
 from collections import deque
 from contextlib import contextmanager
-from dataclasses import dataclass
-from enum import Enum, auto
 from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from dlclivegui.config import DLC_DO_LOG_TIMING, DLCProcessorSettings, ModelType
+from dlclivegui.config import DLC_DO_LOG_TIMING, DLCProcessorSettings
 from dlclivegui.processors.processor_utils import (
     ProcessorSpec,
     create_spec_from_scan,
@@ -27,6 +25,8 @@ from dlclivegui.processors.processor_utils import (
 from dlclivegui.temp import Engine  # type: ignore # TODO use main package enum when released
 from dlclivegui.utils.stats import WorkerTimingStats
 from dlclivegui.utils.utils import format_thread_stack
+
+from .inference.base import PoseBackends, PosePacket, PoseResult, PoseSource, ProcessorStats, WorkerState
 
 logger = logging.getLogger(__name__)
 STOP_WORKER_TIMEOUT = 10.0  # # seconds to wait in STOPPING state before scheduling background reaping
@@ -42,41 +42,6 @@ except Exception as e:  # pragma: no cover - handled gracefully
 
 # Enable profiling to get more detailed timing metrics for debugging and optimization.
 ENABLE_PROFILING = False
-
-
-class PoseBackends(Enum):
-    DLC_LIVE = auto()
-
-
-class WorkerState(Enum):
-    STOPPED = auto()
-    STARTING = auto()
-    RUNNING = auto()
-    STOPPING = auto()
-    FAULTED = auto()
-
-
-@dataclass
-class PoseResult:
-    pose: np.ndarray | None
-    timestamp: float
-    packet: PosePacket | None = None
-
-
-@dataclass(slots=True, frozen=True)
-class PoseSource:
-    backend: PoseBackends  # e.g. "DLCLive"
-    model_type: ModelType | None = None
-
-
-@dataclass(slots=True, frozen=True)
-class PosePacket:
-    schema_version: int = 0
-    keypoints: np.ndarray | None = None
-    keypoint_names: list[str] | None = None
-    individual_ids: list[str] | None = None
-    source: PoseSource = PoseSource(backend=PoseBackends.DLC_LIVE)
-    raw: Any | None = None
 
 
 def validate_pose_array(
@@ -125,27 +90,6 @@ def validate_pose_array(
         raise ValueError(f"{source_backend} returned an invalid pose output format: contains non-finite values")
 
     return arr
-
-
-@dataclass
-class ProcessorStats:
-    """Statistics for DLC processor performance."""
-
-    frames_enqueued: int = 0
-    frames_processed: int = 0
-    frames_dropped: int = 0
-    queue_size: int = 0
-    processing_fps: float = 0.0
-    average_latency: float = 0.0
-    last_latency: float = 0.0
-    # Profiling metrics
-    avg_queue_wait: float = 0.0
-    avg_inference_time: float = 0.0
-    avg_signal_emit_time: float = 0.0
-    avg_total_process_time: float = 0.0
-    # Separated timing for GPU vs socket processor
-    avg_gpu_inference_time: float = 0.0  # Pure model inference
-    avg_processor_overhead: float = 0.0  # Socket processor overhead
 
 
 class DLCLiveProcessor(QObject):
