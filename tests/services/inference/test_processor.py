@@ -212,7 +212,7 @@ def test_reset_clears_statistics() -> None:
     assert stats.processing_fps == 0.0
 
 
-def test_reset_raises_when_worker_does_not_stop(
+def test_reset_returns_false_when_worker_does_not_stop(
     monkeypatch,
 ) -> None:
     processor = PoseProcessor()
@@ -223,11 +223,36 @@ def test_reset_raises_when_worker_does_not_stop(
         lambda: False,
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="Failed to stop worker thread",
-    ):
-        processor.reset()
+    stopped = processor.reset()
+
+    assert stopped is False
+
+
+def test_failed_reset_preserves_runtime_statistics(
+    monkeypatch,
+) -> None:
+    processor = PoseProcessor()
+    processor._frames_enqueued = 4
+    processor._frames_processed = 3
+    processor._frames_dropped = 2
+    processor._latencies.append(1.0)
+
+    monkeypatch.setattr(
+        processor,
+        "_stop_worker",
+        lambda: False,
+    )
+
+    stopped = processor.reset()
+
+    assert stopped is False
+
+    stats = processor.get_stats()
+
+    assert stats.frames_enqueued == 4
+    assert stats.frames_processed == 3
+    assert stats.frames_dropped == 2
+    assert stats.average_latency == 1.0
 
 
 def test_create_dlc_pose_processor() -> None:
