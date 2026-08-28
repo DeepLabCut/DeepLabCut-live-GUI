@@ -855,7 +855,6 @@ class DLCLiveMainWindow(QMainWindow):
 
         # Multi-camera controller signals (used for both single and multi-camera modes)
         self.multi_camera_controller.frame_ready.connect(self._on_multi_frame_processing_ready)
-        self.multi_camera_controller.display_ready.connect(self._on_multi_frame_display_ready)
         self.multi_camera_controller.all_started.connect(self._on_multi_camera_started)
         self.multi_camera_controller.all_stopped.connect(self._on_multi_camera_stopped)
         self.multi_camera_controller.camera_error.connect(self._on_multi_camera_error)
@@ -1702,6 +1701,7 @@ class DLCLiveMainWindow(QMainWindow):
         """
         self._multi_camera_frames = frame_data.frames
         self._multi_camera_display_ids = frame_data.display_ids or {}
+        self._display_dirty = True
         self._try_start_pending_recording()
         src_id = frame_data.source_camera_id
         if src_id:
@@ -1754,15 +1754,6 @@ class DLCLiveMainWindow(QMainWindow):
 
             self._dlc_timing.note_frame()
             self._dlc_timing.maybe_log()
-
-    def _on_multi_frame_display_ready(self, frame_data: MultiFrameData) -> None:
-        """Throttled UI/display path.
-
-        Called at GUI_MAX_DISPLAY_FPS, not at camera capture FPS for performance reasons.
-        """
-        self._multi_camera_frames = frame_data.frames
-        self._multi_camera_display_ids = frame_data.display_ids or {}
-        self._display_dirty = True
 
     def _on_multi_camera_started(self) -> None:
         """Handle all cameras started event."""
