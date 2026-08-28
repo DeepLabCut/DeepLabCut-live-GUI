@@ -266,14 +266,21 @@ class PoseProcessor(QObject):
                         continue
 
             try:
-                wait_start = time.perf_counter()
-                frame, ts, enq = self._queue.get(timeout=0.05)
-                qwait = time.perf_counter() - wait_start
+                frame, ts, enq = self._queue.get(
+                    timeout=0.05,
+                )
             except queue.Empty:
-                continue
+                break
+            else:
+                queue_wait_time = max(0.0, time.perf_counter() - enq)
 
             try:
-                self._process_frame(frame, ts, enq, queue_wait_time=qwait)
+                self._process_frame(
+                    frame,
+                    ts,
+                    enq,
+                    queue_wait_time=queue_wait_time,
+                )
             except Exception as exc:
                 logger.exception("Pose inference failed", exc_info=exc)
                 self.error.emit(str(exc))
