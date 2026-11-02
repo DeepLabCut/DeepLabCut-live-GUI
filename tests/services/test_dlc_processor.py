@@ -12,6 +12,8 @@ from dlclivegui.config import DLCProcessorSettings
 from dlclivegui.processors.processor_utils import ProcessorSpec
 from dlclivegui.services.dlc_processor import (
     DLCLiveProcessor,
+)
+from dlclivegui.services.inference.base import (
     ProcessorStats,
     WorkerState,
 )

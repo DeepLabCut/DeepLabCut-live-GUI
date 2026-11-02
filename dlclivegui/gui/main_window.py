@@ -65,6 +65,7 @@ from dlclivegui.config import (
     VisualizationSettings,
 )
 
+from ..display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
 from ..processors.processor_utils import (
     create_spec_from_scan,
     default_processors_dir,
@@ -77,7 +78,6 @@ from ..processors.processor_utils import (
 from ..services.dlc_processor import DLCLiveProcessor, PoseResult
 from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id, get_display_id
 from ..services.recording_manager import RecordingManager
-from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import WorkerTimingStats, format_dlc_stats
 from ..utils.utils import FPSTracker
