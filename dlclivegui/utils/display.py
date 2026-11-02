@@ -113,7 +113,7 @@ def create_tiled_frame(
             resized,
             label,
             (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
+            cv2.FONT_HERSHEY_TRIPLEX,
             0.7,
             (0, 255, 0),
             2,
