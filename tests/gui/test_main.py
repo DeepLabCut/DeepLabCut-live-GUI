@@ -58,7 +58,6 @@ def test_preview_renders_frames(
         def finish_start():
             ctrl.all_started.emit()
             ctrl.frame_ready.emit(frame_data)
-            ctrl.display_ready.emit(frame_data)
 
         QTimer.singleShot(0, finish_start)
 

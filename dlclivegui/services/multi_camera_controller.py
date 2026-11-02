@@ -17,7 +17,6 @@ from dlclivegui.cameras.factory import camera_identity_key
 
 # from dlclivegui.config import CameraSettings
 from dlclivegui.config import (
-    GUI_MAX_DISPLAY_FPS,
     MULTI_CAMERA_WORKER_DO_LOG_TIMING,
     CameraSettings,
     CameraTriggerSettings,
@@ -108,11 +107,10 @@ class MultiCameraController(QObject):
     """Controller for managing multiple cameras simultaneously."""
 
     # Signals
-    frame_ready = Signal(object)  # MultiFrameData (full cam FPS; inference only)
+    frame_ready = Signal(object)  # MultiFrameData (full cam FPS; inference and display)
     # recording_frame_ready = Signal(
     #     str, object, float, object
     # )  # camera_id, frame, timestamp, timestamp_metadata (full cam FPS; for recording)
-    display_ready = Signal(object)  # MultiFrameData for GUI display (throttled to GUI_MAX_DISPLAY_FPS)
     camera_started = Signal(str, object)  # camera_id, settings
     camera_stopped = Signal(str)  # camera_id
     camera_error = Signal(str, str)  # camera_id, error_message
@@ -142,9 +140,6 @@ class MultiCameraController(QObject):
         self._failed_cameras: dict[str, str] = {}  # camera_id -> error message
         self._expected_cameras: int = 0  # Number of cameras we're trying to start
 
-        # GUI display max FPS (for throttling display updates when many cameras are active)
-        self._gui_display_max_fps: float = GUI_MAX_DISPLAY_FPS
-        self._gui_display_last_emit: float = 0.0
         # Performance logs
         self._timing_per_cam: dict[str, WorkerTimingStats] = {}
 
@@ -330,7 +325,6 @@ class MultiCameraController(QObject):
 
         self._running = False
         self._timing_per_cam.clear()
-        self._gui_display_last_emit = 0.0
 
         self._workers.clear()
         self._settings.clear()
