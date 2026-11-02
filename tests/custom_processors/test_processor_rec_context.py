@@ -252,7 +252,7 @@ def test_main_window_get_processor_instance_prefers_direct_processor(main_window
     processor = HookProcessor()
     win = make_window_shell(main_window_cls, processor=processor)
 
-    assert win._get_dlc_processor_instance() is processor
+    assert win._get_dlc_custom_processor_instance() is processor
 
 
 def test_main_window_get_processor_instance_falls_back_to_dlclive_processor(main_window_cls):
@@ -260,7 +260,7 @@ def test_main_window_get_processor_instance_falls_back_to_dlclive_processor(main
     win = main_window_cls.__new__(main_window_cls)
     win._dlc = SimpleNamespace(_processor=None, _dlc=SimpleNamespace(processor=processor))
 
-    assert win._get_dlc_processor_instance() is processor
+    assert win._get_dlc_custom_processor_instance() is processor
 
 
 def test_main_window_notify_processor_recording_started_calls_hook(main_window_cls, tmp_path):

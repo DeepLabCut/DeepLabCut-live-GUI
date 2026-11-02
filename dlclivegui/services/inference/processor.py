@@ -1,0 +1,323 @@
+import logging
+import queue
+import threading
+import time
+from collections import deque
+from collections.abc import Callable
+from typing import Any, Literal
+
+import numpy as np
+from PySide6.QtCore import QObject, Signal
+
+from dlclivegui.config import MODEL_INFERENCE_PROFILING_ENABLED
+from dlclivegui.services.dlc_processor import DLCLiveProcessor
+
+from .base import PoseBackend, PoseResult, ProcessorStats
+
+logger = logging.getLogger(__name__)
+PoseBackendName = Literal["dlc", "poet"]
+
+
+class PoseProcessor(QObject):
+    """
+    Background pose estimation using a pluggable backend.
+
+    backend_factory: () -> backend implementing init_inference() and get_pose()
+    """
+
+    pose_ready = Signal(object)
+    error = Signal(str)
+    initialized = Signal(bool)
+    frame_processed = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._backend_factory: Callable[[], PoseBackend] | None = None
+        self._backend: PoseBackend | None = None
+
+        self._queue: queue.Queue[Any] | None = None
+        self._worker_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+
+        self._frames_enqueued = 0
+        self._frames_processed = 0
+        self._frames_dropped = 0
+        self._latencies: deque[float] = deque(maxlen=60)
+        self._processing_times: deque[float] = deque(maxlen=60)
+        self._queue_wait_times: deque[float] = deque(maxlen=60)
+        self._inference_times: deque[float] = deque(maxlen=60)
+        self._signal_emit_times: deque[float] = deque(maxlen=60)
+        self._total_process_times: deque[float] = deque(maxlen=60)
+        self._stats_lock = threading.Lock()
+
+    def configure(self, backend_factory: Callable[[], PoseBackend]) -> None:
+        self._backend_factory = backend_factory
+
+    def is_configured(self) -> bool:
+        return self._backend_factory is not None
+
+    def reset(self) -> bool:
+        if not self._stop_worker():
+            return False
+
+        self._backend = None
+
+        with self._stats_lock:
+            self._frames_enqueued = 0
+            self._frames_processed = 0
+            self._frames_dropped = 0
+            self._latencies.clear()
+            self._processing_times.clear()
+            self._queue_wait_times.clear()
+            self._inference_times.clear()
+            self._signal_emit_times.clear()
+            self._total_process_times.clear()
+
+        return True
+
+    def shutdown(self) -> bool:
+        return self.reset()
+
+    def enqueue_frame(self, frame: np.ndarray, timestamp: float) -> None:
+        if self._worker_thread is None:
+            self._start_worker(frame.copy(), timestamp)
+            return
+
+        if self._queue is None:
+            return
+
+        try:
+            self._queue.put_nowait((frame.copy(), timestamp, time.perf_counter()))
+            with self._stats_lock:
+                self._frames_enqueued += 1
+        except queue.Full:
+            with self._stats_lock:
+                self._frames_dropped += 1
+
+    def get_stats(self) -> ProcessorStats:
+        queue_size = self._queue.qsize() if self._queue is not None else 0
+        with self._stats_lock:
+            avg_latency = sum(self._latencies) / len(self._latencies) if self._latencies else 0.0
+            last_latency = self._latencies[-1] if self._latencies else 0.0
+
+            if len(self._processing_times) >= 2:
+                duration = self._processing_times[-1] - self._processing_times[0]
+                processing_fps = (len(self._processing_times) - 1) / duration if duration > 0 else 0.0
+            else:
+                processing_fps = 0.0
+
+            avg_queue_wait = (
+                sum(self._queue_wait_times) / len(self._queue_wait_times) if self._queue_wait_times else 0.0
+            )
+            avg_inference = sum(self._inference_times) / len(self._inference_times) if self._inference_times else 0.0
+            avg_signal_emit = (
+                sum(self._signal_emit_times) / len(self._signal_emit_times) if self._signal_emit_times else 0.0
+            )
+            avg_total = (
+                sum(self._total_process_times) / len(self._total_process_times) if self._total_process_times else 0.0
+            )
+
+            return ProcessorStats(
+                frames_enqueued=self._frames_enqueued,
+                frames_processed=self._frames_processed,
+                frames_dropped=self._frames_dropped,
+                queue_size=queue_size,
+                processing_fps=processing_fps,
+                average_latency=avg_latency,
+                last_latency=last_latency,
+                avg_queue_wait=avg_queue_wait,
+                avg_inference_time=avg_inference,
+                avg_signal_emit_time=avg_signal_emit,
+                avg_total_process_time=avg_total,
+            )
+
+    def _start_worker(self, init_frame: np.ndarray, init_timestamp: float) -> None:
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            return
+        self._queue = queue.Queue(maxsize=1)
+        self._stop_event.clear()
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            args=(init_frame, init_timestamp),
+            name="PoseWorker",
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    def _stop_worker(self) -> bool:
+        worker = self._worker_thread
+        if worker is None:
+            return True
+
+        self._stop_event.set()
+        worker.join(timeout=2.0)
+
+        if worker.is_alive():
+            logger.warning("Pose worker did not stop within the timeout.")
+            return False
+
+        self._worker_thread = None
+        self._queue = None
+
+        backend = self._backend
+        self._backend = None
+
+        if backend is not None:
+            try:
+                backend.close()
+            except Exception:
+                logger.exception("Failed to close pose backend.")
+        return True
+
+    def _process_frame(
+        self,
+        frame: np.ndarray,
+        timestamp: float,
+        enqueue_time: float,
+        *,
+        queue_wait_time: float,
+    ) -> None:
+        backend = self._backend
+        if backend is None:
+            raise RuntimeError("Pose backend is not initialized.")
+
+        inference_started = time.perf_counter()
+
+        pose = backend.get_pose(
+            frame,
+            frame_time=timestamp,
+        )
+        packet = backend.make_pose_packet(pose)
+
+        inference_time = time.perf_counter() - inference_started
+
+        signal_started = time.perf_counter()
+        self.pose_ready.emit(
+            PoseResult(
+                pose=pose,
+                timestamp=timestamp,
+                packet=packet,
+            )
+        )
+        signal_time = time.perf_counter() - signal_started
+
+        finished = time.perf_counter()
+        latency = finished - enqueue_time
+        total_time = finished - enqueue_time
+
+        with self._stats_lock:
+            self._frames_processed += 1
+            self._latencies.append(latency)
+            self._processing_times.append(finished)
+
+            if MODEL_INFERENCE_PROFILING_ENABLED:
+                self._queue_wait_times.append(queue_wait_time)
+                self._inference_times.append(inference_time)
+                self._signal_emit_times.append(signal_time)
+                self._total_process_times.append(total_time)
+
+        self.frame_processed.emit()
+
+    def _worker_loop(
+        self,
+        init_frame: np.ndarray,
+        init_timestamp: float,
+    ) -> None:
+        try:
+            if self._backend_factory is None:
+                raise RuntimeError("No backend configured.")
+
+            self._backend = self._backend_factory()
+
+            if self._stop_event.is_set():
+                return
+
+            self._backend.init_inference(init_frame)
+
+            if self._stop_event.is_set():
+                return
+
+            self.initialized.emit(True)
+
+            self._process_frame(
+                init_frame,
+                init_timestamp,
+                time.perf_counter(),
+                queue_wait_time=0.0,
+            )
+
+            with self._stats_lock:
+                self._frames_enqueued += 1
+
+            while not self._stop_event.is_set():
+                queue_ref = self._queue
+                if queue_ref is None:
+                    break
+
+                try:
+                    frame, timestamp, enqueued_at = queue_ref.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+
+                queue_wait_time = max(
+                    0.0,
+                    time.perf_counter() - enqueued_at,
+                )
+
+                try:
+                    self._process_frame(
+                        frame,
+                        timestamp,
+                        enqueued_at,
+                        queue_wait_time=queue_wait_time,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Pose inference failed",
+                        exc_info=exc,
+                    )
+                    self.error.emit(str(exc))
+                finally:
+                    try:
+                        queue_ref.task_done()
+                    except ValueError:
+                        pass
+
+        except Exception as exc:
+            if not self._stop_event.is_set():
+                logger.exception(
+                    "Failed to initialize pose backend",
+                    exc_info=exc,
+                )
+                self.error.emit(str(exc))
+                self.initialized.emit(False)
+
+        finally:
+            backend = self._backend
+            self._backend = None
+
+            if backend is not None:
+                try:
+                    backend.close()
+                except Exception:
+                    logger.exception("Failed to close pose backend.")
+
+            self._queue = None
+
+            if self._worker_thread is threading.current_thread():
+                self._worker_thread = None
+
+            logger.info("Pose worker thread exiting")
+
+
+def create_pose_processor(
+    backend: PoseBackendName,
+) -> DLCLiveProcessor | PoseProcessor:
+    """Create the processor service used for a pose backend."""
+    if backend == "dlc":
+        return DLCLiveProcessor()
+
+    if backend == "poet":
+        return PoseProcessor()
+
+    raise ValueError(f"Unsupported pose backend: {backend!r}.")

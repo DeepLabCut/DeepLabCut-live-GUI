@@ -1,3 +1,4 @@
+# dlclivegui/gui/misc/eliding_label.py
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCursor, QGuiApplication
 from PySide6.QtWidgets import QLabel, QSizePolicy, QToolTip
