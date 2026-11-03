@@ -29,7 +29,8 @@ dependencies = [
   "numpy",
   "opencv-python",
   "pydantic>=2",
-  "pyside6",
+  "pyside6!=6.12; python_version<'3.12'", # 6.12.0 aborts on refcount errors before 3.12 (PYSIDE-3474, PYSIDE-3486)
+  "pyside6; python_version>='3.12'",
   "qdarkstyle",
   "vidgear[core]",
 ]
