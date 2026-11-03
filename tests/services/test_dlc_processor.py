@@ -185,6 +185,67 @@ def test_worker_processes_frames(qtbot, monkeypatch_dlclive, settings_model):
         proc.reset()
 
 
+@pytest.mark.unit
+def test_custom_processor_receives_every_pose_in_frame_coordinates(qtbot, monkeypatch):
+    """The real DLCLive post-processing runs per frame: resize is undone and the processor gets the pose."""
+    from dlclive import DLCLive
+
+    from dlclivegui.services import dlc_processor as dlc_processor_module
+
+    class RecordingProcessor:
+        def __init__(self):
+            self.calls = []
+
+        def process(self, pose, **kwargs):
+            self.calls.append((pose.copy(), kwargs))
+            return pose
+
+    class FakeRunner:
+        def init_inference(self, _frame):
+            return np.array([[10.0, 20.0, 0.9]])
+
+        def get_pose(self, _frame):
+            return np.array([[10.0, 20.0, 0.9]])
+
+    class RealPostProcessDLCLive(DLCLive):
+        """DLCLive with only the model runner faked."""
+
+        def __init__(self, **options):
+            self.runner = FakeRunner()
+            self.processor = options["processor"]
+            self.resize = options["resize"]
+            self.cropping = None
+            self.dynamic = (False, 0.5, 10)
+            self.dynamic_cropping = None
+            self.display = None
+            self.convert2rgb = False
+            self.pose = None
+
+    monkeypatch.setattr(dlc_processor_module, "DLCLive", RealPostProcessDLCLive)
+    processor = RecordingProcessor()
+    proc = DLCLiveProcessor()
+    proc.configure(DLCProcessorSettings(model_path="dummy.pt", resize=0.5), processor=processor)
+
+    try:
+        frame = np.zeros((64, 64, 3), dtype=np.uint8)
+        with qtbot.waitSignal(proc.initialized, timeout=1500):
+            proc.enqueue_frame(frame, timestamp=1.0)
+        for i in range(5):
+            proc.enqueue_frame(frame, timestamp=2.0 + i)
+            qtbot.wait(5)
+        qtbot.waitUntil(lambda: proc.get_stats().frames_processed >= 3, timeout=3000)
+
+        per_frame = [(pose, kwargs) for pose, kwargs in processor.calls if "frame_time" in kwargs]
+        assert len(per_frame) >= 3
+        for pose, _kwargs in per_frame:
+            np.testing.assert_allclose(pose, [[20.0, 40.0, 0.9]])
+        frame_times = [kwargs["frame_time"] for _pose, kwargs in per_frame]
+        assert frame_times == sorted(set(frame_times))
+        assert set(frame_times) <= {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}
+    finally:
+        proc.reset()
+
+
 def test_enqueue_frame_drops_stale_when_queue_is_full(settings_model):
     proc = DLCLiveProcessor()
     proc.configure(settings_model)

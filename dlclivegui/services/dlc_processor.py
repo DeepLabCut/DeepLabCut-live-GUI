@@ -657,8 +657,9 @@ class DLCLiveProcessor(QObject):
             with self._worker_timing.measure("DLC.runner.get_pose"):
                 self._dlc.pose = self._dlc.runner.get_pose(processed_frame)
 
-            # with self._worker_timing.measure("DLC.post_process_pose"):
-            # raw_pose: Any = self._dlc._post_process_pose(processed_frame, frame_time=timestamp)
+            # Maps the pose back through resize/cropping and runs the custom processor.
+            with self._worker_timing.measure("DLC.post_process_pose"):
+                self._dlc.pose = self._dlc._post_process_pose(processed_frame, frame_time=timestamp)
 
             inference_time = time.perf_counter() - inference_start
         with self._worker_timing.measure("DLC.validate_pose"):
