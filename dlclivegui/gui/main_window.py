@@ -87,6 +87,7 @@ from .misc import layouts as lyts
 from .misc.drag_spinbox import ScrubSpinBox
 from .misc.eliding_label import ElidingPathLabel
 from .theme import LOGO, LOGO_ALPHA, AppStyle, apply_theme
+from .web_stream import WebStreamController
 
 logger = logging.getLogger("DLCLiveGUI")
 
@@ -152,6 +153,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._active_inference_camera_id: str | None = None
         self._running_cams_ids: set[str] = set()
         self._current_frame: np.ndarray | None = None
+        self._shown_frame: np.ndarray | None = None  # _current_frame + on-screen overlays
         self._raw_frame: np.ndarray | None = None
         self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
@@ -442,6 +444,16 @@ class DLCLiveMainWindow(QMainWindow):
         self.action_show_controls.toggled.connect(self.controls_dock.setVisible)
         self.controls_dock.visibilityChanged.connect(self.action_show_controls.setChecked)
         view_menu.addAction(self.action_show_controls)
+        ## Web stream (raw tiled frames, pulled on demand by the browser)
+        self._web_stream = WebStreamController(
+            self,
+            self._settings_store,
+            frame_source=lambda: self._current_frame,
+            overlay_frame_source=lambda: self._shown_frame,
+            settings=self._config.web_stream,
+            show_status=self.statusBar().showMessage,
+        )
+        self._web_stream.add_to_menu(view_menu)
         ## --------------------
         view_menu.addSeparator()
         ## Style actions
@@ -942,6 +954,8 @@ class DLCLiveMainWindow(QMainWindow):
         if hasattr(self, "bbox_color_combo"):
             color_ui.set_bbox_combo_from_bgr(self.bbox_color_combo, self._bbox_color)
 
+        self._web_stream.apply_settings(config.web_stream, restore_enabled=restore_local_prefs)
+
         # Processor
         ## Use custom processor checkbox state
         if hasattr(self, "use_custom_proc_checkbox"):
@@ -973,6 +987,7 @@ class DLCLiveMainWindow(QMainWindow):
             recording=self._recording_settings_from_ui(),
             bbox=self._bbox_settings_from_ui(),
             visualization=self._visualization_settings_from_ui(),
+            web_stream=self._web_stream.settings,
         )
 
     def _parse_json(self, value: str) -> dict:
@@ -1784,6 +1799,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.stop_preview_button.setEnabled(False)
 
         self._current_frame = None
+        self._shown_frame = None
         self._multi_camera_frames.clear()
         self._multi_camera_display_ids.clear()
         self._running_cams_ids.clear()
@@ -2133,6 +2149,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.preview_button.setEnabled(False)
         self.stop_preview_button.setEnabled(True)
         self._current_frame = None
+        self._shown_frame = None
         self._raw_frame = None
         self._last_pose = None
         self._multi_camera_frames.clear()
@@ -2330,6 +2347,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Create tiled frame on demand (moved from camera thread for performance)
         tiled = create_tiled_frame(self._multi_camera_frames, labels=self._multi_camera_display_ids)
         if tiled is not None:
+            # Read by the web stream's server threads: replace, never draw on in place (overlays copy first).
             self._current_frame = tiled
             self._update_video_display(tiled)
 
@@ -2610,6 +2628,8 @@ class DLCLiveMainWindow(QMainWindow):
                 scale=self._dlc_tile_scale,
             )
 
+        # Read by the web stream's server threads: replace, never draw on in place.
+        self._shown_frame = display_frame
         rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
 
         h, w, ch = rgb.shape
@@ -2700,7 +2720,9 @@ class DLCLiveMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # Qt overrides
+    # ------------------------------------------------------------------
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour
+        self._web_stream.shutdown()
         if self.multi_camera_controller.is_running():
             self.multi_camera_controller.stop(wait=True)
 

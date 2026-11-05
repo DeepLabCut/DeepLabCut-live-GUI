@@ -549,6 +549,21 @@ class RecordingSettings(BaseModel):
         return {}
 
 
+class WebStreamSettings(BaseModel):
+    """On-demand JPEG web view of the raw tiled preview.
+
+    On/off and network exposure (localhost vs all interfaces) are local QSettings
+    preferences, not part of the shareable config, so loading someone else's
+    config can neither start the stream nor expose it on the network.
+    """
+
+    port: int = Field(default=8080, ge=1, le=65535)
+    fps: float = Field(default=5.0, gt=0.0, le=30.0)
+    max_width: int = Field(default=640, ge=16)
+    max_height: int = Field(default=480, ge=16)
+    jpeg_quality: int = Field(default=70, ge=1, le=100)
+
+
 class ApplicationSettings(BaseModel):
     # optional: add a semantic version for migrations
     version: int = 1
@@ -558,6 +573,7 @@ class ApplicationSettings(BaseModel):
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
     bbox: BoundingBoxSettings = Field(default_factory=BoundingBoxSettings)
     visualization: VisualizationSettings = Field(default_factory=VisualizationSettings)
+    web_stream: WebStreamSettings = Field(default_factory=WebStreamSettings)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ApplicationSettings:
@@ -574,6 +590,7 @@ class ApplicationSettings(BaseModel):
         recording = RecordingSettings(**recording_data)
         bbox = BoundingBoxSettings(**bbox_data)
         visualization = VisualizationSettings(**visualization_data)
+        web_stream = WebStreamSettings(**data.get("web_stream", {}))
 
         return cls(
             camera=camera,
@@ -582,6 +599,7 @@ class ApplicationSettings(BaseModel):
             recording=recording,
             bbox=bbox,
             visualization=visualization,
+            web_stream=web_stream,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -596,6 +614,7 @@ class ApplicationSettings(BaseModel):
             "recording": self.recording.model_dump(),
             "bbox": self.bbox.model_dump(),
             "visualization": self.visualization.model_dump(),
+            "web_stream": self.web_stream.model_dump(),
         }
 
     @classmethod
