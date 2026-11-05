@@ -218,21 +218,19 @@ def test_from_settings_maps_every_field():
 
 
 @pytest.mark.unit
-def test_urls_for_loopback_bind(frame_box):
-    s = _make(frame_box, port=8123)
-    assert s.url == "http://127.0.0.1:8123/"
-    assert s.network_url is None
+def test_local_url(frame_box):
+    assert ws.local_url(LOOPBACK_HOST, 8123) == "http://127.0.0.1:8123/"
+    # A wildcard address is not browsable: show localhost.
+    assert ws.local_url(NETWORK_HOST, 8123) == "http://localhost:8123/"
+    assert _make(frame_box, port=8123, host=NETWORK_HOST).url == "http://localhost:8123/"  # no bind
 
 
 @pytest.mark.unit
-def test_urls_for_wildcard_bind(monkeypatch, frame_box):
-    # No bind: only URL formatting. A wildcard address is not browsable, so show localhost.
-    s = _make(frame_box, port=8123, host=NETWORK_HOST)
+def test_network_url(monkeypatch):
     monkeypatch.setattr(ws, "lan_ip", lambda: "192.168.1.20")
-    assert s.url == "http://localhost:8123/"
-    assert s.network_url == "http://192.168.1.20:8123/"
+    assert ws.network_url(8123) == "http://192.168.1.20:8123/"
     monkeypatch.setattr(ws, "lan_ip", lambda: None)
-    assert s.network_url is None
+    assert ws.network_url(8123) is None
 
 
 @pytest.mark.unit

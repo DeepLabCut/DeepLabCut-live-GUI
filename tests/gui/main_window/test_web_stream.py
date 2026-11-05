@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import QSettings, Qt
+from PySide6.QtGui import QGuiApplication
 
 from dlclivegui.config import ApplicationSettings, WebStreamSettings
 from dlclivegui.gui import web_stream as web_stream_mod
@@ -56,7 +57,14 @@ class TestWebStream:
     def test_actions_grouped_under_view_web_stream_submenu(self, window, ctl):
         view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
         submenu = next(a.menu() for a in view_menu.actions() if a.menu() and a.text() == "Web stream")
-        assert submenu.actions() == [ctl.action_enable, ctl.action_network]
+        items = submenu.actions()
+        assert [a.isSeparator() for a in items] == [False, False, True, False, False]
+        assert [a for a in items if not a.isSeparator()] == [
+            ctl.action_enable,
+            ctl.action_network,
+            ctl.action_open,
+            ctl.action_copy,
+        ]
 
     def test_off_and_local_by_default(self, ctl):
         assert not ctl.action_enable.isChecked()
@@ -83,13 +91,50 @@ class TestWebStream:
             ctl.action_enable.setChecked(False)
             assert ctl.streamer is None
 
-    def test_label_tracks_port_and_scope(self, ctl, monkeypatch):
+    def test_open_item_shows_url_and_is_clickable_only_while_running(self, ctl, monkeypatch):
+        opened = []
+        monkeypatch.setattr(web_stream_mod.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+
         ctl.apply_settings(WebStreamSettings(port=9123))
-        assert ctl.action_enable.text() == "Enable (port 9123, localhost only)"
+        assert ctl.action_open.text() == "Open http://127.0.0.1:9123/"  # configured port while stopped
+        assert not ctl.action_open.isEnabled()
+
+        ctl.action_enable.setChecked(True)
+        url = f"http://127.0.0.1:{ctl.streamer.port}/"  # actual bound port
+        assert ctl.action_open.text() == f"Open {url}"
+        assert ctl.action_open.isEnabled()
+        ctl.action_open.trigger()
+        assert opened == [url]
+
+        ctl.action_enable.setChecked(False)
+        assert not ctl.action_open.isEnabled()
+
+    def test_copy_link_only_for_other_devices_while_running(self, ctl, monkeypatch):
+        monkeypatch.setattr("dlclivegui.services.web_streamer.lan_ip", lambda: "192.168.1.20")
+        ctl.action_enable.setChecked(True)
+        assert not ctl.action_copy.isEnabled()  # localhost only
+        assert ctl.action_copy.text() == "Copy link for other devices"
 
         _answer_network_prompt(monkeypatch, ctl, True)
         ctl.action_network.setChecked(True)
-        assert ctl.action_enable.text() == "Enable (port 9123, network)"
+        url = f"http://192.168.1.20:{ctl.streamer.port}/"
+        assert ctl.action_copy.isEnabled()
+        assert ctl.action_copy.text() == f"Copy link for other devices: {url}"
+        assert ctl.action_open.text() == f"Open http://localhost:{ctl.streamer.port}/"
+
+        ctl.action_copy.trigger()
+        assert QGuiApplication.clipboard().text() == url
+
+        ctl.action_enable.setChecked(False)
+        assert not ctl.action_copy.isEnabled()
+
+    def test_copy_link_disabled_without_lan_address(self, ctl, monkeypatch):
+        monkeypatch.setattr("dlclivegui.services.web_streamer.lan_ip", lambda: None)
+        _answer_network_prompt(monkeypatch, ctl, True)
+        ctl.action_network.setChecked(True)
+        ctl.action_enable.setChecked(True)
+        assert not ctl.action_copy.isEnabled()
+        assert ctl.action_copy.text() == "Copy link for other devices"
 
     def test_param_change_restarts_only_when_running_and_changed(self, ctl):
         ctl.action_enable.setChecked(True)

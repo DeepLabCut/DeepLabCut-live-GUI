@@ -11,12 +11,19 @@ import threading
 from collections.abc import Callable
 
 import numpy as np
-from PySide6.QtCore import QSignalBlocker
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QSignalBlocker, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QMenu, QMessageBox, QWidget
 
 from ..config import WebStreamSettings
-from ..services.web_streamer import LOOPBACK_HOST, NETWORK_HOST, SHUTDOWN_TIMEOUT, WebStreamer
+from ..services.web_streamer import (
+    LOOPBACK_HOST,
+    NETWORK_HOST,
+    SHUTDOWN_TIMEOUT,
+    WebStreamer,
+    local_url,
+    network_url,
+)
 from ..utils.settings_store import DLCLiveGUISettingsStore
 
 logger = logging.getLogger(__name__)
@@ -25,8 +32,9 @@ _NETWORK_WARNING = (
     "Anyone on your network who can reach this computer will be able to watch the camera "
     "stream, without a password.\n\n"
     "The stream is view-only: it cannot control the app or read files.\n\n"
-    "Allow network access?"
+    "Allow other devices?"
 )
+_COPY_LINK_TEXT = "Copy link for other devices"
 
 
 def _set_checked_silently(action: QAction, checked: bool) -> None:
@@ -35,7 +43,10 @@ def _set_checked_silently(action: QAction, checked: bool) -> None:
 
 
 class WebStreamController:
-    """Owns the web stream's menu actions, preferences and server lifecycle."""
+    """Owns the web stream's menu actions, preferences and server lifecycle.
+
+    Menu: two switches (stream on/off, other devices allowed), then the URLs as actions.
+    """
 
     def __init__(
         self,
@@ -53,12 +64,16 @@ class WebStreamController:
         self._streamer: WebStreamer | None = None
         self._pending_shutdown: threading.Thread | None = None
 
-        self.action_enable = QAction(parent, checkable=True)
+        self.action_enable = QAction("Stream to browser", parent, checkable=True)
         self.action_enable.toggled.connect(self._on_enable_toggled)
-        self.action_network = QAction("Allow network access", parent, checkable=True)
+        self.action_network = QAction("Allow other devices (no password)", parent, checkable=True)
         self.action_network.setChecked(self._store.get_web_stream_allow_network())  # before connect: no prompt
         self.action_network.toggled.connect(self._on_network_toggled)
-        self._update_label()
+        self.action_open = QAction(parent)
+        self.action_open.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(self._local_url())))
+        self.action_copy = QAction(_COPY_LINK_TEXT, parent)
+        self.action_copy.triggered.connect(self._copy_network_url)
+        self._refresh_menu()
 
     # ------------------------------------------------------------------
     # Public API (main window)
@@ -66,6 +81,9 @@ class WebStreamController:
         """Add a "Web stream" submenu holding the stream's actions to ``menu``."""
         submenu = menu.addMenu("Web stream")
         submenu.addActions([self.action_enable, self.action_network])
+        submenu.addSeparator()
+        submenu.addActions([self.action_open, self.action_copy])
+        submenu.aboutToShow.connect(self._refresh_menu)  # LAN address can change while running
         return submenu
 
     @property
@@ -83,11 +101,11 @@ class WebStreamController:
         """
         changed = settings != self._settings
         self._settings = settings.model_copy()
-        self._update_label()
         if self._streamer is not None and changed:
             self._restart()
         elif restore_enabled and self._streamer is None and self._store.get_web_stream_enabled():
             self._start()
+        self._refresh_menu()
 
     def shutdown(self) -> None:
         """Non-blocking stop for app exit; server threads are daemons and the OS releases the port."""
@@ -103,20 +121,21 @@ class WebStreamController:
             if self._streamer is not None:
                 self._stop()
                 self._show_status("Web stream stopped", 3000)
+        self._refresh_menu()
 
     def _on_network_toggled(self, allow: bool) -> None:
         if allow and not self._confirm_network():
             _set_checked_silently(self.action_network, False)
             return
         self._store.set_web_stream_allow_network(allow)
-        self._update_label()
         if self._streamer is not None:
             self._restart()
+        self._refresh_menu()
 
     def _confirm_network(self) -> bool:
         reply = QMessageBox.question(
             self._parent,
-            "Allow network access?",
+            "Allow other devices?",
             _NETWORK_WARNING,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -124,14 +143,37 @@ class WebStreamController:
         return reply == QMessageBox.StandardButton.Yes
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # URLs
     def _host(self) -> str:
         return NETWORK_HOST if self.action_network.isChecked() else LOOPBACK_HOST
 
-    def _update_label(self) -> None:
-        scope = "network" if self._host() == NETWORK_HOST else "localhost only"
-        self.action_enable.setText(f"Enable (port {self._settings.port}, {scope})")
+    def _port(self) -> int:
+        return self._streamer.port if self._streamer is not None else self._settings.port
 
+    def _local_url(self) -> str:
+        return local_url(self._host(), self._port())
+
+    def _network_url(self) -> str | None:
+        return network_url(self._port()) if self._host() == NETWORK_HOST else None
+
+    def _refresh_menu(self) -> None:
+        """Sync URL actions with state; they are only clickable while the stream runs."""
+        running = self._streamer is not None
+        self.action_open.setText(f"Open {self._local_url()}")
+        self.action_open.setEnabled(running)
+        url = self._network_url() if running else None
+        self.action_copy.setText(f"{_COPY_LINK_TEXT}: {url}" if url else _COPY_LINK_TEXT)
+        self.action_copy.setEnabled(url is not None)
+
+    def _copy_network_url(self) -> None:
+        url = self._network_url()
+        if url is None:
+            return
+        QGuiApplication.clipboard().setText(url)
+        self._show_status(f"Copied {url}", 3000)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
     def _start(self) -> bool:
         """Start the stream and sync the menu check state. Returns whether it is running."""
         # A quick off/on toggle can race the previous server's background shutdown; wait for the port.
@@ -151,12 +193,9 @@ class WebStreamController:
 
         self._streamer = streamer
         _set_checked_silently(self.action_enable, True)
-        message = f"Web stream at {streamer.url}"
         if host == NETWORK_HOST:
-            network_url = streamer.network_url
-            message += f" (network: {network_url})" if network_url else " (network: no LAN address found)"
             logger.warning("Web stream is reachable from the network without authentication")
-        self._show_status(message, 8000)
+        self._show_status(f"Web stream at {self._local_url()} (links in View > Web stream)", 8000)
         return True
 
     def _stop(self, wait: bool = False) -> None:

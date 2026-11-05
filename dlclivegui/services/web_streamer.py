@@ -46,6 +46,17 @@ def lan_ip() -> str | None:
     return None if ip.startswith("127.") or ip in _WILDCARD_HOSTS else ip
 
 
+def local_url(host: str, port: int) -> str:
+    """URL to open on this machine for a server bound to ``host`` (a wildcard address is not browsable)."""
+    return f"http://{'localhost' if host in _WILDCARD_HOSTS else host}:{port}/"
+
+
+def network_url(port: int) -> str | None:
+    """URL for other machines to reach a server bound to all interfaces, or ``None`` if no LAN address."""
+    ip = lan_ip()
+    return f"http://{ip}:{port}/" if ip else None
+
+
 class _StreamServer(ThreadingHTTPServer):
     """``ThreadingHTTPServer`` with bind fail when port is already taken, cross-platform.
 
@@ -128,17 +139,7 @@ class WebStreamer:
 
     @property
     def url(self) -> str:
-        """URL to open on this machine (a wildcard bind address is not browsable)."""
-        host = "localhost" if self._host in _WILDCARD_HOSTS else self._host
-        return f"http://{host}:{self.port}/"
-
-    @property
-    def network_url(self) -> str | None:
-        """URL for other machines when bound to all interfaces, else ``None``."""
-        if self._host not in _WILDCARD_HOSTS:
-            return None
-        ip = lan_ip()
-        return f"http://{ip}:{self.port}/" if ip else None
+        return local_url(self._host, self.port)
 
     def is_running(self) -> bool:
         return self._server is not None
