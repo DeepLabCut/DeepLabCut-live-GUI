@@ -7,6 +7,7 @@ encoding is capped at ``fps`` regardless of client count.
 from __future__ import annotations
 
 import logging
+import socket
 import sys
 import threading
 import time
@@ -16,16 +17,33 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import cv2
 import numpy as np
 
+from dlclivegui.config import WebStreamSettings
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8080
-DEFAULT_FPS = 5.0
-DEFAULT_MAX_SIZE = (640, 480)
-DEFAULT_JPEG_QUALITY = 70
+# User-facing defaults (port, fps, size, quality) live in ``WebStreamSettings``;
+# the values below are server internals.
+LOOPBACK_HOST = "127.0.0.1"
+NETWORK_HOST = "0.0.0.0"  # all interfaces; no auth
+SHUTDOWN_TIMEOUT = 2.0  # max wait for a server to release its port, wherever a caller waits
 _POLL_INTERVAL = 0.1  # serve_forever shutdown latency
-_STOP_WAIT_TIMEOUT = 2.0
 _CLIENT_TIMEOUT = 5.0  # drop idle or stalled connections
+_WILDCARD_HOSTS = {"", "0.0.0.0"}
+
+
+def lan_ip() -> str | None:
+    """Best-effort IPv4 address other machines can reach, or ``None`` (offline, no route).
+
+    A UDP ``connect`` sends nothing; it only makes the OS pick the outgoing interface.
+    ``gethostbyname(gethostname())`` is avoided: it returns 127.0.1.1 on Debian/Ubuntu.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1 (RFC 5737), never routed to a real host
+            ip = s.getsockname()[0]
+    except OSError:
+        return None
+    return None if ip.startswith("127.") or ip in _WILDCARD_HOSTS else ip
 
 
 class _StreamServer(ThreadingHTTPServer):
@@ -68,11 +86,12 @@ class WebStreamer:
     def __init__(
         self,
         frame_source: Callable[[], np.ndarray | None],
-        host: str = DEFAULT_HOST,
-        port: int = DEFAULT_PORT,
-        fps: float = DEFAULT_FPS,
-        max_size: tuple[int, int] = DEFAULT_MAX_SIZE,
-        jpeg_quality: int = DEFAULT_JPEG_QUALITY,
+        *,
+        host: str,
+        port: int,
+        fps: float,
+        max_size: tuple[int, int],
+        jpeg_quality: int,
     ):
         self._frame_source = frame_source
         self._host = host
@@ -90,10 +109,36 @@ class WebStreamer:
         self._cached_jpeg: bytes | None = None
         self._last_encode = 0.0
 
+    @classmethod
+    def from_settings(
+        cls, frame_source: Callable[[], np.ndarray | None], settings: WebStreamSettings, *, host: str
+    ) -> WebStreamer:
+        return cls(
+            frame_source,
+            host=host,
+            port=settings.port,
+            fps=settings.fps,
+            max_size=(settings.max_width, settings.max_height),
+            jpeg_quality=settings.jpeg_quality,
+        )
+
+    @property
+    def port(self) -> int:
+        return self._server.server_address[1] if self._server else self._port
+
     @property
     def url(self) -> str:
-        port = self._server.server_address[1] if self._server else self._port
-        return f"http://{self._host}:{port}/"
+        """URL to open on this machine (a wildcard bind address is not browsable)."""
+        host = "localhost" if self._host in _WILDCARD_HOSTS else self._host
+        return f"http://{host}:{self.port}/"
+
+    @property
+    def network_url(self) -> str | None:
+        """URL for other machines when bound to all interfaces, else ``None``."""
+        if self._host not in _WILDCARD_HOSTS:
+            return None
+        ip = lan_ip()
+        return f"http://{ip}:{self.port}/" if ip else None
 
     def is_running(self) -> bool:
         return self._server is not None
@@ -135,7 +180,7 @@ class WebStreamer:
             self._cached_src = None
             self._cached_jpeg = None
         if wait:
-            shutdown_thread.join(timeout=_STOP_WAIT_TIMEOUT)
+            shutdown_thread.join(timeout=SHUTDOWN_TIMEOUT)
         return shutdown_thread
 
     def latest_jpeg(self) -> bytes | None:

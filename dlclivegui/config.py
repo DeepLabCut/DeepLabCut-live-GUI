@@ -552,21 +552,16 @@ class RecordingSettings(BaseModel):
 class WebStreamSettings(BaseModel):
     """On-demand JPEG web view of the raw tiled preview.
 
-    On/off is a local QSettings preference, not part of the shareable config,
-    to avoid silently enabling the web stream when loading someone else's config.
+    On/off and network exposure (localhost vs all interfaces) are local QSettings
+    preferences, not part of the shareable config, so loading someone else's
+    config can neither start the stream nor expose it on the network.
     """
 
-    host: str = "127.0.0.1"  # "0.0.0.0" exposes the stream on all interfaces (no auth)
     port: int = Field(default=8080, ge=1, le=65535)
     fps: float = Field(default=5.0, gt=0.0, le=30.0)
     max_width: int = Field(default=640, ge=16)
     max_height: int = Field(default=480, ge=16)
     jpeg_quality: int = Field(default=70, ge=1, le=100)
-
-    @field_validator("host", mode="before")
-    @classmethod
-    def _normalize_host(cls, v) -> str:
-        return str(v or "").strip() or "127.0.0.1"
 
 
 class ApplicationSettings(BaseModel):

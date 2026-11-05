@@ -205,24 +205,28 @@ def test_build_writegear_options_invalid_fps_uses_default():
 def test_web_stream_defaults_when_missing_from_config():
     settings = ApplicationSettings.from_dict({})
     assert settings.web_stream == WebStreamSettings()
-    assert settings.web_stream.host == "127.0.0.1"
 
 
 @pytest.mark.unit
 def test_web_stream_roundtrips_through_json(tmp_path):
-    ws = WebStreamSettings(host="0.0.0.0", port=9000, fps=2.0, max_width=320, max_height=240, jpeg_quality=50)
+    ws = WebStreamSettings(port=9000, fps=2.0, max_width=320, max_height=240, jpeg_quality=50)
     path = tmp_path / "cfg.json"
     ApplicationSettings(web_stream=ws).save(path)
     assert ApplicationSettings.load(path).web_stream == ws
 
 
 @pytest.mark.unit
-def test_web_stream_on_off_is_not_in_shareable_config():
-    # On/off lives in local QSettings; a config file must never carry or apply it.
-    assert "enabled" not in ApplicationSettings().to_dict()["web_stream"]
-    loaded = ApplicationSettings.from_dict({"web_stream": {"enabled": True, "host": "0.0.0.0"}})
-    assert not hasattr(loaded.web_stream, "enabled")
-    assert loaded.web_stream.host == "0.0.0.0"
+def test_web_stream_exposure_is_not_in_shareable_config():
+    # On/off and network exposure live in local QSettings; a config file must never carry or apply them.
+    assert set(ApplicationSettings().to_dict()["web_stream"]) == {
+        "port",
+        "fps",
+        "max_width",
+        "max_height",
+        "jpeg_quality",
+    }
+    loaded = ApplicationSettings.from_dict({"web_stream": {"enabled": True, "host": "0.0.0.0", "port": 9000}})
+    assert loaded.web_stream == WebStreamSettings(port=9000)
 
 
 @pytest.mark.unit
@@ -233,8 +237,3 @@ def test_web_stream_on_off_is_not_in_shareable_config():
 def test_web_stream_rejects_invalid_values(field, value):
     with pytest.raises(ValueError):
         WebStreamSettings(**{field: value})
-
-
-@pytest.mark.unit
-def test_web_stream_blank_host_falls_back_to_localhost():
-    assert WebStreamSettings(host="  ").host == "127.0.0.1"

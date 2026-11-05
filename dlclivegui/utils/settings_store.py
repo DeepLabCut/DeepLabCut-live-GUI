@@ -39,6 +39,7 @@ class DLCLiveGUISettingsStore:
     KEY_FAST_ENCODING = "recording/fast_encoding"
     KEY_REC_FILENAME = "recording/rec_filename"
     KEY_WEB_STREAM_ENABLED = "web_stream/enabled"
+    KEY_WEB_STREAM_ALLOW_NETWORK = "web_stream/allow_network"
 
     def __init__(self, qsettings: QSettings | None = None):
         self._s = qsettings or QSettings("DeepLabCut", "DLCLiveGUI")
@@ -116,6 +117,12 @@ class DLCLiveGUISettingsStore:
 
     def set_web_stream_enabled(self, enabled: bool) -> None:
         self._s.setValue(self.KEY_WEB_STREAM_ENABLED, bool(enabled))
+
+    def get_web_stream_allow_network(self, default: bool = False) -> bool:
+        return self._get_bool(self.KEY_WEB_STREAM_ALLOW_NETWORK, default=default)
+
+    def set_web_stream_allow_network(self, allow: bool) -> None:
+        self._s.setValue(self.KEY_WEB_STREAM_ALLOW_NETWORK, bool(allow))
 
     def get_rec_filename(self) -> str:
         return self._get_optional_str(self.KEY_REC_FILENAME) or ""
