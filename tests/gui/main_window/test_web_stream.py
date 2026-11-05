@@ -1,22 +1,30 @@
 # tests/gui/main_window/test_web_stream.py
 from __future__ import annotations
 
-import socket
-
 import pytest
 
 from dlclivegui.config import WebStreamSettings
+from dlclivegui.gui import main_window as main_window_mod
+from dlclivegui.services.web_streamer import WebStreamer
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+@pytest.fixture(autouse=True)
+def _ephemeral_port(monkeypatch):
+    """Bind port 0 whatever the settings say: the OS assigns a free port atomically,
+    so no other process can take it between "find a free port" and "bind".
+    Same-port rebinding is covered by tests/services/test_web_streamer.py."""
+
+    class _EphemeralPortStreamer(WebStreamer):
+        def __init__(self, *args, **kwargs):
+            kwargs["port"] = 0
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(main_window_mod, "WebStreamer", _EphemeralPortStreamer)
 
 
 @pytest.fixture
 def ws_window(window):
-    window._apply_web_stream_settings(WebStreamSettings(port=_free_port()))
+    window._apply_web_stream_settings(WebStreamSettings())
     yield window
     window._stop_web_stream(wait=True)
 
@@ -33,18 +41,20 @@ class TestWebStream:
         w = ws_window
         w.action_web_stream.setChecked(True)
         assert w._web_streamer is not None and w._web_streamer.is_running()
+        assert w._web_streamer._port == 0  # _ephemeral_port override is in effect
         assert w._settings_store.get_web_stream_enabled() is True
 
         w.action_web_stream.setChecked(False)
         assert w._web_streamer is None
         assert w._settings_store.get_web_stream_enabled() is False
 
-    def test_quick_retoggle_rebinds_same_port(self, ws_window):
+    def test_quick_retoggle_restarts(self, ws_window):
         w = ws_window
         for _ in range(3):
             w.action_web_stream.setChecked(True)
-            assert w._web_streamer is not None, "re-enable failed to rebind the port"
+            assert w._web_streamer is not None and w._web_streamer.is_running()
             w.action_web_stream.setChecked(False)
+            assert w._web_streamer is None
 
     def test_label_tracks_settings(self, ws_window):
         w = ws_window
@@ -67,7 +77,7 @@ class TestWebStream:
     def test_config_load_never_starts_stream(self, ws_window):
         w = ws_window
         w._settings_store.set_web_stream_enabled(True)
-        w._apply_web_stream_settings(WebStreamSettings(port=_free_port()))  # restore_enabled defaults False
+        w._apply_web_stream_settings(WebStreamSettings(port=8081))  # restore_enabled defaults False
         assert w._web_streamer is None
 
     def test_startup_restores_persisted_preference(self, ws_window):
@@ -115,7 +125,6 @@ class TestWebStream:
 @pytest.mark.gui
 def test_close_event_stops_stream_without_blocking(window, monkeypatch):
     w = window
-    w._apply_web_stream_settings(WebStreamSettings(port=_free_port()))
     w.action_web_stream.setChecked(True)
     streamer = w._web_streamer
     calls = []

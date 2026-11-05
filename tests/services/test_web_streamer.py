@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import socket
-import time
+import threading
 import urllib.error
 import urllib.request
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -11,6 +12,10 @@ import pytest
 
 from dlclivegui.services import web_streamer as ws
 from dlclivegui.services.web_streamer import WebStreamer
+
+# Upper bound for joins that only matters if the code under test is broken
+# (passing runs return as soon as the event happens); not a timing assertion.
+_FAILURE_CAP = 30.0
 
 
 def _get(url: str) -> tuple[int, bytes, str]:
@@ -75,41 +80,67 @@ def test_encoding_is_cached_and_rate_limited(monkeypatch, frame_box):
         return real_imencode(*args, **kwargs)
 
     monkeypatch.setattr(ws.cv2, "imencode", counting_imencode)
-    s = WebStreamer(lambda: frame_box["frame"], port=0, fps=5.0)
+    clock = {"now": 100.0}
+    monkeypatch.setattr(ws, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+    s = WebStreamer(lambda: frame_box["frame"], port=0, fps=5.0)  # min interval 0.2 s
 
     s.latest_jpeg()
     s.latest_jpeg()  # same source object -> cached
     assert calls["n"] == 1
 
     frame_box["frame"] = frame_box["frame"].copy()
+    clock["now"] += 0.1
     s.latest_jpeg()  # new object but within 1/fps -> cached
     assert calls["n"] == 1
 
-    s._last_encode -= 1.0
-    s.latest_jpeg()  # interval elapsed -> re-encode
+    clock["now"] += 0.2
+    s.latest_jpeg()  # new object, interval elapsed -> re-encode
+    assert calls["n"] == 2
+
+    clock["now"] += 10.0
+    s.latest_jpeg()  # interval elapsed but same object -> cached
     assert calls["n"] == 2
 
 
 @pytest.mark.unit
-def test_stop_is_non_blocking_and_frees_port(frame_box):
+def test_stop_returns_before_shutdown_completes(frame_box):
     s = WebStreamer(lambda: frame_box["frame"], port=0)
     s.start()
-    port = s._server.server_address[1]
+    server = s._server
+    release = threading.Event()
+    real_shutdown = server.shutdown
 
-    t0 = time.monotonic()
-    s.stop()
-    assert time.monotonic() - t0 < 0.1
-    assert not s.is_running()
+    def blocking_shutdown():
+        release.wait()
+        real_shutdown()
 
-    deadline = time.monotonic() + 3.0
-    while True:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                pass
-        except OSError:
-            break
-        assert time.monotonic() < deadline, "server still accepting connections after stop()"
-        time.sleep(0.05)
+    server.shutdown = blocking_shutdown
+
+    t = s.stop()  # must not wait for shutdown, which cannot finish until released
+    try:
+        assert t is not None and t.is_alive()
+        assert not s.is_running()
+    finally:
+        release.set()
+        t.join(timeout=_FAILURE_CAP)
+    assert not t.is_alive()
+
+
+@pytest.mark.unit
+def test_shutdown_frees_port(frame_box):
+    s = WebStreamer(lambda: frame_box["frame"], port=0)
+    s.start()
+    server = s._server
+    port = server.server_address[1]
+
+    t = s.stop()
+    t.join(timeout=_FAILURE_CAP)
+    assert not t.is_alive()
+    assert server.socket.fileno() == -1  # listening socket closed
+
+    again = WebStreamer(lambda: frame_box["frame"], port=port)
+    again.start()  # raises OSError if the port were still held
+    again.stop(wait=True)
 
 
 @pytest.mark.unit
@@ -151,7 +182,7 @@ def test_stop_returns_shutdown_thread(frame_box):
     s.start()
     t = s.stop()
     assert t is not None
-    t.join(timeout=3.0)
+    t.join(timeout=_FAILURE_CAP)
     assert not t.is_alive()
 
 
