@@ -2343,6 +2343,7 @@ class DLCLiveMainWindow(QMainWindow):
         # Create tiled frame on demand (moved from camera thread for performance)
         tiled = create_tiled_frame(self._multi_camera_frames, labels=self._multi_camera_display_ids)
         if tiled is not None:
+            # Read by the web stream's server threads: replace, never draw on in place (overlays copy first).
             self._current_frame = tiled
             self._update_video_display(tiled)
 
