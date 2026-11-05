@@ -446,6 +446,7 @@ class DLCLiveMainWindow(QMainWindow):
         view_menu.addAction(self.action_show_controls)
         ## Web stream (raw tiled frames, pulled on demand by the browser)
         self._web_streamer: WebStreamer | None = None
+        self._web_stream_shutdown: threading.Thread | None = None
         self._web_stream_settings = self._config.web_stream.model_copy()
         self.action_web_stream = QAction(self._web_stream_label(), self, checkable=True)
         self.action_web_stream.toggled.connect(self._on_web_stream_toggled)
@@ -950,7 +951,7 @@ class DLCLiveMainWindow(QMainWindow):
         if hasattr(self, "bbox_color_combo"):
             color_ui.set_bbox_combo_from_bgr(self.bbox_color_combo, self._bbox_color)
 
-        self._apply_web_stream_settings(config.web_stream)
+        self._apply_web_stream_settings(config.web_stream, restore_enabled=restore_local_prefs)
 
         # Processor
         ## Use custom processor checkbox state
@@ -983,7 +984,7 @@ class DLCLiveMainWindow(QMainWindow):
             recording=self._recording_settings_from_ui(),
             bbox=self._bbox_settings_from_ui(),
             visualization=self._visualization_settings_from_ui(),
-            web_stream=self._web_stream_settings.model_copy(update={"enabled": self.action_web_stream.isChecked()}),
+            web_stream=self._web_stream_settings.model_copy(),
         )
 
     def _parse_json(self, value: str) -> dict:
@@ -2710,43 +2711,47 @@ class DLCLiveMainWindow(QMainWindow):
                 return
 
     # ------------------------------------------------------------------
-    # Qt overrides
-    # ------------------------------------------------------------------
     # Web stream
+    # On/off is a local QSettings preference, written only by the user's toggle;
+    # server parameters come from the config JSON.
+    # ------------------------------------------------------------------
     def _web_stream_label(self) -> str:
         s = self._web_stream_settings
         return f"Web stream ({s.host}:{s.port})"
 
-    def _apply_web_stream_settings(self, settings: WebStreamSettings) -> None:
-        """Adopt ``settings`` and bring the streamer to ``settings.enabled``.
+    def _apply_web_stream_settings(self, settings: WebStreamSettings, *, restore_enabled: bool = False) -> None:
+        """Adopt server parameters; restart a running stream only if they changed.
 
-        A running stream is restarted only if its server parameters changed.
+        ``restore_enabled`` starts the stream if the persisted preference says so (startup only).
         """
-        params_changed = settings.model_dump(exclude={"enabled"}) != self._web_stream_settings.model_dump(
-            exclude={"enabled"}
-        )
+        params_changed = settings != self._web_stream_settings
         self._web_stream_settings = settings.model_copy()
         self.action_web_stream.setText(self._web_stream_label())
 
-        if self._web_streamer is not None and (params_changed or not settings.enabled):
-            # Blocking stop so a restart can rebind the same port; config loads only, not a hot path.
-            self._web_streamer.stop(wait=True)
-            self._web_streamer = None
-
-        with QSignalBlocker(self.action_web_stream):
-            self.action_web_stream.setChecked(settings.enabled)
-        if settings.enabled and self._web_streamer is None:
+        if self._web_streamer is not None and params_changed:
+            # Blocking stop so the restart can rebind the same port; config loads only, not a hot path.
+            self._stop_web_stream(wait=True)
+            self._start_web_stream()
+        elif restore_enabled and self._web_streamer is None and self._settings_store.get_web_stream_enabled():
             self._start_web_stream()
 
     def _on_web_stream_toggled(self, enabled: bool) -> None:
+        """User toggle: the only place the persisted preference is written."""
         if enabled:
-            self._start_web_stream()
-        elif self._web_streamer is not None:
-            self._web_streamer.stop()
-            self._web_streamer = None
-            self.statusBar().showMessage("Web stream stopped", 3000)
+            self._settings_store.set_web_stream_enabled(self._start_web_stream())
+        else:
+            self._settings_store.set_web_stream_enabled(False)
+            if self._web_streamer is not None:
+                self._stop_web_stream()
+                self.statusBar().showMessage("Web stream stopped", 3000)
 
-    def _start_web_stream(self) -> None:
+    def _start_web_stream(self) -> bool:
+        """Start the stream and sync the menu check state. Returns whether it is running."""
+        # A quick off/on toggle can race the previous server's background shutdown; wait for the port.
+        pending, self._web_stream_shutdown = self._web_stream_shutdown, None
+        if pending is not None:
+            pending.join(timeout=1.0)
+
         s = self._web_stream_settings
         streamer = WebStreamer(
             lambda: self._current_frame,
@@ -2759,18 +2764,31 @@ class DLCLiveMainWindow(QMainWindow):
         try:
             streamer.start()
         except OSError as exc:
-            logger.warning("Failed to start web stream: %s", exc)
-            self.statusBar().showMessage(f"Web stream failed to start: {exc}", 5000)
-            with QSignalBlocker(self.action_web_stream):
-                self.action_web_stream.setChecked(False)
-            return
+            logger.warning("Failed to start web stream on %s:%s: %s", s.host, s.port, exc)
+            self.statusBar().showMessage(f"Web stream failed to start on {s.host}:{s.port}: {exc}", 5000)
+            self._set_web_stream_checked(False)
+            return False
         self._web_streamer = streamer
+        self._set_web_stream_checked(True)
         self.statusBar().showMessage(f"Web stream at {streamer.url}", 5000)
+        return True
 
+    def _stop_web_stream(self, wait: bool = False) -> None:
+        streamer, self._web_streamer = self._web_streamer, None
+        if streamer is not None:
+            self._web_stream_shutdown = streamer.stop(wait=wait)
+        self._set_web_stream_checked(False)
+
+    def _set_web_stream_checked(self, checked: bool) -> None:
+        with QSignalBlocker(self.action_web_stream):
+            self.action_web_stream.setChecked(checked)
+
+    # ------------------------------------------------------------------
+    # Qt overrides
+    # ------------------------------------------------------------------
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour
-        if self._web_streamer is not None:
-            self._web_streamer.stop()
-            self._web_streamer = None
+        # Non-blocking; the server threads are daemons and the OS releases the port at exit.
+        self._stop_web_stream()
         if self.multi_camera_controller.is_running():
             self.multi_camera_controller.stop(wait=True)
 

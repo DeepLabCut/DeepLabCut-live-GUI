@@ -110,3 +110,62 @@ def test_stop_is_non_blocking_and_frees_port(frame_box):
             break
         assert time.monotonic() < deadline, "server still accepting connections after stop()"
         time.sleep(0.05)
+
+
+@pytest.mark.unit
+def test_second_instance_on_same_port_is_refused(frame_box):
+    # Windows SO_REUSEADDR would let this bind succeed silently; POSIX refuses either way.
+    first = WebStreamer(lambda: frame_box["frame"], port=0)
+    first.start()
+    try:
+        second = WebStreamer(lambda: frame_box["frame"], port=first._server.server_address[1])
+        with pytest.raises(OSError):
+            second.start()
+        assert not second.is_running()
+    finally:
+        first.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_restart_on_same_port_after_serving_requests(frame_box):
+    # Served requests leave server-side TIME_WAIT connections; rebinding must still work on every OS.
+    s = WebStreamer(lambda: frame_box["frame"], port=0)
+    s.start()
+    port = s._server.server_address[1]
+    for _ in range(3):
+        assert _get(s.url + "frame.jpg")[0] == 200
+    s.stop(wait=True)
+
+    again = WebStreamer(lambda: frame_box["frame"], port=port)
+    again.start()
+    try:
+        assert _get(again.url + "frame.jpg")[0] == 200
+    finally:
+        again.stop(wait=True)
+
+
+@pytest.mark.unit
+def test_stop_returns_shutdown_thread(frame_box):
+    s = WebStreamer(lambda: frame_box["frame"], port=0)
+    assert s.stop() is None  # not running
+    s.start()
+    t = s.stop()
+    assert t is not None
+    t.join(timeout=3.0)
+    assert not t.is_alive()
+
+
+@pytest.mark.unit
+def test_stalled_client_is_dropped(monkeypatch, frame_box):
+    monkeypatch.setattr(ws, "_CLIENT_TIMEOUT", 0.2)
+    s = WebStreamer(lambda: frame_box["frame"], port=0)
+    s.start()
+    try:
+        with socket.create_connection(("127.0.0.1", s._server.server_address[1]), timeout=3.0) as sock:
+            # Send nothing: the server must close the connection after its timeout.
+            try:
+                assert sock.recv(1024) == b""
+            except ConnectionResetError:
+                pass  # some platforms reset instead of closing cleanly
+    finally:
+        s.stop(wait=True)

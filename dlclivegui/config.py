@@ -550,11 +550,14 @@ class RecordingSettings(BaseModel):
 
 
 class WebStreamSettings(BaseModel):
-    """On-demand JPEG web view of the raw tiled preview."""
+    """On-demand JPEG web view of the raw tiled preview.
 
-    enabled: bool = False
+    On/off is a local QSettings preference, not part of the shareable config,
+    to avoid silently enabling the web stream when loading someone else's config.
+    """
+
     host: str = "127.0.0.1"  # "0.0.0.0" exposes the stream on all interfaces (no auth)
-    port: int = Field(default=8080, ge=0, le=65535)
+    port: int = Field(default=8080, ge=1, le=65535)
     fps: float = Field(default=5.0, gt=0.0, le=30.0)
     max_width: int = Field(default=640, ge=16)
     max_height: int = Field(default=480, ge=16)

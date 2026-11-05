@@ -7,6 +7,7 @@ encoding is capped at ``fps`` regardless of client count.
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -24,6 +25,23 @@ DEFAULT_MAX_SIZE = (640, 480)
 DEFAULT_JPEG_QUALITY = 70
 _POLL_INTERVAL = 0.1  # serve_forever shutdown latency
 _STOP_WAIT_TIMEOUT = 2.0
+_CLIENT_TIMEOUT = 5.0  # drop idle or stalled connections
+
+
+class _StreamServer(ThreadingHTTPServer):
+    """``ThreadingHTTPServer`` with bind fail when port is already taken, cross-platform.
+
+    POSIX: keep ``SO_REUSEADDR``; it only permits rebinding over ``TIME_WAIT``
+    and still refuses a second listener (macOS/BSD may allow a more specific
+    address next to a wildcard bind).
+    Windows: ``SO_REUSEADDR`` lets a second listener bind the same port, so
+    use a plain bind. ``SO_EXCLUSIVEADDRUSE`` is not used: it can block
+    rebinding while closed connections sit in ``TIME_WAIT``.
+    """
+
+    allow_reuse_address = sys.platform != "win32"
+    daemon_threads = True
+
 
 _INDEX_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>DLC Live stream</title>
@@ -64,7 +82,7 @@ class WebStreamer:
         self._jpeg_quality = int(jpeg_quality)
         self._index = _INDEX_HTML.replace("__PERIOD_MS__", str(int(self._min_interval * 1000))).encode()
 
-        self._server: ThreadingHTTPServer | None = None
+        self._server: _StreamServer | None = None
         self._thread: threading.Thread | None = None
 
         self._cache_lock = threading.Lock()
@@ -84,8 +102,7 @@ class WebStreamer:
         """Bind and serve in a daemon thread. Raises ``OSError`` if the port is unavailable."""
         if self._server is not None:
             return
-        server = ThreadingHTTPServer((self._host, self._port), self._make_handler())
-        server.daemon_threads = True
+        server = _StreamServer((self._host, self._port), self._make_handler())
         self._server = server
         self._thread = threading.Thread(
             target=server.serve_forever, kwargs={"poll_interval": _POLL_INTERVAL}, name="WebStreamer", daemon=True
@@ -93,20 +110,24 @@ class WebStreamer:
         self._thread.start()
         logger.info("Web stream serving at %s", self.url)
 
-    def stop(self, wait: bool = False) -> None:
+    def stop(self, wait: bool = False) -> threading.Thread | None:
         """Shut down on a short-lived daemon thread.
 
         ``wait=False`` returns immediately (GUI toggle). ``wait=True`` blocks
         until the port is released, for an immediate restart on the same port.
+        Returns the shutdown thread (``None`` if not running) so a caller can
+        wait for the port later.
         """
         server, self._server = self._server, None
         self._thread = None
         if server is None:
-            return
+            return None
 
         def _shutdown() -> None:
-            server.shutdown()
-            server.server_close()
+            try:
+                server.shutdown()
+            finally:
+                server.server_close()
 
         shutdown_thread = threading.Thread(target=_shutdown, name="WebStreamerShutdown", daemon=True)
         shutdown_thread.start()
@@ -115,6 +136,7 @@ class WebStreamer:
             self._cached_jpeg = None
         if wait:
             shutdown_thread.join(timeout=_STOP_WAIT_TIMEOUT)
+        return shutdown_thread
 
     def latest_jpeg(self) -> bytes | None:
         """Return JPEG bytes for the current frame, encoding at most once per ``1/fps``."""
@@ -147,6 +169,8 @@ class WebStreamer:
         streamer = self
 
         class _Handler(BaseHTTPRequestHandler):
+            timeout = _CLIENT_TIMEOUT
+
             def do_GET(self) -> None:  # noqa: N802 - http.server API
                 path = self.path.split("?", 1)[0]
                 try:
@@ -164,8 +188,8 @@ class WebStreamer:
                             self._send(200, "image/jpeg", jpeg)
                     else:
                         self._send(404, "text/plain", b"not found")
-                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                    pass
+                except (ConnectionError, TimeoutError):
+                    pass  # client went away or stalled past ``timeout``
 
             def _send(self, status: int, content_type: str, body: bytes) -> None:
                 self.send_response(status)
