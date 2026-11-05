@@ -1,7 +1,7 @@
 """View-menu actions and lifecycle for the web stream.
 
-On/off and network exposure are local QSettings preferences, written only by the
-user's menu toggles. Port, fps, size and quality come from the config JSON.
+On/off, network exposure and overlays are local QSettings preferences, written only
+by the user's menu toggles. Port, fps, size and quality come from the config JSON.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def _set_checked_silently(action: QAction, checked: bool) -> None:
 class WebStreamController:
     """Owns the web stream's menu actions, preferences and server lifecycle.
 
-    Menu: two switches (stream on/off, other devices allowed), then the URLs as actions.
+    Menu: three switches (stream on/off, other devices allowed, overlays), then the URLs as actions.
     """
 
     def __init__(
@@ -53,12 +53,16 @@ class WebStreamController:
         parent: QWidget,
         settings_store: DLCLiveGUISettingsStore,
         frame_source: Callable[[], np.ndarray | None],
+        overlay_frame_source: Callable[[], np.ndarray | None],
         settings: WebStreamSettings,
         show_status: Callable[[str, int], None],
     ):
         self._parent = parent
         self._store = settings_store
-        self._frame_source = frame_source
+        self._raw_source = frame_source
+        self._overlay_source = overlay_frame_source
+        # Plain bool, not action.isChecked(): read from the server threads, where Qt objects are off-limits.
+        self._overlays = self._store.get_web_stream_overlays()
         self._settings = settings.model_copy()
         self._show_status = show_status
         self._streamer: WebStreamer | None = None
@@ -69,6 +73,9 @@ class WebStreamController:
         self.action_network = QAction("Allow other devices (no password)", parent, checkable=True)
         self.action_network.setChecked(self._store.get_web_stream_allow_network())  # before connect: no prompt
         self.action_network.toggled.connect(self._on_network_toggled)
+        self.action_overlays = QAction("Include on-screen overlays (pose, box)", parent, checkable=True)
+        self.action_overlays.setChecked(self._overlays)
+        self.action_overlays.toggled.connect(self._on_overlays_toggled)
         self.action_open = QAction(parent)
         self.action_open.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(self._local_url())))
         self.action_copy = QAction(_COPY_LINK_TEXT, parent)
@@ -80,7 +87,7 @@ class WebStreamController:
     def add_to_menu(self, menu: QMenu) -> QMenu:
         """Add a "Web stream" submenu holding the stream's actions to ``menu``."""
         submenu = menu.addMenu("Web stream")
-        submenu.addActions([self.action_enable, self.action_network])
+        submenu.addActions([self.action_enable, self.action_network, self.action_overlays])
         submenu.addSeparator()
         submenu.addActions([self.action_open, self.action_copy])
         submenu.aboutToShow.connect(self._refresh_menu)  # LAN address can change while running
@@ -132,6 +139,15 @@ class WebStreamController:
             self._restart()
         self._refresh_menu()
 
+    def _on_overlays_toggled(self, enabled: bool) -> None:
+        # No restart: the source is chosen per request.
+        self._overlays = enabled
+        self._store.set_web_stream_overlays(enabled)
+
+    def _frame(self) -> np.ndarray | None:
+        """Frame source for the server threads."""
+        return self._overlay_source() if self._overlays else self._raw_source()
+
     def _confirm_network(self) -> bool:
         reply = QMessageBox.question(
             self._parent,
@@ -182,7 +198,7 @@ class WebStreamController:
             pending.join(timeout=SHUTDOWN_TIMEOUT)
 
         host = self._host()
-        streamer = WebStreamer.from_settings(self._frame_source, self._settings, host=host)
+        streamer = WebStreamer.from_settings(self._frame, self._settings, host=host)
         try:
             streamer.start()
         except OSError as exc:

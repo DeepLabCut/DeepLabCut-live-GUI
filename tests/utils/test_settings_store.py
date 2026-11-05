@@ -113,7 +113,7 @@ def test_qt_settings_store_fast_encoding_roundtrip():
     assert settstore.get_fast_encoding(default=True) is False
 
 
-@pytest.mark.parametrize("pref", ["web_stream_enabled", "web_stream_allow_network"])
+@pytest.mark.parametrize("pref", ["web_stream_enabled", "web_stream_allow_network", "web_stream_overlays"])
 def test_qt_settings_store_web_stream_bool_roundtrip(pref):
     settstore = store.DLCLiveGUISettingsStore(qsettings=InMemoryQSettings())
     get, set_ = getattr(settstore, f"get_{pref}"), getattr(settstore, f"set_{pref}")

@@ -153,6 +153,7 @@ class DLCLiveMainWindow(QMainWindow):
         self._active_inference_camera_id: str | None = None
         self._running_cams_ids: set[str] = set()
         self._current_frame: np.ndarray | None = None
+        self._shown_frame: np.ndarray | None = None  # _current_frame + on-screen overlays
         self._raw_frame: np.ndarray | None = None
         self._last_pose: PoseResult | None = None
         self._dlc_active: bool = False
@@ -448,6 +449,7 @@ class DLCLiveMainWindow(QMainWindow):
             self,
             self._settings_store,
             frame_source=lambda: self._current_frame,
+            overlay_frame_source=lambda: self._shown_frame,
             settings=self._config.web_stream,
             show_status=self.statusBar().showMessage,
         )
@@ -1797,6 +1799,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.stop_preview_button.setEnabled(False)
 
         self._current_frame = None
+        self._shown_frame = None
         self._multi_camera_frames.clear()
         self._multi_camera_display_ids.clear()
         self._running_cams_ids.clear()
@@ -2146,6 +2149,7 @@ class DLCLiveMainWindow(QMainWindow):
         self.preview_button.setEnabled(False)
         self.stop_preview_button.setEnabled(True)
         self._current_frame = None
+        self._shown_frame = None
         self._raw_frame = None
         self._last_pose = None
         self._multi_camera_frames.clear()
@@ -2624,6 +2628,8 @@ class DLCLiveMainWindow(QMainWindow):
                 scale=self._dlc_tile_scale,
             )
 
+        # Read by the web stream's server threads: replace, never draw on in place.
+        self._shown_frame = display_frame
         rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
 
         h, w, ch = rgb.shape

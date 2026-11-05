@@ -1,6 +1,7 @@
 # tests/gui/main_window/test_web_stream.py
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QGuiApplication
@@ -58,10 +59,11 @@ class TestWebStream:
         view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
         submenu = next(a.menu() for a in view_menu.actions() if a.menu() and a.text() == "Web stream")
         items = submenu.actions()
-        assert [a.isSeparator() for a in items] == [False, False, True, False, False]
+        assert [a.isSeparator() for a in items] == [False, False, False, True, False, False]
         assert [a for a in items if not a.isSeparator()] == [
             ctl.action_enable,
             ctl.action_network,
+            ctl.action_overlays,
             ctl.action_open,
             ctl.action_copy,
         ]
@@ -265,3 +267,37 @@ def test_close_event_stops_stream_without_blocking(window, monkeypatch):
 
     assert calls == [False]
     assert ctl.streamer is None
+
+
+@pytest.mark.gui
+class TestWebStreamOverlays:
+    def test_raw_frames_by_default(self, window, ctl):
+        assert not ctl.action_overlays.isChecked()
+        window._current_frame, window._shown_frame = object(), object()
+        assert ctl._frame() is window._current_frame
+
+    def test_toggle_switches_source_without_restart_and_persists(self, window, ctl):
+        ctl.action_enable.setChecked(True)
+        streamer = ctl.streamer
+        window._current_frame, window._shown_frame = object(), object()
+
+        ctl.action_overlays.setChecked(True)
+        assert ctl._frame() is window._shown_frame
+        assert ctl.streamer is streamer  # chosen per request: no restart
+        assert ctl._store.get_web_stream_overlays() is True
+
+        ctl.action_overlays.setChecked(False)
+        assert ctl._frame() is window._current_frame
+        assert ctl._store.get_web_stream_overlays() is False
+
+    def test_shown_frame_is_what_the_screen_shows(self, window):
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        window._bbox_enabled = False
+        window._update_video_display(frame)
+        assert window._shown_frame is frame  # no overlay: same array, no copy
+
+        window._bbox_enabled = True
+        window._bbox_x0, window._bbox_y0, window._bbox_x1, window._bbox_y1 = 10, 10, 60, 60
+        window._update_video_display(frame)
+        assert window._shown_frame is not frame  # overlays are drawn on a copy...
+        assert window._shown_frame.any() and not frame.any()  # ...which carries the box; the source stays raw
