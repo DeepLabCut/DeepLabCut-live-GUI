@@ -12,7 +12,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QRect, QSettings, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QRect, QSettings, QSignalBlocker, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -63,6 +63,7 @@ from dlclivegui.config import (
     MultiCameraSettings,
     RecordingSettings,
     VisualizationSettings,
+    WebStreamSettings,
 )
 
 from ..processors.processor_utils import (
@@ -77,6 +78,7 @@ from ..processors.processor_utils import (
 from ..services.dlc_processor import DLCLiveProcessor, PoseResult
 from ..services.multi_camera_controller import MultiCameraController, MultiFrameData, get_camera_id, get_display_id
 from ..services.recording_manager import RecordingManager
+from ..services.web_streamer import WebStreamer
 from ..utils.display import BBoxColors, compute_tile_info, create_tiled_frame, draw_bbox, draw_pose
 from ..utils.settings_store import DLCLiveGUISettingsStore, ModelPathStore
 from ..utils.stats import WorkerTimingStats, format_dlc_stats
@@ -442,6 +444,12 @@ class DLCLiveMainWindow(QMainWindow):
         self.action_show_controls.toggled.connect(self.controls_dock.setVisible)
         self.controls_dock.visibilityChanged.connect(self.action_show_controls.setChecked)
         view_menu.addAction(self.action_show_controls)
+        ## Web stream (raw tiled frames, pulled on demand by the browser)
+        self._web_streamer: WebStreamer | None = None
+        self._web_stream_settings = self._config.web_stream.model_copy()
+        self.action_web_stream = QAction(self._web_stream_label(), self, checkable=True)
+        self.action_web_stream.toggled.connect(self._on_web_stream_toggled)
+        view_menu.addAction(self.action_web_stream)
         ## --------------------
         view_menu.addSeparator()
         ## Style actions
@@ -942,6 +950,8 @@ class DLCLiveMainWindow(QMainWindow):
         if hasattr(self, "bbox_color_combo"):
             color_ui.set_bbox_combo_from_bgr(self.bbox_color_combo, self._bbox_color)
 
+        self._apply_web_stream_settings(config.web_stream)
+
         # Processor
         ## Use custom processor checkbox state
         if hasattr(self, "use_custom_proc_checkbox"):
@@ -973,6 +983,7 @@ class DLCLiveMainWindow(QMainWindow):
             recording=self._recording_settings_from_ui(),
             bbox=self._bbox_settings_from_ui(),
             visualization=self._visualization_settings_from_ui(),
+            web_stream=self._web_stream_settings.model_copy(update={"enabled": self.action_web_stream.isChecked()}),
         )
 
     def _parse_json(self, value: str) -> dict:
@@ -2700,7 +2711,66 @@ class DLCLiveMainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # Qt overrides
+    # ------------------------------------------------------------------
+    # Web stream
+    def _web_stream_label(self) -> str:
+        s = self._web_stream_settings
+        return f"Web stream ({s.host}:{s.port})"
+
+    def _apply_web_stream_settings(self, settings: WebStreamSettings) -> None:
+        """Adopt ``settings`` and bring the streamer to ``settings.enabled``.
+
+        A running stream is restarted only if its server parameters changed.
+        """
+        params_changed = settings.model_dump(exclude={"enabled"}) != self._web_stream_settings.model_dump(
+            exclude={"enabled"}
+        )
+        self._web_stream_settings = settings.model_copy()
+        self.action_web_stream.setText(self._web_stream_label())
+
+        if self._web_streamer is not None and (params_changed or not settings.enabled):
+            # Blocking stop so a restart can rebind the same port; config loads only, not a hot path.
+            self._web_streamer.stop(wait=True)
+            self._web_streamer = None
+
+        with QSignalBlocker(self.action_web_stream):
+            self.action_web_stream.setChecked(settings.enabled)
+        if settings.enabled and self._web_streamer is None:
+            self._start_web_stream()
+
+    def _on_web_stream_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self._start_web_stream()
+        elif self._web_streamer is not None:
+            self._web_streamer.stop()
+            self._web_streamer = None
+            self.statusBar().showMessage("Web stream stopped", 3000)
+
+    def _start_web_stream(self) -> None:
+        s = self._web_stream_settings
+        streamer = WebStreamer(
+            lambda: self._current_frame,
+            host=s.host,
+            port=s.port,
+            fps=s.fps,
+            max_size=(s.max_width, s.max_height),
+            jpeg_quality=s.jpeg_quality,
+        )
+        try:
+            streamer.start()
+        except OSError as exc:
+            logger.warning("Failed to start web stream: %s", exc)
+            self.statusBar().showMessage(f"Web stream failed to start: {exc}", 5000)
+            with QSignalBlocker(self.action_web_stream):
+                self.action_web_stream.setChecked(False)
+            return
+        self._web_streamer = streamer
+        self.statusBar().showMessage(f"Web stream at {streamer.url}", 5000)
+
     def closeEvent(self, event: QCloseEvent) -> None:  # pragma: no cover - GUI behaviour
+        if self._web_streamer is not None:
+            self._web_streamer.stop()
+            self._web_streamer = None
         if self.multi_camera_controller.is_running():
             self.multi_camera_controller.stop(wait=True)
 
